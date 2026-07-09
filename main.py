@@ -3,8 +3,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import get_db
+from routers.goods_receipts import router as goods_receipts_router
+from routers.purchase_orders import router as purchase_orders_router
 
-app = FastAPI()
+app = FastAPI(title="RPOS Backend")
+
+app.include_router(purchase_orders_router)
+app.include_router(goods_receipts_router)
 
 
 @app.get("/health")
