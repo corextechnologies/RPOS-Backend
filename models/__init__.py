@@ -14,6 +14,7 @@ from models.db_types import (
 from models.domain import (
     Branch,
     GoodsReceipt,
+    GoodsReceiptTemperatureReading,
     Organization,
     Product,
     PurchaseOrder,
@@ -23,6 +24,7 @@ from models.domain import (
     StockTransactionLine,
     Supplier,
 )
+from models.master_data import TemperatureRange
 from models.enums import (
     PurchaseOrderStatus,
     StockMovementDirection,
@@ -46,7 +48,9 @@ __all__ = [
     "PurchaseOrder",
     "PurchaseOrderLineItem",
     "GoodsReceipt",
+    "GoodsReceiptTemperatureReading",
     "StockBatch",
     "StockTransaction",
     "StockTransactionLine",
+    "TemperatureRange",
 ]

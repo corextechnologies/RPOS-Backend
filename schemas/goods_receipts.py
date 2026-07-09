@@ -89,3 +89,34 @@ class GoodsReceiptRead(BaseModel):
     updated_at: datetime
     stock_batches: list[StockBatchRead]
     stock_transaction: StockTransactionRead
+
+
+class TemperatureRangeSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    min_celsius: Decimal
+    max_celsius: Optional[Decimal]
+
+
+class TemperatureReadingCreate(BaseModel):
+    organization_id: uuid.UUID
+    temperature_celsius: Decimal
+    temperature_range_id: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class TemperatureReadingRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    goods_receipt_id: uuid.UUID
+    organization_id: uuid.UUID
+    temperature_range_id: Optional[int]
+    temperature_range: Optional[TemperatureRangeSnapshotRead] = None
+    recorded_temperature_celsius: Decimal
+    is_within_range: Optional[bool]
+    recorded_at: datetime
+    notes: Optional[str]
+    created_at: datetime

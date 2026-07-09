@@ -22,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -392,6 +393,62 @@ class GoodsReceipt(Base):
     stock_batches: Mapped[list["StockBatch"]] = relationship(back_populates="goods_receipt")
     stock_transaction: Mapped[Optional["StockTransaction"]] = relationship(
         back_populates="goods_receipt", uselist=False
+    )
+    temperature_readings: Mapped[list["GoodsReceiptTemperatureReading"]] = relationship(
+        back_populates="goods_receipt"
+    )
+
+
+class GoodsReceiptTemperatureReading(Base):
+    """Cold-chain temperature capture at goods receipt (Section 20)."""
+
+    __tablename__ = "goods_receipt_temperature_readings"
+    __table_args__ = (
+        Index(
+            "gr_temp_readings_goods_receipt_id_idx",
+            "goods_receipt_id",
+        ),
+        Index(
+            "gr_temp_readings_org_recorded_at_idx",
+            "organization_id",
+            "recorded_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    goods_receipt_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("goods_receipts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    temperature_range_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    recorded_temperature_celsius: Mapped[Decimal] = mapped_column(
+        Numeric(6, 2), nullable=False
+    )
+    is_within_range: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    goods_receipt: Mapped["GoodsReceipt"] = relationship(
+        back_populates="temperature_readings"
     )
 
 

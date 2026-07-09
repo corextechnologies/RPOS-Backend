@@ -29,3 +29,19 @@ class StockLedgerItemRead(BaseModel):
 
 class StockLedgerRead(BaseModel):
     items: list[StockLedgerItemRead]
+
+
+class LowStockItemRead(BaseModel):
+    organization_id: uuid.UUID
+    branch_id: uuid.UUID
+    product_id: uuid.UUID
+    sku: str
+    name: str
+    unit_of_measure: str
+    reorder_level: Decimal = Field(gt=0)
+    quantity_on_hand: Decimal = Field(ge=0)
+    is_low_stock: bool
+
+
+class LowStockRead(BaseModel):
+    items: list[LowStockItemRead]
