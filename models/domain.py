@@ -1,3 +1,15 @@
+"""
+Section 24.1–24.2 domain models (Inventory & Procurement).
+
+Entities:
+  - Product (+ Ingredients via `is_ingredient` flag)
+  - Supplier
+  - PurchaseOrder / PurchaseOrderLineItem
+  - GoodsReceipt
+  - StockBatch
+  - StockTransaction / StockTransactionLine
+"""
+
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -5,9 +17,9 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
-    Enum,
     ForeignKey,
     Index,
     Numeric,
@@ -15,11 +27,18 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    select,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+from models.db_types import (
+    purchase_order_status_enum,
+    stock_movement_direction_enum,
+    stock_reference_type_enum,
+    stock_transaction_type_enum,
+)
 from models.enums import (
     PurchaseOrderStatus,
     StockMovementDirection,
@@ -27,29 +46,10 @@ from models.enums import (
     StockTransactionType,
 )
 
-purchase_order_status_enum = Enum(
-    PurchaseOrderStatus,
-    name="PurchaseOrderStatus",
-    create_type=False,
-)
-stock_transaction_type_enum = Enum(
-    StockTransactionType,
-    name="StockTransactionType",
-    create_type=False,
-)
-stock_movement_direction_enum = Enum(
-    StockMovementDirection,
-    name="StockMovementDirection",
-    create_type=False,
-)
-stock_reference_type_enum = Enum(
-    StockReferenceType,
-    name="StockReferenceType",
-    create_type=False,
-)
-
 
 class Organization(Base):
+    """SaaS tenant — all business tables are scoped by organization_id."""
+
     __tablename__ = "organizations"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -86,6 +86,8 @@ class Organization(Base):
 
 
 class Branch(Base):
+    """Receiving location / store within an organization."""
+
     __tablename__ = "branches"
     __table_args__ = (
         UniqueConstraint("organization_id", "name"),
@@ -125,6 +127,13 @@ class Branch(Base):
 
 
 class Product(Base):
+    """
+    Product catalog (Section 24.1).
+
+    Ingredients are NOT a separate table — they are products with `is_ingredient=True`.
+    Use `Product.ingredients()` to query the ingredient subset.
+    """
+
     __tablename__ = "products"
     __table_args__ = (
         UniqueConstraint("organization_id", "sku"),
@@ -171,8 +180,15 @@ class Product(Base):
         back_populates="product"
     )
 
+    @classmethod
+    def ingredients(cls):
+        """SQLAlchemy selectable for ingredient (raw material) products only."""
+        return select(cls).where(cls.is_ingredient.is_(True), cls.deleted_at.is_(None))
+
 
 class Supplier(Base):
+    """Vendor master data (Section 24.1)."""
+
     __tablename__ = "suppliers"
     __table_args__ = (
         UniqueConstraint("organization_id", "code"),
@@ -213,6 +229,8 @@ class Supplier(Base):
 
 
 class PurchaseOrder(Base):
+    """Purchase order header (Section 24.1)."""
+
     __tablename__ = "purchase_orders"
     __table_args__ = (
         UniqueConstraint("organization_id", "order_number"),
@@ -276,10 +294,19 @@ class PurchaseOrder(Base):
 
 
 class PurchaseOrderLineItem(Base):
+    """Purchase order line item (Section 24.1)."""
+
     __tablename__ = "purchase_order_line_items"
     __table_args__ = (
         UniqueConstraint("purchase_order_id", "product_id"),
         Index("purchase_order_line_items_product_id_idx", "product_id"),
+        CheckConstraint("ordered_quantity > 0", name="ck_po_line_ordered_qty_positive"),
+        CheckConstraint("received_quantity >= 0", name="ck_po_line_received_qty_nonneg"),
+        CheckConstraint(
+            "received_quantity <= ordered_quantity",
+            name="ck_po_line_received_lte_ordered",
+        ),
+        CheckConstraint("unit_price >= 0", name="ck_po_line_unit_price_nonneg"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -315,6 +342,8 @@ class PurchaseOrderLineItem(Base):
 
 
 class GoodsReceipt(Base):
+    """Goods receipt against a purchase order (Section 24.2)."""
+
     __tablename__ = "goods_receipts"
     __table_args__ = (
         UniqueConstraint("organization_id", "receipt_number"),
@@ -365,6 +394,8 @@ class GoodsReceipt(Base):
 
 
 class StockBatch(Base):
+    """Batch-level inventory: batch number, expiry, quantity on hand (Section 24.2)."""
+
     __tablename__ = "stock_batches"
     __table_args__ = (
         UniqueConstraint("organization_id", "branch_id", "product_id", "batch_number"),
@@ -376,6 +407,12 @@ class StockBatch(Base):
         ),
         Index("stock_batches_expiry_date_idx", "expiry_date"),
         Index("stock_batches_goods_receipt_id_idx", "goods_receipt_id"),
+        CheckConstraint("received_quantity > 0", name="ck_stock_batch_received_qty_positive"),
+        CheckConstraint("quantity_on_hand >= 0", name="ck_stock_batch_on_hand_nonneg"),
+        CheckConstraint(
+            "quantity_on_hand <= received_quantity",
+            name="ck_stock_batch_on_hand_lte_received",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -426,6 +463,13 @@ class StockBatch(Base):
 
 
 class StockTransaction(Base):
+    """
+    Immutable stock ledger header (Section 24.2).
+
+    One record per source document. Goods receipts use reference_type=GOODS_RECEIPT
+    with an optional goods_receipt_id FK for navigation.
+    """
+
     __tablename__ = "stock_transactions"
     __table_args__ = (
         UniqueConstraint("reference_type", "reference_id"),
@@ -490,11 +534,14 @@ class StockTransaction(Base):
 
 
 class StockTransactionLine(Base):
+    """Line-level stock movement detail for a StockTransaction (Section 24.2)."""
+
     __tablename__ = "stock_transaction_lines"
     __table_args__ = (
         Index("stock_transaction_lines_stock_transaction_id_idx", "stock_transaction_id"),
         Index("stock_transaction_lines_product_id_idx", "product_id"),
         Index("stock_transaction_lines_stock_batch_id_idx", "stock_batch_id"),
+        CheckConstraint("quantity > 0", name="ck_stock_tx_line_qty_positive"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
