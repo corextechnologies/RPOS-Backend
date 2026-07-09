@@ -1,0 +1,21 @@
+# Normalize line endings across Windows/macOS/Linux.
+* text=auto eol=lf
+
+# Explicit rules for backend source and config
+*.py text eol=lf
+*.ini text eol=lf
+*.sql text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+alembic/** text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary

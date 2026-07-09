@@ -1,0 +1,35 @@
+import enum
+
+
+class PurchaseOrderStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    SUBMITTED = "SUBMITTED"
+    APPROVED = "APPROVED"
+    SENT = "SENT"
+    PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
+    RECEIVED = "RECEIVED"
+    CANCELLED = "CANCELLED"
+
+
+class StockTransactionType(str, enum.Enum):
+    GOODS_RECEIPT = "GOODS_RECEIPT"
+    ADJUSTMENT = "ADJUSTMENT"
+    TRANSFER_IN = "TRANSFER_IN"
+    TRANSFER_OUT = "TRANSFER_OUT"
+    CONSUMPTION = "CONSUMPTION"
+    WASTE = "WASTE"
+    RETURN = "RETURN"
+
+
+class StockMovementDirection(str, enum.Enum):
+    IN = "IN"
+    OUT = "OUT"
+
+
+class StockReferenceType(str, enum.Enum):
+    GOODS_RECEIPT = "GOODS_RECEIPT"
+    PRODUCTION_ORDER = "PRODUCTION_ORDER"
+    DISPATCH = "DISPATCH"
+    TRANSFER = "TRANSFER"
+    MATERIAL_REQUEST = "MATERIAL_REQUEST"
+    MANUAL_ADJUSTMENT = "MANUAL_ADJUSTMENT"

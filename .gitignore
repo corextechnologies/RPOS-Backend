@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Build / test
+dist/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Generated fixtures
+seed_data.json

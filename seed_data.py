@@ -5,65 +5,73 @@ NOT wired into any FastAPI route — safe to run/re-run anytime during dev.
 """
 
 import json
-from database import SessionLocal, init_db, Branch, Product
+from decimal import Decimal
 
-# --- Sample data (edit freely) ---
+from database import SessionLocal
+from models import Branch, Organization, Product
+
+SAMPLE_ORG = {"name": "Demo Restaurant Group", "slug": "demo-restaurant-group"}
+
 SAMPLE_BRANCHES = [
     {"name": "Downtown Branch", "location": "Main St"},
     {"name": "Uptown Branch", "location": "5th Ave"},
 ]
 
 SAMPLE_PRODUCTS = [
-    {"name": "Espresso", "price": 3.50, "branch_index": 0},
-    {"name": "Latte", "price": 4.50, "branch_index": 0},
-    {"name": "Croissant", "price": 2.75, "branch_index": 1},
+    {"sku": "RM-ESP-001", "name": "Espresso Beans", "is_ingredient": True, "reorder_level": "10"},
+    {"sku": "RM-MILK-001", "name": "Whole Milk", "is_ingredient": True, "reorder_level": "20"},
+    {"sku": "FG-CRO-001", "name": "Croissant", "is_ingredient": False, "reorder_level": "5"},
 ]
 
 
 def seed_json(filename="seed_data.json"):
-    """Write sample data out as a JSON file — useful as a fixture, no DB needed."""
     data = {
+        "organization": SAMPLE_ORG,
         "branches": SAMPLE_BRANCHES,
         "products": SAMPLE_PRODUCTS,
     }
     with open(filename, "w") as f:
         json.dump(data, f, indent=2)
-    print(f"✅ Wrote sample data to {filename}")
+    print(f"Wrote sample data to {filename}")
 
 
 def seed_db():
-    """Insert sample data into Postgres via SQLAlchemy."""
-    init_db()  # make sure tables exist
     db = SessionLocal()
 
     try:
-        # Avoid duplicate seeding if you run this more than once
-        if db.query(Branch).count() > 0:
-            print("⚠️  Branches already exist — skipping DB seed to avoid duplicates.")
+        if db.query(Organization).count() > 0:
+            print("Organization already exists — skipping DB seed to avoid duplicates.")
             return
 
-        branch_objects = []
-        for b in SAMPLE_BRANCHES:
-            branch = Branch(name=b["name"], location=b["location"])
+        org = Organization(**SAMPLE_ORG)
+        db.add(org)
+        db.flush()
+
+        branches = []
+        for branch_data in SAMPLE_BRANCHES:
+            branch = Branch(organization_id=org.id, **branch_data)
             db.add(branch)
-            branch_objects.append(branch)
+            branches.append(branch)
 
-        db.flush()  # assigns IDs to branch_objects without committing yet
+        db.flush()
 
-        for p in SAMPLE_PRODUCTS:
-            product = Product(
-                name=p["name"],
-                price=p["price"],
-                branch_id=branch_objects[p["branch_index"]].id,
-            )
-            db.add(product)
+        for product_data in SAMPLE_PRODUCTS:
+            payload = {
+                **product_data,
+                "reorder_level": Decimal(product_data["reorder_level"]),
+            }
+            db.add(Product(organization_id=org.id, **payload))
 
         db.commit()
-        print(f"✅ Seeded {len(SAMPLE_BRANCHES)} branches and {len(SAMPLE_PRODUCTS)} products into Postgres.")
+        print(
+            f"Seeded 1 organization, {len(SAMPLE_BRANCHES)} branches, "
+            f"and {len(SAMPLE_PRODUCTS)} products into Postgres."
+        )
 
     except Exception as e:
         db.rollback()
-        print(f"❌ Seeding failed: {e}")
+        print(f"Seeding failed: {e}")
+        raise
     finally:
         db.close()
 
