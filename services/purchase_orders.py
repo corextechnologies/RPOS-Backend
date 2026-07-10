@@ -2,9 +2,9 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import selectinload
 
+from core.tenant_scope import TenantScope
 from models import (
     Branch,
     Product,
@@ -22,28 +22,30 @@ def _generate_order_number() -> str:
     return f"PO-{stamp}-{suffix}"
 
 
-def create_purchase_order(db: Session, payload: PurchaseOrderCreate) -> PurchaseOrder:
-    organization_id = payload.organization_id
+def create_purchase_order(db, payload: PurchaseOrderCreate) -> PurchaseOrder:
+    tenant = TenantScope(db, payload.organization_id)
 
-    branch = db.get(Branch, payload.branch_id)
-    if not branch or branch.organization_id != organization_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Branch not found for this organization",
-        )
+    tenant.get_one_or_404(
+        Branch,
+        payload.branch_id,
+        "Branch not found for this organization",
+    )
 
-    supplier = db.get(Supplier, payload.supplier_id)
-    if not supplier or supplier.organization_id != organization_id or supplier.deleted_at is not None:
+    supplier = tenant.get_one_or_404(
+        Supplier,
+        payload.supplier_id,
+        "Supplier not found for this organization",
+    )
+    if supplier.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Supplier not found for this organization",
         )
 
     product_ids = [item.product_id for item in payload.line_items]
-    products = db.scalars(
-        select(Product).where(
+    products = tenant.scalars(
+        tenant.select(Product).where(
             Product.id.in_(product_ids),
-            Product.organization_id == organization_id,
             Product.deleted_at.is_(None),
             Product.is_active.is_(True),
         )
@@ -55,11 +57,8 @@ def create_purchase_order(db: Session, payload: PurchaseOrderCreate) -> Purchase
         )
 
     order_number = payload.order_number or _generate_order_number()
-    existing = db.scalar(
-        select(PurchaseOrder.id).where(
-            PurchaseOrder.organization_id == organization_id,
-            PurchaseOrder.order_number == order_number,
-        )
+    existing = tenant.scalar(
+        tenant.select(PurchaseOrder.id).where(PurchaseOrder.order_number == order_number)
     )
     if existing:
         raise HTTPException(
@@ -68,7 +67,7 @@ def create_purchase_order(db: Session, payload: PurchaseOrderCreate) -> Purchase
         )
 
     purchase_order = PurchaseOrder(
-        organization_id=organization_id,
+        organization_id=tenant.organization_id,
         branch_id=payload.branch_id,
         supplier_id=payload.supplier_id,
         order_number=order_number,
@@ -89,8 +88,8 @@ def create_purchase_order(db: Session, payload: PurchaseOrderCreate) -> Purchase
     db.add(purchase_order)
     db.commit()
 
-    created = db.scalar(
-        select(PurchaseOrder)
+    created = tenant.scalar(
+        tenant.select(PurchaseOrder)
         .options(selectinload(PurchaseOrder.line_items))
         .where(PurchaseOrder.id == purchase_order.id)
     )

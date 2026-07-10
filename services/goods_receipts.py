@@ -4,11 +4,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import selectinload
 
+from core.stock_ledger import StockLedgerInvariantError, validate_goods_receipt_ledger
+from core.tenant_scope import TenantScope
 from models import (
     GoodsReceipt,
+    GoodsReceiptInspectionStatus,
     PurchaseOrder,
     PurchaseOrderStatus,
     StockBatch,
@@ -39,14 +41,13 @@ def _refresh_po_status(purchase_order: PurchaseOrder) -> None:
         purchase_order.status = PurchaseOrderStatus.PARTIALLY_RECEIVED
 
 
-def create_goods_receipt(db: Session, payload: GoodsReceiptCreate) -> GoodsReceipt:
-    purchase_order = db.scalar(
-        select(PurchaseOrder)
+def create_goods_receipt(db, payload: GoodsReceiptCreate) -> GoodsReceipt:
+    tenant = TenantScope(db, payload.organization_id)
+
+    purchase_order = tenant.scalar(
+        tenant.select(PurchaseOrder)
         .options(selectinload(PurchaseOrder.line_items))
-        .where(
-            PurchaseOrder.id == payload.purchase_order_id,
-            PurchaseOrder.organization_id == payload.organization_id,
-        )
+        .where(PurchaseOrder.id == payload.purchase_order_id)
     )
     if not purchase_order:
         raise HTTPException(
@@ -97,10 +98,9 @@ def create_goods_receipt(db: Session, payload: GoodsReceiptCreate) -> GoodsRecei
             )
 
     receipt_number = payload.receipt_number or _generate_receipt_number()
-    existing_receipt = db.scalar(
-        select(GoodsReceipt.id).where(
-            GoodsReceipt.organization_id == payload.organization_id,
-            GoodsReceipt.receipt_number == receipt_number,
+    existing_receipt = tenant.scalar(
+        tenant.select(GoodsReceipt.id).where(
+            GoodsReceipt.receipt_number == receipt_number
         )
     )
     if existing_receipt:
@@ -110,11 +110,12 @@ def create_goods_receipt(db: Session, payload: GoodsReceiptCreate) -> GoodsRecei
         )
 
     goods_receipt = GoodsReceipt(
-        organization_id=payload.organization_id,
+        organization_id=tenant.organization_id,
         branch_id=purchase_order.branch_id,
         purchase_order_id=purchase_order.id,
         receipt_number=receipt_number,
         notes=payload.notes,
+        inspection_status=GoodsReceiptInspectionStatus.PENDING,
         updated_at=datetime.now(timezone.utc),
     )
     db.add(goods_receipt)
@@ -125,9 +126,8 @@ def create_goods_receipt(db: Session, payload: GoodsReceiptCreate) -> GoodsRecei
         po_line = po_lines_by_product[batch.product_id]
         unit_cost = batch.unit_cost if batch.unit_cost is not None else po_line.unit_price
 
-        existing_batch = db.scalar(
-            select(StockBatch.id).where(
-                StockBatch.organization_id == payload.organization_id,
+        existing_batch = tenant.scalar(
+            tenant.select(StockBatch.id).where(
                 StockBatch.branch_id == purchase_order.branch_id,
                 StockBatch.product_id == batch.product_id,
                 StockBatch.batch_number == batch.batch_number,
@@ -143,7 +143,7 @@ def create_goods_receipt(db: Session, payload: GoodsReceiptCreate) -> GoodsRecei
             )
 
         stock_batch = StockBatch(
-            organization_id=payload.organization_id,
+            organization_id=tenant.organization_id,
             branch_id=purchase_order.branch_id,
             product_id=batch.product_id,
             goods_receipt_id=goods_receipt.id,
@@ -161,7 +161,7 @@ def create_goods_receipt(db: Session, payload: GoodsReceiptCreate) -> GoodsRecei
     db.flush()
 
     stock_transaction = StockTransaction(
-        organization_id=payload.organization_id,
+        organization_id=tenant.organization_id,
         branch_id=purchase_order.branch_id,
         reference_type=StockReferenceType.GOODS_RECEIPT,
         reference_id=goods_receipt.id,
@@ -186,10 +186,24 @@ def create_goods_receipt(db: Session, payload: GoodsReceiptCreate) -> GoodsRecei
         )
 
     _refresh_po_status(purchase_order)
+
+    try:
+        validate_goods_receipt_ledger(
+            db,
+            goods_receipt.id,
+            expected_batch_count=len(payload.batches),
+        )
+    except StockLedgerInvariantError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Stock ledger invariant violation: {exc}",
+        ) from exc
+
     db.commit()
 
-    created = db.scalar(
-        select(GoodsReceipt)
+    created = tenant.scalar(
+        tenant.select(GoodsReceipt)
         .options(
             selectinload(GoodsReceipt.stock_batches),
             selectinload(GoodsReceipt.stock_transaction).selectinload(

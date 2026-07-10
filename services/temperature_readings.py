@@ -2,9 +2,9 @@ import uuid
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import inspect, select
-from sqlalchemy.orm import Session
+from sqlalchemy import inspect
 
+from core.tenant_scope import TenantScope
 from models import GoodsReceipt, GoodsReceiptTemperatureReading
 from models.master_data import TemperatureRange
 from schemas.goods_receipts import (
@@ -14,7 +14,7 @@ from schemas.goods_receipts import (
 )
 
 
-def _temperature_ranges_available(db: Session) -> bool:
+def _temperature_ranges_available(db) -> bool:
     return inspect(db.bind).has_table("temperature_ranges")
 
 
@@ -53,15 +53,14 @@ def _to_read_model(
 
 
 def record_temperature_reading(
-    db: Session,
+    db,
     goods_receipt_id: uuid.UUID,
     payload: TemperatureReadingCreate,
 ) -> TemperatureReadingRead:
-    goods_receipt = db.scalar(
-        select(GoodsReceipt).where(
-            GoodsReceipt.id == goods_receipt_id,
-            GoodsReceipt.organization_id == payload.organization_id,
-        )
+    tenant = TenantScope(db, payload.organization_id)
+
+    goods_receipt = tenant.scalar(
+        tenant.select(GoodsReceipt).where(GoodsReceipt.id == goods_receipt_id)
     )
     if not goods_receipt:
         raise HTTPException(
@@ -74,6 +73,7 @@ def record_temperature_reading(
 
     if payload.temperature_range_id is not None:
         if _temperature_ranges_available(db):
+            # Master data — not organization-scoped; use db directly.
             temperature_range = db.get(TemperatureRange, payload.temperature_range_id)
             if not temperature_range:
                 raise HTTPException(
@@ -89,7 +89,7 @@ def record_temperature_reading(
             )
 
     reading = GoodsReceiptTemperatureReading(
-        organization_id=payload.organization_id,
+        organization_id=tenant.organization_id,
         goods_receipt_id=goods_receipt.id,
         temperature_range_id=payload.temperature_range_id,
         recorded_temperature_celsius=payload.temperature_celsius,

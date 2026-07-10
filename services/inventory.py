@@ -3,9 +3,9 @@ from collections import defaultdict
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func
 
+from core.tenant_scope import TenantScope
 from models import Branch, Product, StockBatch
 from schemas.inventory import (
     LowStockItemRead,
@@ -16,26 +16,35 @@ from schemas.inventory import (
 )
 
 
+def _validate_branch(tenant: TenantScope, branch_id: uuid.UUID | None) -> list[Branch]:
+    if branch_id is not None:
+        return [
+            tenant.get_one_or_404(
+                Branch,
+                branch_id,
+                "Branch not found for this organization",
+            )
+        ]
+
+    return list(tenant.scalars(tenant.select(Branch)).all())
+
+
 def get_stock_ledger(
-    db: Session,
+    db,
     *,
     organization_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
     product_id: uuid.UUID | None = None,
 ) -> StockLedgerRead:
+    tenant = TenantScope(db, organization_id)
+
     if branch_id is not None:
-        branch = db.get(Branch, branch_id)
-        if not branch or branch.organization_id != organization_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Branch not found for this organization",
-            )
+        _validate_branch(tenant, branch_id)
 
     stmt = (
-        select(StockBatch, Product)
+        tenant.select(StockBatch, Product)
         .join(Product, StockBatch.product_id == Product.id)
         .where(
-            StockBatch.organization_id == organization_id,
             StockBatch.quantity_on_hand > 0,
             Product.deleted_at.is_(None),
             Product.is_active.is_(True),
@@ -52,7 +61,7 @@ def get_stock_ledger(
     if product_id is not None:
         stmt = stmt.where(StockBatch.product_id == product_id)
 
-    rows = db.execute(stmt).all()
+    rows = tenant.execute(stmt).all()
 
     grouped: dict[tuple[uuid.UUID, uuid.UUID], dict] = defaultdict(
         lambda: {"product": None, "batches": [], "total": Decimal("0")}
@@ -81,7 +90,7 @@ def get_stock_ledger(
         product = entry["product"]
         items.append(
             StockLedgerItemRead(
-                organization_id=organization_id,
+                organization_id=tenant.organization_id,
                 branch_id=item_branch_id,
                 product_id=product.id,
                 sku=product.sku,
@@ -95,44 +104,25 @@ def get_stock_ledger(
     return StockLedgerRead(items=items)
 
 
-def _validate_branch(
-    db: Session, organization_id: uuid.UUID, branch_id: uuid.UUID | None
-) -> list[Branch]:
-    if branch_id is not None:
-        branch = db.get(Branch, branch_id)
-        if not branch or branch.organization_id != organization_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Branch not found for this organization",
-            )
-        return [branch]
-
-    return list(
-        db.scalars(
-            select(Branch).where(Branch.organization_id == organization_id)
-        ).all()
-    )
-
-
 def get_low_stock(
-    db: Session,
+    db,
     *,
     organization_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
     product_id: uuid.UUID | None = None,
     low_stock_only: bool = False,
 ) -> LowStockRead:
-    branches = _validate_branch(db, organization_id, branch_id)
+    tenant = TenantScope(db, organization_id)
+    branches = _validate_branch(tenant, branch_id)
 
-    product_stmt = select(Product).where(
-        Product.organization_id == organization_id,
+    product_stmt = tenant.select(Product).where(
         Product.deleted_at.is_(None),
         Product.is_active.is_(True),
         Product.reorder_level.is_not(None),
     )
     if product_id is not None:
         product_stmt = product_stmt.where(Product.id == product_id)
-    products = list(db.scalars(product_stmt.order_by(Product.name)).all())
+    products = list(tenant.scalars(product_stmt.order_by(Product.name)).all())
 
     if product_id is not None and not products:
         raise HTTPException(
@@ -140,17 +130,14 @@ def get_low_stock(
             detail="Product not found for this organization",
         )
 
-    stock_stmt = (
-        select(
-            StockBatch.branch_id,
-            StockBatch.product_id,
-            func.coalesce(func.sum(StockBatch.quantity_on_hand), 0).label(
-                "quantity_on_hand"
-            ),
-        )
-        .where(StockBatch.organization_id == organization_id)
-        .group_by(StockBatch.branch_id, StockBatch.product_id)
-    )
+    stock_stmt = tenant.select_from(
+        StockBatch,
+        StockBatch.branch_id,
+        StockBatch.product_id,
+        func.coalesce(func.sum(StockBatch.quantity_on_hand), 0).label(
+            "quantity_on_hand"
+        ),
+    ).group_by(StockBatch.branch_id, StockBatch.product_id)
     if branch_id is not None:
         stock_stmt = stock_stmt.where(StockBatch.branch_id == branch_id)
     if product_id is not None:
@@ -158,7 +145,7 @@ def get_low_stock(
 
     on_hand_by_branch_product = {
         (row.branch_id, row.product_id): row.quantity_on_hand
-        for row in db.execute(stock_stmt)
+        for row in tenant.execute(stock_stmt)
     }
 
     items: list[LowStockItemRead] = []
@@ -172,7 +159,7 @@ def get_low_stock(
                 continue
             items.append(
                 LowStockItemRead(
-                    organization_id=organization_id,
+                    organization_id=tenant.organization_id,
                     branch_id=branch.id,
                     product_id=product.id,
                     sku=product.sku,
