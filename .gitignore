@@ -10,3 +10,4 @@ env/
 .mypy_cache/
 *.sqlite3
 .DS_Store
+restaurant-os-phase-wise-implementation-plan.pdf

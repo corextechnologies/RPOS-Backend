@@ -33,8 +33,25 @@ uvicorn app.main:app --reload      # http://127.0.0.1:8000/docs
 ```bash
 python verify_phase0.py   # Phase 0 gate (needs TEST_DATABASE_URL)
 python verify_phase1.py   # Phase 1 gate (+ Phase 0 regression)
+python verify_phase8.py   # Phase 8 gate (+ Phase 0–1 regression)
 pytest                    # full suite
 ```
+
+## Billing cycle job (Phase 8)
+
+Run daily via cron or manually:
+
+```bash
+python -m app.jobs.billing_cycle
+```
+
+Example cron (02:00 daily):
+
+```
+0 2 * * * cd /path/to/RPOS-Backend && .venv/bin/python -m app.jobs.billing_cycle
+```
+
+Super Admin can also trigger a run via API: `POST /v1/super-admin/billing/run-cycle`.
 
 ## Phase 1 endpoints
 
@@ -43,7 +60,8 @@ Super Admin (all require SUPER_ADMIN):
 - `GET  /v1/super-admin/restaurants` / `GET .../{id}` — list / read
 - `PATCH /v1/super-admin/restaurants/{id}` — plan tier / branch limit / contact
 - `POST /v1/super-admin/restaurants/{id}/halt` · `/activate` — plan status (enforced at auth layer)
-- `GET  /v1/super-admin/restaurants/{id}/billing` — billing (invoices stubbed until Phase 8)
+- `GET  /v1/super-admin/restaurants/{id}/billing` — billing + invoice history
+- `POST /v1/super-admin/billing/run-cycle` — generate due invoices (manual trigger)
 
 Admin:
 - `GET /v1/admin/billing` — read-only view of the caller's own restaurant billing
@@ -57,5 +75,9 @@ Admin:
 - **Phase 1 — Super Admin:** add-restaurant (+ first Admin, one transaction),
   plan activate/halt (enforced at the auth layer), edit restaurant/plan, billing
   read endpoints, credential provisioning.
+- **Phase 8 — Billing core:** `Invoice` model, billing cycle engine
+  (`app/services/billing.py`), CLI job (`python -m app.jobs.billing_cycle`),
+  invoice history on existing billing read APIs. Billing-due notifications and
+  plan-change requests deferred until Phase 6.
 
-Structure: see `app/` (core, db, models, schemas, deps, api/v1).
+Structure: see `app/` (core, db, models, schemas, services, jobs, deps, api/v1).
