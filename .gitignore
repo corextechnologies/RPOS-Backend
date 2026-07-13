@@ -41,4 +41,5 @@ dist/
 .DS_Store
 Thumbs.db
 
+# ---- Local docs (not tracked) ----
 restaurant-os-phase-wise-implementation-plan (1).pdf
