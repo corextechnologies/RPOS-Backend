@@ -1,23 +1,40 @@
-# Environment & secrets
+# ---- Secrets / environment ----
 .env
 .env.*
 !.env.example
+*.pem
+*.key
 
-# Virtual environments
-.venv/
-venv/
-ENV/
-env/
-
-# Python
+# ---- Python bytecode / caches ----
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ---- Virtual environments ----
+venv/
+.venv/
+env/
+ENV/
+
+# ---- Databases / local data dumps ----
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- Build / packaging ----
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -30,32 +47,19 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.Python
+*.so
 
-# Testing & coverage
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-coverage.xml
-*.cover
-
-# Type checkers & linters
-.mypy_cache/
-.ruff_cache/
-.pytype/
-
-# Logs
+# ---- Logs ----
 *.log
 
-# OS & editor
-.DS_Store
-Thumbs.db
-.idea/
+# ---- IDE / editor ----
 .vscode/*
 !.vscode/extensions.json
-/.venv/Lib
-/.venv/Lib
-restaurant-os-phase-wise-implementation-plan.pdf
+.idea/
+*.swp
+
+# ---- OS cruft ----
+.DS_Store
+Thumbs.db
 restaurant-os-phase-wise-implementation-plan.pdf
