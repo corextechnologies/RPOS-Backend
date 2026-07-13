@@ -1,8 +1,4 @@
-"""Phase 1 — Admin-side read of their own billing ("share bill with Admin").
-
-Same billing shape as the Super Admin view, but scoped to the caller's own
-restaurant and read-only.
-"""
+"""Phase 1 — Admin billing read."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -17,7 +13,7 @@ from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.restaurant import BillingOut
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter()
 
 
 @router.get("/billing")

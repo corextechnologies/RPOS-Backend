@@ -34,8 +34,23 @@ uvicorn app.main:app --reload      # http://127.0.0.1:8000/docs
 python verify_phase0.py   # Phase 0 gate (needs TEST_DATABASE_URL)
 python verify_phase1.py   # Phase 1 gate (+ Phase 0 regression)
 python verify_phase6a.py  # Phase 6A gate (+ Phase 0/1 regression)
+python verify_phase2.py   # Phase 2 gate (+ Phase 0/1/6A regression)
 pytest                    # full suite
 ```
+
+## Phase 2 endpoints
+
+Admin (all require ADMIN role):
+- `POST /v1/admin/branches` · `/kitchens` · `/warehouses` — create locations (`branch_limit` enforced on branches)
+- `POST /v1/admin/users` — create Warehouse/Kitchen/Branch manager + credential email
+- `PATCH /v1/admin/products/{id}/pricing` — set `cost_price` (Admin-only field)
+- `GET  /v1/admin/products/pricing` — list products with cost prices
+- `GET  /v1/admin/requests/products` — `BRANCH_TO_ADMIN` inbox
+- `GET  /v1/admin/requests/distribution` — `WAREHOUSE_TO_ADMIN_PO` inbox
+- `GET  /v1/admin/requests/{id}` · `PATCH .../status` — admin request detail/actions (delegates to Phase 6A)
+- `GET  /v1/admin/employees` — all users in restaurant
+- `GET  /v1/admin/branches` · `/kitchens` · `/warehouses` — list locations
+- `GET  /v1/admin/billing` — read-only billing for caller's restaurant
 
 ## Phase 6A endpoints
 
@@ -73,5 +88,8 @@ Admin:
 - **Phase 6A — Shared engine:** unified `Request` workflow (4 types), state
   machine transitions, append-only `AuditLog`, notification pipeline on create
   and status change. Stock side effects deferred to Phase 6B.
+- **Phase 2 — Admin portal:** location CRUD (branch/kitchen/warehouse),
+  manager user provisioning, product `cost_price`, admin request inbox/actions,
+  employee and location read APIs. Orders/inventory reads deferred to Phase 3/5.
 
 Structure: see `app/` (core, db, models, schemas, deps, services, api/v1).

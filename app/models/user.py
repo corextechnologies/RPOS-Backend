@@ -30,6 +30,15 @@ class User(Base, PKMixin, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    branch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("branches.id", ondelete="SET NULL"), index=True
+    )
+    kitchen_id: Mapped[int | None] = mapped_column(
+        ForeignKey("kitchens.id", ondelete="SET NULL"), index=True
+    )
+    warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouses.id", ondelete="SET NULL"), index=True
+    )
 
     restaurant: Mapped["object | None"] = relationship("Restaurant")
     created_by: Mapped["User | None"] = relationship(
