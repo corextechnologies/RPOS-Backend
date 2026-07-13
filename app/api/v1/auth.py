@@ -1,0 +1,97 @@
+"""Single auth surface for all five roles: login / refresh / logout / me."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.exceptions import AuthError
+from app.core.responses import ok
+from app.core.security import (
+    ACCESS_TOKEN,
+    REFRESH_TOKEN,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    verify_password,
+)
+from app.db.session import get_db
+from app.deps.auth import enforce_not_halted, get_current_user
+from app.models.refresh_token import RefreshToken
+from app.models.user import User
+from app.schemas.auth import (
+    LoginRequest,
+    LogoutRequest,
+    RefreshRequest,
+    UserOut,
+)
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _issue_tokens(db: Session, user: User) -> dict:
+    access = create_access_token(user.id)
+    refresh, jti, expires_at = create_refresh_token(user.id)
+    db.add(RefreshToken(user_id=user.id, jti=jti, expires_at=expires_at))
+    db.commit()
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+
+
+@router.post("/login")
+def login(body: LoginRequest, db: Session = Depends(get_db)):
+    user = db.execute(
+        select(User).where(User.email == body.email)
+    ).scalar_one_or_none()
+    if user is None or not verify_password(body.password, user.hashed_password):
+        raise AuthError("Invalid email or password.")
+    if not user.is_active:
+        raise AuthError("User is inactive.")
+    # Halted restaurants are blocked at login, not just in the UI.
+    enforce_not_halted(user, db)
+    return ok(_issue_tokens(db, user))
+
+
+@router.post("/refresh")
+def refresh(body: RefreshRequest, db: Session = Depends(get_db)):
+    payload = decode_token(body.refresh_token)
+    if payload is None or payload.get("type") != REFRESH_TOKEN:
+        raise AuthError("Invalid refresh token.")
+    jti = payload.get("jti")
+    record = db.execute(
+        select(RefreshToken).where(RefreshToken.jti == jti)
+    ).scalar_one_or_none()
+    if record is None or record.revoked:
+        raise AuthError("Refresh token has been revoked.")
+    if record.expires_at < datetime.now(timezone.utc):
+        raise AuthError("Refresh token has expired.")
+
+    user = db.get(User, int(payload["sub"]))
+    if user is None or not user.is_active:
+        raise AuthError("User not found or inactive.")
+    enforce_not_halted(user, db)
+
+    # Rotate: revoke the presented token, issue a fresh pair.
+    record.revoked = True
+    db.add(record)
+    return ok(_issue_tokens(db, user))
+
+
+@router.post("/logout")
+def logout(body: LogoutRequest, db: Session = Depends(get_db)):
+    payload = decode_token(body.refresh_token)
+    if payload and payload.get("type") == REFRESH_TOKEN:
+        record = db.execute(
+            select(RefreshToken).where(RefreshToken.jti == payload.get("jti"))
+        ).scalar_one_or_none()
+        if record is not None and not record.revoked:
+            record.revoked = True
+            db.add(record)
+            db.commit()
+    return ok({"detail": "Logged out."})
+
+
+@router.get("/me")
+def me(current: User = Depends(get_current_user)):
+    return ok(UserOut.model_validate(current).model_dump())
