@@ -29,7 +29,11 @@ from app.schemas.restaurant import (
     RestaurantOut,
     RestaurantUpdate,
 )
-from app.services.audit import AuditService
+from app.services.billing import (
+    get_billing_out,
+    next_billing_date_for_create,
+    process_due_billing_cycles,
+)
 
 router = APIRouter(
     prefix="/super-admin",
@@ -81,7 +85,10 @@ def create_restaurant(
             branch_limit=body.branch_limit,
             plan_tier=body.plan_tier,
             plan_amount=body.plan_amount,
-            next_billing_date=body.next_billing_date,
+            next_billing_date=next_billing_date_for_create(
+                plan_amount=body.plan_amount,
+                plan_tier=body.plan_tier,
+            ),
             status=RestaurantStatus.ACTIVE,
         )
         db.add(restaurant)
@@ -182,12 +189,13 @@ def activate_restaurant(
 @router.get("/restaurants/{restaurant_id}/billing")
 def restaurant_billing(restaurant_id: int, db: Session = Depends(get_db)):
     restaurant = _get_restaurant(db, restaurant_id)
-    # Strict scope: Invoice table + generation land in Phase 8. Shape is final.
-    billing = BillingOut(
-        restaurant_id=restaurant.id,
-        plan_tier=restaurant.plan_tier,
-        plan_amount=restaurant.plan_amount,
-        next_billing_date=restaurant.next_billing_date,
-        invoices=[],
-    )
+    billing = get_billing_out(db, restaurant)
     return ok(billing.model_dump(mode="json"))
+
+
+@router.post("/billing/run-cycle")
+def run_billing_cycle(
+    db: Session = Depends(get_db),
+):
+    generated = process_due_billing_cycles(db)
+    return ok({"generated": generated})

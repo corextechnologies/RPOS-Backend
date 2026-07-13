@@ -12,6 +12,7 @@ from app.models.enums import UserRole
 from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.restaurant import BillingOut
+from app.services.billing import get_billing_out
 
 router = APIRouter()
 
@@ -24,11 +25,5 @@ def my_billing(
     restaurant = db.get(Restaurant, current.restaurant_id)
     if restaurant is None:
         raise NotFoundError("Restaurant not found.")
-    billing = BillingOut(
-        restaurant_id=restaurant.id,
-        plan_tier=restaurant.plan_tier,
-        plan_amount=restaurant.plan_amount,
-        next_billing_date=restaurant.next_billing_date,
-        invoices=[],
-    )
+    billing = get_billing_out(db, restaurant)
     return ok(billing.model_dump(mode="json"))

@@ -1,10 +1,13 @@
 """Phase 1 — Super Admin portal tests."""
+from datetime import date
+
 import pytest
 from sqlalchemy import func, select
 
 from app.core.credentials import get_mailer
 from app.models.enums import UserRole
 from app.models.restaurant import Restaurant
+from app.services.billing import default_next_billing_date
 from tests.conftest import auth_headers
 
 
@@ -52,6 +55,36 @@ def test_create_restaurant_provisions_admin_and_emails(client, db, make_user, ma
     login = client.post("/v1/auth/login",
                         json={"email": "new.owner@acme.com", "password": password})
     assert login.status_code == 200
+
+
+def test_create_restaurant_defaults_next_billing_date_when_plan_set(
+    client, make_user, mailer
+):
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    headers = auth_headers(client, "super@test.com")
+
+    resp = client.post(
+        "/v1/super-admin/restaurants",
+        json=_new_restaurant_body(email="billing.default@acme.com"),
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    expected = default_next_billing_date().isoformat()
+    assert resp.json()["data"]["restaurant"]["next_billing_date"] == expected
+
+
+def test_create_restaurant_overrides_client_next_billing_date(client, make_user, mailer):
+    """Server always sets today + 1 month on create, even if client sends today."""
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    headers = auth_headers(client, "super@test.com")
+
+    body = _new_restaurant_body(email="billing.explicit@acme.com")
+    body["next_billing_date"] = date.today().isoformat()
+
+    resp = client.post("/v1/super-admin/restaurants", json=body, headers=headers)
+    assert resp.status_code == 200, resp.text
+    expected = default_next_billing_date().isoformat()
+    assert resp.json()["data"]["restaurant"]["next_billing_date"] == expected
 
 
 def test_create_restaurant_duplicate_email_conflicts_and_rolls_back(
