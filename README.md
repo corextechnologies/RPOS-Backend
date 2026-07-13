@@ -33,8 +33,21 @@ uvicorn app.main:app --reload      # http://127.0.0.1:8000/docs
 ```bash
 python verify_phase0.py   # Phase 0 gate (needs TEST_DATABASE_URL)
 python verify_phase1.py   # Phase 1 gate (+ Phase 0 regression)
+python verify_phase6a.py  # Phase 6A gate (+ Phase 0/1 regression)
 pytest                    # full suite
 ```
+
+## Phase 6A endpoints
+
+Shared request engine (role-gated per transition):
+- `POST /v1/requests` — create a workflow request with line items
+- `GET  /v1/requests` — list requests visible to the caller (filters: `request_type`, `status`)
+- `GET  /v1/requests/{id}` — request detail with line items
+- `PATCH /v1/requests/{id}/status` — single transition endpoint for all workflows
+
+Notifications:
+- `GET  /v1/notifications` — inbox for the current user
+- `PATCH /v1/notifications/{id}/read` — mark one notification read
 
 ## Phase 1 endpoints
 
@@ -57,5 +70,8 @@ Admin:
 - **Phase 1 — Super Admin:** add-restaurant (+ first Admin, one transaction),
   plan activate/halt (enforced at the auth layer), edit restaurant/plan, billing
   read endpoints, credential provisioning.
+- **Phase 6A — Shared engine:** unified `Request` workflow (4 types), state
+  machine transitions, append-only `AuditLog`, notification pipeline on create
+  and status change. Stock side effects deferred to Phase 6B.
 
-Structure: see `app/` (core, db, models, schemas, deps, api/v1).
+Structure: see `app/` (core, db, models, schemas, deps, services, api/v1).
