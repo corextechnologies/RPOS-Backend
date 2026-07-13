@@ -20,6 +20,8 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models.enums import UserRole
+from app.models.location import Branch, Kitchen, Warehouse
+from app.models.product import Product
 from app.models.restaurant import Restaurant
 from app.models.user import User
 
@@ -98,6 +100,81 @@ def make_restaurant(db):
         return r
 
     return _make
+
+
+@pytest.fixture
+def make_branch(db):
+    def _make(restaurant_id, name="Branch A", location="Loc A"):
+        b = Branch(restaurant_id=restaurant_id, name=name, location=location)
+        db.add(b)
+        db.flush()
+        return b
+
+    return _make
+
+
+@pytest.fixture
+def make_kitchen(db):
+    def _make(restaurant_id, name="Kitchen A", location="Loc K"):
+        k = Kitchen(restaurant_id=restaurant_id, name=name, location=location)
+        db.add(k)
+        db.flush()
+        return k
+
+    return _make
+
+
+@pytest.fixture
+def make_warehouse(db):
+    def _make(restaurant_id, name="Warehouse A", location="Loc W"):
+        w = Warehouse(restaurant_id=restaurant_id, name=name, location=location)
+        db.add(w)
+        db.flush()
+        return w
+
+    return _make
+
+
+@pytest.fixture
+def make_product(db):
+    def _make(restaurant_id, name="Product A", sku="SKU-1"):
+        p = Product(restaurant_id=restaurant_id, name=name, sku=sku)
+        db.add(p)
+        db.flush()
+        return p
+
+    return _make
+
+
+@pytest.fixture
+def restaurant_setup(make_restaurant, make_user):
+    """One restaurant with admin, branch manager, warehouse, kitchen managers."""
+    restaurant = make_restaurant("Test Restaurant")
+    super_admin = make_user("super@test.com", UserRole.SUPER_ADMIN)
+    admin = make_user(
+        "admin@test.com", UserRole.ADMIN, restaurant_id=restaurant.id,
+        created_by_id=super_admin.id,
+    )
+    branch_mgr = make_user(
+        "branch@test.com", UserRole.BRANCH_MANAGER, restaurant_id=restaurant.id,
+        created_by_id=admin.id,
+    )
+    warehouse_mgr = make_user(
+        "warehouse@test.com", UserRole.WAREHOUSE_MANAGER,
+        restaurant_id=restaurant.id, created_by_id=admin.id,
+    )
+    kitchen_mgr = make_user(
+        "kitchen@test.com", UserRole.KITCHEN_MANAGER,
+        restaurant_id=restaurant.id, created_by_id=admin.id,
+    )
+    return {
+        "restaurant": restaurant,
+        "super_admin": super_admin,
+        "admin": admin,
+        "branch_mgr": branch_mgr,
+        "warehouse_mgr": warehouse_mgr,
+        "kitchen_mgr": kitchen_mgr,
+    }
 
 
 def auth_headers(client, email, password="Pass@1234"):

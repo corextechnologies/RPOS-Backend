@@ -49,10 +49,17 @@ def _get_restaurant(db: Session, restaurant_id: int) -> Restaurant:
     return restaurant
 
 
-def _record_audit(action: str, restaurant_id: int, actor: User) -> None:
-    """TODO(Phase 6): write an append-only AuditLog entry. Placeholder for now
-    so the call sites already exist where the spec requires audit trails."""
-    return None
+def _record_audit(
+    db: Session, action: str, restaurant_id: int, actor: User
+) -> None:
+    AuditService.record(
+        db,
+        actor=actor,
+        action=action,
+        entity_type="restaurant",
+        entity_id=restaurant_id,
+        restaurant_id=restaurant_id,
+    )
 
 
 @router.post("/restaurants")
@@ -98,7 +105,7 @@ def create_restaurant(
         )
         db.add(admin)
         db.flush()
-        _record_audit("restaurant.create", restaurant.id, current)
+        _record_audit(db, "restaurant.create", restaurant.id, current)
         db.commit()
     except Exception:
         db.rollback()
@@ -145,7 +152,7 @@ def update_restaurant(
     changes = body.model_dump(exclude_unset=True)
     for field, value in changes.items():
         setattr(restaurant, field, value)
-    _record_audit("restaurant.update", restaurant.id, current)  # affects billing
+    _record_audit(db, "restaurant.update", restaurant.id, current)  # affects billing
     db.commit()
     db.refresh(restaurant)
     return ok(RestaurantOut.model_validate(restaurant).model_dump(mode="json"))
@@ -155,7 +162,7 @@ def _set_status(db: Session, restaurant_id: int, status: RestaurantStatus,
                 actor: User):
     restaurant = _get_restaurant(db, restaurant_id)
     restaurant.status = status
-    _record_audit(f"restaurant.{status.value.lower()}", restaurant.id, actor)
+    _record_audit(db, f"restaurant.{status.value.lower()}", restaurant.id, actor)
     db.commit()
     db.refresh(restaurant)
     return ok(RestaurantOut.model_validate(restaurant).model_dump(mode="json"))

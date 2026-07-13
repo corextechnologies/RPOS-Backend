@@ -33,6 +33,8 @@ uvicorn app.main:app --reload      # http://127.0.0.1:8000/docs
 ```bash
 python verify_phase0.py   # Phase 0 gate (needs TEST_DATABASE_URL)
 python verify_phase1.py   # Phase 1 gate (+ Phase 0 regression)
+python verify_phase6a.py  # Phase 6A gate (+ Phase 0/1 regression)
+python verify_phase2.py   # Phase 2 gate (+ Phase 0/1/6A regression)
 python verify_phase8.py   # Phase 8 gate (+ Phase 0–1 regression)
 pytest                    # full suite
 ```
@@ -52,6 +54,32 @@ Example cron (02:00 daily):
 ```
 
 Super Admin can also trigger a run via API: `POST /v1/super-admin/billing/run-cycle`.
+
+## Phase 2 endpoints
+
+Admin (all require ADMIN role):
+- `POST /v1/admin/branches` · `/kitchens` · `/warehouses` — create locations (`branch_limit` enforced on branches)
+- `POST /v1/admin/users` — create Warehouse/Kitchen/Branch manager + credential email
+- `PATCH /v1/admin/products/{id}/pricing` — set `cost_price` (Admin-only field)
+- `GET  /v1/admin/products/pricing` — list products with cost prices
+- `GET  /v1/admin/requests/products` — `BRANCH_TO_ADMIN` inbox
+- `GET  /v1/admin/requests/distribution` — `WAREHOUSE_TO_ADMIN_PO` inbox
+- `GET  /v1/admin/requests/{id}` · `PATCH .../status` — admin request detail/actions (delegates to Phase 6A)
+- `GET  /v1/admin/employees` — all users in restaurant
+- `GET  /v1/admin/branches` · `/kitchens` · `/warehouses` — list locations
+- `GET  /v1/admin/billing` — read-only billing for caller's restaurant
+
+## Phase 6A endpoints
+
+Shared request engine (role-gated per transition):
+- `POST /v1/requests` — create a workflow request with line items
+- `GET  /v1/requests` — list requests visible to the caller (filters: `request_type`, `status`)
+- `GET  /v1/requests/{id}` — request detail with line items
+- `PATCH /v1/requests/{id}/status` — single transition endpoint for all workflows
+
+Notifications:
+- `GET  /v1/notifications` — inbox for the current user
+- `PATCH /v1/notifications/{id}/read` — mark one notification read
 
 ## Phase 1 endpoints
 
@@ -75,6 +103,12 @@ Admin:
 - **Phase 1 — Super Admin:** add-restaurant (+ first Admin, one transaction),
   plan activate/halt (enforced at the auth layer), edit restaurant/plan, billing
   read endpoints, credential provisioning.
+- **Phase 6A — Shared engine:** unified `Request` workflow (4 types), state
+  machine transitions, append-only `AuditLog`, notification pipeline on create
+  and status change. Stock side effects deferred to Phase 6B.
+- **Phase 2 — Admin portal:** location CRUD (branch/kitchen/warehouse),
+  manager user provisioning, product `cost_price`, admin request inbox/actions,
+  employee and location read APIs. Orders/inventory reads deferred to Phase 3/5.
 - **Phase 8 — Billing core:** `Invoice` model, billing cycle engine
   (`app/services/billing.py`), CLI job (`python -m app.jobs.billing_cycle`),
   invoice history on existing billing read APIs. Billing-due notifications and
