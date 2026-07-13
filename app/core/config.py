@@ -22,6 +22,9 @@ class Settings(BaseSettings):
 
     # App
     env: str = "development"
+    # Comma-separated browser origins (where the frontend is served from).
+    # Use * for local/dev only (e.g. localhost:3000, another PC on LAN).
+    cors_origins: str = "*"
 
 
 @lru_cache
