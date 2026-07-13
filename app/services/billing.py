@@ -23,6 +23,26 @@ def add_one_month(d: date) -> date:
     return date(year, month, min(d.day, last_day))
 
 
+def default_next_billing_date(*, from_date: date | None = None) -> date:
+    """First billing date for a new plan: one month from the given day (default today)."""
+    return add_one_month(from_date or date.today())
+
+
+def next_billing_date_for_create(
+    *,
+    plan_amount: object | None,
+    plan_tier: str | None,
+    as_of: date | None = None,
+) -> date | None:
+    """Server-computed first billing date on restaurant create (today + 1 month).
+
+    Ignores any client-supplied date so the product rule is always enforced.
+    """
+    if plan_amount is None and plan_tier is None:
+        return None
+    return default_next_billing_date(from_date=as_of)
+
+
 def get_billing_out(db: Session, restaurant: Restaurant) -> BillingOut:
     """Build billing response with invoice history for a restaurant."""
     rows = db.execute(

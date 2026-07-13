@@ -18,6 +18,7 @@ class RestaurantCreate(BaseModel):
     branch_limit: int | None = None
     plan_tier: str | None = None
     plan_amount: Decimal | None = None
+    # Ignored on create — server sets today + 1 month when a plan is provided.
     next_billing_date: date | None = None
 
 

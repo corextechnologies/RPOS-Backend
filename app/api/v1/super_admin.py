@@ -29,7 +29,11 @@ from app.schemas.restaurant import (
     RestaurantOut,
     RestaurantUpdate,
 )
-from app.services.billing import get_billing_out, process_due_billing_cycles
+from app.services.billing import (
+    get_billing_out,
+    next_billing_date_for_create,
+    process_due_billing_cycles,
+)
 
 router = APIRouter(
     prefix="/super-admin",
@@ -74,7 +78,10 @@ def create_restaurant(
             branch_limit=body.branch_limit,
             plan_tier=body.plan_tier,
             plan_amount=body.plan_amount,
-            next_billing_date=body.next_billing_date,
+            next_billing_date=next_billing_date_for_create(
+                plan_amount=body.plan_amount,
+                plan_tier=body.plan_tier,
+            ),
             status=RestaurantStatus.ACTIVE,
         )
         db.add(restaurant)
