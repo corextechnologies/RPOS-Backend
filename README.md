@@ -22,6 +22,10 @@ Seed credentials:
 - Super Admin: `admin@test.com` / `Test@1234`
 - Admin:       `owner@acme.test` / `Admin@1234`
 
+When `ENV=development` (default), any Admin/manager provisioned via the API also
+gets password `Admin@1234` (not a random password). Use a non-dev `ENV` in
+production so passwords stay random.
+
 ## Run
 
 ```bash
@@ -54,6 +58,27 @@ Example cron (02:00 daily):
 ```
 
 Super Admin can also trigger a run via API: `POST /v1/super-admin/billing/run-cycle`.
+
+### Signup payment & invoice status
+
+On create restaurant with a plan amount, invoices are always seeded:
+- **today's** invoice: `paid = payment_received` (`true` if ticked, else `false`)
+- **next billing date** invoice: always `paid = false`
+
+Send explicitly:
+
+```json
+{ "payment_received": false }
+```
+
+or omit the field (defaults to `false` → unpaid today).
+
+If payment comes later:
+- `POST /v1/super-admin/restaurants/{id}/billing/record-payment`
+
+Update invoice status (Super Admin):
+- `PATCH /v1/super-admin/restaurants/{id}/invoices/{invoice_id}` with `{ "paid": true|false }`
+- Marking an invoice **paid** automatically opens the next month’s unpaid invoice.
 
 ## Phase 2 endpoints
 
@@ -89,7 +114,12 @@ Super Admin (all require SUPER_ADMIN):
 - `PATCH /v1/super-admin/restaurants/{id}` — plan tier / branch limit / contact
 - `POST /v1/super-admin/restaurants/{id}/halt` · `/activate` — plan status (enforced at auth layer)
 - `GET  /v1/super-admin/restaurants/{id}/billing` — billing + invoice history
+- `POST /v1/super-admin/restaurants/{id}/billing/record-payment` — seed paid + unpaid invoices
+- `PATCH /v1/super-admin/restaurants/{id}/invoices/{invoice_id}` — set invoice `paid` status
 - `POST /v1/super-admin/billing/run-cycle` — generate due invoices (manual trigger)
+- `GET  /v1/super-admin/income/summary` — platform income + acquisition (`month` or `from_date`/`to_date`)
+- `GET  /v1/super-admin/income/forecast?horizon=1|6|12` — restaurants to onboard + collections
+- `GET  /v1/super-admin/income/export.csv` — CSV export for the filtered period
 
 Admin:
 - `GET /v1/admin/billing` — read-only view of the caller's own restaurant billing
@@ -113,5 +143,8 @@ Admin:
   (`app/services/billing.py`), CLI job (`python -m app.jobs.billing_cycle`),
   invoice history on existing billing read APIs. Billing-due notifications and
   plan-change requests deferred until Phase 6.
+- **Super Admin Income:** cross-tenant subscription collections + restaurant
+  acquisition KPIs, charts series (`by_day` / `by_month`), forecast horizons,
+  aging, plan-tier mix, period compare, CSV export (`app/services/income.py`).
 
 Structure: see `app/` (core, db, models, schemas, services, jobs, deps, api/v1).

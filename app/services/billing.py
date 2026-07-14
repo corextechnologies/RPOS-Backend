@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import calendar
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import ConflictError, NotFoundError
 from app.models.enums import RestaurantStatus
 from app.models.invoice import Invoice
 from app.models.restaurant import Restaurant
@@ -43,6 +45,19 @@ def next_billing_date_for_create(
     return default_next_billing_date(from_date=as_of)
 
 
+def invoice_to_out(invoice: Invoice, restaurant: Restaurant) -> InvoiceOut:
+    """Map an Invoice row + its restaurant context into the API shape."""
+    return InvoiceOut(
+        id=invoice.id,
+        amount=invoice.amount,
+        issued_on=invoice.issued_on,
+        paid=invoice.paid,
+        restaurant_id=restaurant.id,
+        restaurant_name=restaurant.name,
+        owner_contact_email=restaurant.owner_contact_email,
+    )
+
+
 def get_billing_out(db: Session, restaurant: Restaurant) -> BillingOut:
     """Build billing response with invoice history for a restaurant."""
     rows = db.execute(
@@ -52,10 +67,12 @@ def get_billing_out(db: Session, restaurant: Restaurant) -> BillingOut:
     ).scalars().all()
     return BillingOut(
         restaurant_id=restaurant.id,
+        restaurant_name=restaurant.name,
+        owner_contact_email=restaurant.owner_contact_email,
         plan_tier=restaurant.plan_tier,
         plan_amount=restaurant.plan_amount,
         next_billing_date=restaurant.next_billing_date,
-        invoices=[InvoiceOut.model_validate(inv) for inv in rows],
+        invoices=[invoice_to_out(inv, restaurant) for inv in rows],
     )
 
 
@@ -67,6 +84,161 @@ def _invoice_exists(db: Session, restaurant_id: int, issued_on: date) -> bool:
         )
     ).scalar_one_or_none()
     return existing is not None
+
+
+def _get_invoice(
+    db: Session, restaurant_id: int, issued_on: date
+) -> Invoice | None:
+    return db.execute(
+        select(Invoice).where(
+            Invoice.restaurant_id == restaurant_id,
+            Invoice.issued_on == issued_on,
+        )
+    ).scalar_one_or_none()
+
+
+def _add_invoice(
+    db: Session,
+    restaurant: Restaurant,
+    *,
+    issued_on: date,
+    amount: Decimal,
+    paid: bool,
+) -> Invoice | None:
+    if _invoice_exists(db, restaurant.id, issued_on):
+        return None
+    invoice = Invoice(
+        restaurant_id=restaurant.id,
+        amount=amount,
+        issued_on=issued_on,
+        paid=paid,
+    )
+    db.add(invoice)
+    return invoice
+
+
+def seed_signup_invoices(
+    db: Session,
+    restaurant: Restaurant,
+    *,
+    payment_received: bool = True,
+    as_of: date | None = None,
+) -> list[Invoice]:
+    """Create today's invoice + next-month unpaid invoice for a new subscription.
+
+    Today's invoice is paid only when payment_received is True; otherwise unpaid.
+    """
+    if restaurant.plan_amount is None:
+        raise ConflictError("Cannot seed invoices without a plan amount.")
+    as_of = as_of or date.today()
+    next_date = restaurant.next_billing_date or default_next_billing_date(from_date=as_of)
+    restaurant.next_billing_date = next_date
+
+    created: list[Invoice] = []
+    first = _add_invoice(
+        db,
+        restaurant,
+        issued_on=as_of,
+        amount=restaurant.plan_amount,
+        paid=bool(payment_received),
+    )
+    if first is not None:
+        created.append(first)
+
+    unpaid = _add_invoice(
+        db,
+        restaurant,
+        issued_on=next_date,
+        amount=restaurant.plan_amount,
+        paid=False,
+    )
+    if unpaid is not None:
+        created.append(unpaid)
+
+    if not created:
+        if _invoice_exists(db, restaurant.id, as_of) and _invoice_exists(
+            db, restaurant.id, next_date
+        ):
+            raise ConflictError("Signup invoices already exist for this restaurant.")
+    return created
+
+
+def record_initial_payment(
+    db: Session,
+    restaurant: Restaurant,
+    *,
+    as_of: date | None = None,
+) -> list:
+    """Record signup payment: mark today's invoice paid and ensure next unpaid exists.
+
+    Does not commit — caller owns the transaction.
+    """
+    if restaurant.plan_amount is None and restaurant.plan_tier is None:
+        raise ConflictError("Restaurant has no plan; set a plan before recording payment.")
+    as_of = as_of or date.today()
+    if restaurant.next_billing_date is None:
+        restaurant.next_billing_date = default_next_billing_date(from_date=as_of)
+
+    if restaurant.plan_amount is None:
+        raise ConflictError("Cannot record payment without a plan amount.")
+
+    existing_today = _get_invoice(db, restaurant.id, as_of)
+    if existing_today is not None:
+        was_paid = existing_today.paid
+        existing_today.paid = True
+        if not was_paid:
+            _ensure_next_unpaid_after_payment(db, restaurant, as_of)
+        return [existing_today]
+
+    return seed_signup_invoices(
+        db, restaurant, payment_received=True, as_of=as_of
+    )
+
+
+def _ensure_next_unpaid_after_payment(
+    db: Session,
+    restaurant: Restaurant,
+    paid_issued_on: date,
+) -> None:
+    """After an invoice is marked paid, open the following month as unpaid."""
+    if restaurant.plan_amount is None:
+        return
+    next_date = add_one_month(paid_issued_on)
+    _add_invoice(
+        db,
+        restaurant,
+        issued_on=next_date,
+        amount=restaurant.plan_amount,
+        paid=False,
+    )
+    # Point next_billing_date at the open unpaid cycle (farthest unpaid or next_date).
+    if restaurant.next_billing_date is None or restaurant.next_billing_date < next_date:
+        restaurant.next_billing_date = next_date
+
+
+def set_invoice_paid(
+    db: Session,
+    restaurant: Restaurant,
+    invoice_id: int,
+    *,
+    paid: bool,
+) -> Invoice:
+    """Update invoice paid status. Marking paid opens the next month's unpaid invoice.
+
+    Does not commit — caller owns the transaction.
+    """
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.restaurant_id != restaurant.id:
+        raise NotFoundError("Invoice not found.")
+
+    was_paid = invoice.paid
+    invoice.paid = paid
+
+    if paid and not was_paid:
+        _ensure_next_unpaid_after_payment(db, restaurant, invoice.issued_on)
+
+    db.flush()
+    return invoice
 
 
 def generate_invoice(db: Session, restaurant: Restaurant, *, as_of: date) -> bool:

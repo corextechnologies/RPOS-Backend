@@ -12,11 +12,23 @@ from app.models.invoice import Invoice
 from app.models.restaurant import Restaurant
 from app.services.billing import (
     add_one_month,
+    default_next_billing_date,
     generate_invoice,
     get_billing_out,
     process_due_billing_cycles,
 )
 from tests.conftest import auth_headers
+
+
+@pytest.fixture
+def mailer():
+    from app.core.credentials import get_mailer
+
+    m = get_mailer()
+    m.sent.clear()
+    yield m
+    m.sent.clear()
+
 
 
 def test_add_one_month_clamps_end_of_month():
@@ -133,9 +145,12 @@ def test_super_admin_billing_returns_invoices(client, db, make_restaurant, make_
     assert billing.status_code == 200
     b = billing.json()["data"]
     assert b["plan_tier"] == "premium"
+    assert b["restaurant_name"] == "API Bistro"
     assert len(b["invoices"]) == 1
     assert b["invoices"][0]["amount"] == "299.00"
     assert b["invoices"][0]["paid"] is False
+    assert b["invoices"][0]["restaurant_id"] == r.id
+    assert b["invoices"][0]["restaurant_name"] == "API Bistro"
 
 
 def test_admin_billing_returns_own_invoices(client, db, make_restaurant, make_user):
@@ -161,4 +176,155 @@ def test_run_billing_cycle_forbidden_for_admin(client, make_restaurant, make_use
     make_user("admin@test.com", UserRole.ADMIN, restaurant_id=r.id)
     headers = auth_headers(client, "admin@test.com")
     resp = client.post("/v1/super-admin/billing/run-cycle", headers=headers)
+    assert resp.status_code == 403
+
+
+def test_create_with_payment_received_seeds_paid_and_unpaid(
+    client, make_user, mailer
+):
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    su = auth_headers(client, "super@test.com")
+    body = {
+        "name": "Paid Bistro",
+        "owner_contact_email": "paid.owner@acme.com",
+        "admin_full_name": "Paid Owner",
+        "plan_tier": "standard",
+        "plan_amount": "199.00",
+        "payment_received": True,
+    }
+    resp = client.post("/v1/super-admin/restaurants", json=body, headers=su)
+    assert resp.status_code == 200, resp.text
+    restaurant_id = resp.json()["data"]["restaurant"]["id"]
+    next_date = resp.json()["data"]["restaurant"]["next_billing_date"]
+    assert next_date == default_next_billing_date().isoformat()
+
+    billing = client.get(
+        f"/v1/super-admin/restaurants/{restaurant_id}/billing", headers=su
+    )
+    assert billing.status_code == 200
+    invoices = billing.json()["data"]["invoices"]
+    assert len(invoices) == 2
+    by_date = {inv["issued_on"]: inv for inv in invoices}
+    today = date.today().isoformat()
+    assert by_date[today]["paid"] is True
+    assert by_date[today]["amount"] == "199.00"
+    assert by_date[today]["restaurant_name"] == "Paid Bistro"
+    assert by_date[today]["owner_contact_email"] == "paid.owner@acme.com"
+    assert by_date[next_date]["paid"] is False
+    assert by_date[next_date]["amount"] == "199.00"
+    data = billing.json()["data"]
+    assert data["restaurant_name"] == "Paid Bistro"
+    assert data["owner_contact_email"] == "paid.owner@acme.com"
+
+
+def test_create_without_payment_received_today_invoice_is_unpaid(client, make_user, mailer):
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    su = auth_headers(client, "super@test.com")
+    body = {
+        "name": "Unpaid Seed",
+        "owner_contact_email": "nopay.owner@acme.com",
+        "plan_tier": "standard",
+        "plan_amount": "99.00",
+        "payment_received": False,
+    }
+    resp = client.post("/v1/super-admin/restaurants", json=body, headers=su)
+    assert resp.status_code == 200
+    rid = resp.json()["data"]["restaurant"]["id"]
+    next_date = resp.json()["data"]["restaurant"]["next_billing_date"]
+    billing = client.get(f"/v1/super-admin/restaurants/{rid}/billing", headers=su)
+    invoices = billing.json()["data"]["invoices"]
+    assert len(invoices) == 2
+    by_date = {inv["issued_on"]: inv for inv in invoices}
+    today = date.today().isoformat()
+    assert by_date[today]["paid"] is False
+    assert by_date[next_date]["paid"] is False
+
+
+def test_create_omitted_payment_received_defaults_to_unpaid(client, make_user, mailer):
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    su = auth_headers(client, "super@test.com")
+    body = {
+        "name": "Default Unpaid",
+        "owner_contact_email": "default.unpaid@acme.com",
+        "plan_amount": "50.00",
+        "plan_tier": "standard",
+    }
+    resp = client.post("/v1/super-admin/restaurants", json=body, headers=su)
+    assert resp.status_code == 200
+    rid = resp.json()["data"]["restaurant"]["id"]
+    billing = client.get(f"/v1/super-admin/restaurants/{rid}/billing", headers=su)
+    today_inv = next(
+        i for i in billing.json()["data"]["invoices"]
+        if i["issued_on"] == date.today().isoformat()
+    )
+    assert today_inv["paid"] is False
+
+
+def test_record_payment_after_create(client, make_user, mailer):
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    su = auth_headers(client, "super@test.com")
+    body = {
+        "name": "Late Pay",
+        "owner_contact_email": "late.owner@acme.com",
+        "plan_tier": "premium",
+        "plan_amount": "299.00",
+    }
+    created = client.post("/v1/super-admin/restaurants", json=body, headers=su)
+    rid = created.json()["data"]["restaurant"]["id"]
+
+    pay = client.post(
+        f"/v1/super-admin/restaurants/{rid}/billing/record-payment", headers=su
+    )
+    assert pay.status_code == 200, pay.text
+    invoices = pay.json()["data"]["invoices"]
+    assert len(invoices) == 2
+    assert sum(1 for i in invoices if i["paid"]) == 1
+    assert sum(1 for i in invoices if not i["paid"]) == 1
+
+
+def test_mark_invoice_paid_creates_next_unpaid(client, make_user, mailer):
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    su = auth_headers(client, "super@test.com")
+    body = {
+        "name": "Cycle Pay",
+        "owner_contact_email": "cycle.owner@acme.com",
+        "plan_tier": "standard",
+        "plan_amount": "150.00",
+        "payment_received": True,
+    }
+    created = client.post("/v1/super-admin/restaurants", json=body, headers=su)
+    rid = created.json()["data"]["restaurant"]["id"]
+    next_date = created.json()["data"]["restaurant"]["next_billing_date"]
+
+    billing = client.get(f"/v1/super-admin/restaurants/{rid}/billing", headers=su)
+    unpaid = next(i for i in billing.json()["data"]["invoices"] if not i["paid"])
+    assert unpaid["issued_on"] == next_date
+
+    marked = client.patch(
+        f"/v1/super-admin/restaurants/{rid}/invoices/{unpaid['id']}",
+        json={"paid": True},
+        headers=su,
+    )
+    assert marked.status_code == 200
+    assert marked.json()["data"]["paid"] is True
+
+    billing2 = client.get(f"/v1/super-admin/restaurants/{rid}/billing", headers=su)
+    invoices = billing2.json()["data"]["invoices"]
+    assert len(invoices) == 3
+    expected_next = add_one_month(date.fromisoformat(next_date)).isoformat()
+    by_date = {i["issued_on"]: i for i in invoices}
+    assert by_date[expected_next]["paid"] is False
+    assert by_date[next_date]["paid"] is True
+
+
+def test_admin_cannot_update_invoice_status(client, make_restaurant, make_user):
+    r = make_restaurant("Rest")
+    r.plan_amount = Decimal("10.00")
+    make_user("admin@test.com", UserRole.ADMIN, restaurant_id=r.id)
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.patch(
+        f"/v1/super-admin/restaurants/{r.id}/invoices/1",
+        json={"paid": True},
+        headers=headers,
+    )
     assert resp.status_code == 403

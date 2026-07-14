@@ -12,13 +12,23 @@ import logging
 import secrets
 import string
 
+from app.core.config import settings
+
 logger = logging.getLogger("rpos.credentials")
 
 _ALPHABET = string.ascii_letters + string.digits
+# Fixed password for local/dev so newly provisioned accounts are easy to test.
+DEV_STUB_PASSWORD = "Admin@1234"
 
 
 def generate_password(length: int = 12) -> str:
-    """A reasonably strong random password for a freshly provisioned account."""
+    """Password for a freshly provisioned account.
+
+    In development, always returns the stub password so logins are predictable.
+    In any other ENV, returns a strong random password.
+    """
+    if settings.env.lower() in {"development", "dev", "local", "test"}:
+        return DEV_STUB_PASSWORD
     return "".join(secrets.choice(_ALPHABET) for _ in range(length))
 
 
