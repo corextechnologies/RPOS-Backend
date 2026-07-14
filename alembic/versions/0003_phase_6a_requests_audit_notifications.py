@@ -8,26 +8,45 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0003_phase_6a"
 down_revision: Union[str, None] = "0002_super_admin"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-request_type = sa.Enum(
+_REQUEST_TYPE_VALUES = (
     "KITCHEN_TO_WAREHOUSE",
     "WAREHOUSE_TO_ADMIN_PO",
     "BRANCH_TO_ADMIN",
     "ADMIN_TO_SUPERADMIN_PLAN",
-    name="request_type",
 )
-location_type = sa.Enum("BRANCH", "KITCHEN", "WAREHOUSE", name="location_type")
+_LOCATION_TYPE_VALUES = ("BRANCH", "KITCHEN", "WAREHOUSE")
+
+# Use postgresql.ENUM + create_type=False so create_table never emits CREATE TYPE.
+request_type = postgresql.ENUM(
+    *_REQUEST_TYPE_VALUES, name="request_type", create_type=False
+)
+location_type = postgresql.ENUM(
+    *_LOCATION_TYPE_VALUES, name="location_type", create_type=False
+)
+
+
+def _create_enum_if_missing(name: str, values: tuple[str, ...]) -> None:
+    literals = ", ".join(f"'{v}'" for v in values)
+    op.execute(
+        sa.text(
+            f"DO $$ BEGIN "
+            f"CREATE TYPE {name} AS ENUM ({literals}); "
+            f"EXCEPTION WHEN duplicate_object THEN null; "
+            f"END $$;"
+        )
+    )
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    request_type.create(bind, checkfirst=True)
-    location_type.create(bind, checkfirst=True)
+    _create_enum_if_missing("request_type", _REQUEST_TYPE_VALUES)
+    _create_enum_if_missing("location_type", _LOCATION_TYPE_VALUES)
 
     op.create_table(
         "requests",
@@ -114,5 +133,5 @@ def downgrade() -> None:
     op.drop_index("ix_requests_requester_id", table_name="requests")
     op.drop_index("ix_requests_restaurant_status_type", table_name="requests")
     op.drop_table("requests")
-    location_type.drop(op.get_bind(), checkfirst=True)
-    request_type.drop(op.get_bind(), checkfirst=True)
+    op.execute(sa.text("DROP TYPE IF EXISTS location_type"))
+    op.execute(sa.text("DROP TYPE IF EXISTS request_type"))
