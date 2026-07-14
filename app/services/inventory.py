@@ -1,7 +1,7 @@
 """Inventory ledger service — always write StockMovement; never blind overwrites."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -153,6 +153,58 @@ class InventoryService:
             request_id=request_id,
             allow_create=False,
         )
+
+    @staticmethod
+    def list_for_location(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+    ) -> list[tuple[InventoryItem, Product]]:
+        rows = db.execute(
+            select(InventoryItem, Product)
+            .join(Product, Product.id == InventoryItem.product_id)
+            .where(
+                InventoryItem.restaurant_id == restaurant_id,
+                InventoryItem.location_type == location_type,
+                InventoryItem.location_id == location_id,
+            )
+            .order_by(InventoryItem.id)
+        ).all()
+        return [(item, product) for item, product in rows]
+
+    @staticmethod
+    def list_near_expiry(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+        within_days: int = 7,
+        as_of: date | None = None,
+    ) -> list[tuple[InventoryItem, Product]]:
+        if within_days < 0:
+            raise ConflictError(
+                "within_days must be non-negative.",
+                code="invalid_within_days",
+            )
+        today = as_of or date.today()
+        cutoff = today + timedelta(days=within_days)
+        rows = db.execute(
+            select(InventoryItem, Product)
+            .join(Product, Product.id == InventoryItem.product_id)
+            .where(
+                InventoryItem.restaurant_id == restaurant_id,
+                InventoryItem.location_type == location_type,
+                InventoryItem.location_id == location_id,
+                InventoryItem.expiry_date.is_not(None),
+                InventoryItem.expiry_date <= cutoff,
+                InventoryItem.quantity > 0,
+            )
+            .order_by(InventoryItem.expiry_date, InventoryItem.id)
+        ).all()
+        return [(item, product) for item, product in rows]
 
     @staticmethod
     def _apply_delta(
