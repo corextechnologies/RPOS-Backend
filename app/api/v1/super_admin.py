@@ -5,9 +5,11 @@ Every route here is restricted to SUPER_ADMIN.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from app.services.audit import AuditService
 
 from app.core.credentials import (
     generate_password,
@@ -23,13 +25,27 @@ from app.models.enums import RestaurantStatus, UserRole
 from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.restaurant import (
-    BillingOut,
+    InvoiceStatusUpdate,
     RestaurantCreate,
     RestaurantCreateResult,
     RestaurantOut,
     RestaurantUpdate,
 )
-from app.services.audit import AuditService
+from app.services.billing import (
+    get_billing_out,
+    invoice_to_out,
+    next_billing_date_for_create,
+    process_due_billing_cycles,
+    record_initial_payment,
+    seed_signup_invoices,
+    set_invoice_paid,
+)
+from app.services.income import (
+    build_income_csv,
+    build_income_forecast,
+    build_income_summary,
+)
+from datetime import date
 
 router = APIRouter(
     prefix="/super-admin",
@@ -81,7 +97,10 @@ def create_restaurant(
             branch_limit=body.branch_limit,
             plan_tier=body.plan_tier,
             plan_amount=body.plan_amount,
-            next_billing_date=body.next_billing_date,
+            next_billing_date=next_billing_date_for_create(
+                plan_amount=body.plan_amount,
+                plan_tier=body.plan_tier,
+            ),
             status=RestaurantStatus.ACTIVE,
         )
         db.add(restaurant)
@@ -98,6 +117,14 @@ def create_restaurant(
         )
         db.add(admin)
         db.flush()
+
+        # Always seed invoices when a plan amount is set.
+        # payment_received controls whether today's invoice is paid or unpaid.
+        if body.plan_amount is not None:
+            seed_signup_invoices(
+                db, restaurant, payment_received=bool(body.payment_received)
+            )
+
         _record_audit(db, "restaurant.create", restaurant.id, current)
         db.commit()
     except Exception:
@@ -182,12 +209,95 @@ def activate_restaurant(
 @router.get("/restaurants/{restaurant_id}/billing")
 def restaurant_billing(restaurant_id: int, db: Session = Depends(get_db)):
     restaurant = _get_restaurant(db, restaurant_id)
-    # Strict scope: Invoice table + generation land in Phase 8. Shape is final.
-    billing = BillingOut(
-        restaurant_id=restaurant.id,
-        plan_tier=restaurant.plan_tier,
-        plan_amount=restaurant.plan_amount,
-        next_billing_date=restaurant.next_billing_date,
-        invoices=[],
-    )
+    billing = get_billing_out(db, restaurant)
     return ok(billing.model_dump(mode="json"))
+
+
+@router.post("/restaurants/{restaurant_id}/billing/record-payment")
+def record_restaurant_payment(
+    restaurant_id: int,
+    current: User = Depends(require_role(UserRole.SUPER_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Record signup payment after create (paid today + unpaid next billing date)."""
+    restaurant = _get_restaurant(db, restaurant_id)
+    record_initial_payment(db, restaurant)
+    _record_audit(db, "billing.record_payment", restaurant.id, current)
+    db.commit()
+    db.refresh(restaurant)
+    return ok(get_billing_out(db, restaurant).model_dump(mode="json"))
+
+
+@router.patch("/restaurants/{restaurant_id}/invoices/{invoice_id}")
+def update_invoice_status(
+    restaurant_id: int,
+    invoice_id: int,
+    body: InvoiceStatusUpdate,
+    current: User = Depends(require_role(UserRole.SUPER_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Update invoice paid/unpaid. Marking paid opens the next month's unpaid invoice."""
+    restaurant = _get_restaurant(db, restaurant_id)
+    invoice = set_invoice_paid(db, restaurant, invoice_id, paid=body.paid)
+    _record_audit(
+        db,
+        f"invoice.{'paid' if body.paid else 'unpaid'}",
+        restaurant.id,
+        current,
+    )
+    db.commit()
+    db.refresh(invoice)
+    return ok(invoice_to_out(invoice, restaurant).model_dump(mode="json"))
+
+
+@router.post("/billing/run-cycle")
+def run_billing_cycle(
+    db: Session = Depends(get_db),
+):
+    generated = process_due_billing_cycles(db)
+    return ok({"generated": generated})
+
+
+@router.get("/income/summary")
+def income_summary(
+    month: str | None = Query(None, description="YYYY-MM"),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Platform income + restaurant acquisition for a month or date range.
+
+    Chart series: `by_day`, `by_month`, `by_plan_tier`, `aging_unpaid`, `compare`.
+    """
+    summary = build_income_summary(
+        db, month=month, from_date=from_date, to_date=to_date
+    )
+    return ok(summary.model_dump(mode="json"))
+
+
+@router.get("/income/forecast")
+def income_forecast(
+    horizon: int = Query(6, description="1, 6, or 12 months"),
+    db: Session = Depends(get_db),
+):
+    """Project restaurants to onboard and subscription collections."""
+    forecast = build_income_forecast(db, horizon=horizon)
+    return ok(forecast.model_dump(mode="json"))
+
+
+@router.get("/income/export.csv")
+def income_export_csv(
+    month: str | None = Query(None, description="YYYY-MM"),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """CSV export of invoices and onboardings in the filtered period."""
+    content = build_income_csv(
+        db, month=month, from_date=from_date, to_date=to_date
+    )
+    return PlainTextResponse(
+        content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=platform-income.csv"},
+    )

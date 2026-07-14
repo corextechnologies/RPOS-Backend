@@ -1,4 +1,4 @@
-"""Admin role-creation guards for Phase 2 user provisioning."""
+"""Role-creation and location guards for portal user provisioning."""
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
@@ -6,11 +6,16 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.models.enums import UserRole
 from app.models.location import Branch, Kitchen, Warehouse
+from app.models.user import User
 
 ADMIN_CREATABLE_ROLES = {
     UserRole.WAREHOUSE_MANAGER,
     UserRole.KITCHEN_MANAGER,
     UserRole.BRANCH_MANAGER,
+}
+
+WAREHOUSE_CREATABLE_ROLES = {
+    UserRole.WAREHOUSE_MANAGER,
 }
 
 _LOCATION_MODELS = {
@@ -61,3 +66,25 @@ def validate_manager_location(
         raise ConflictError("Kitchen manager must only set kitchen_id.")
     if role == UserRole.WAREHOUSE_MANAGER and (branch_id or kitchen_id):
         raise ConflictError("Warehouse manager must only set warehouse_id.")
+
+
+def assert_warehouse_manager_can_create_staff(actor: User) -> None:
+    """Warehouse managers may only create peer warehouse staff under themselves."""
+    if actor.role != UserRole.WAREHOUSE_MANAGER:
+        raise ForbiddenError("Only warehouse managers can create warehouse staff.")
+    if actor.warehouse_id is None:
+        raise ConflictError(
+            "Warehouse manager must be assigned to a warehouse.",
+            code="missing_warehouse_assignment",
+        )
+
+
+def require_actor_warehouse_id(actor: User) -> int:
+    if actor.role != UserRole.WAREHOUSE_MANAGER:
+        raise ForbiddenError("Warehouse access required.")
+    if actor.warehouse_id is None:
+        raise ConflictError(
+            "Warehouse manager must be assigned to a warehouse.",
+            code="missing_warehouse_assignment",
+        )
+    return actor.warehouse_id

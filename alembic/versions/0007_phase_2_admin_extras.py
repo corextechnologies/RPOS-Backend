@@ -1,7 +1,7 @@
 """Phase 2 extras: admin profile image, sales records
 
-Revision ID: 0005_phase_2_extras
-Revises: 0004_phase_2
+Revision ID: 0007_phase_2_extras
+Revises: 0006_phase_3_warehouse
 Create Date: 2026-07-14
 """
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0005_phase_2_extras"
-down_revision: Union[str, None] = "0004_phase_2"
+revision: str = "0007_phase_2_extras"
+down_revision: Union[str, None] = "0006_phase_3_warehouse"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

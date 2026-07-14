@@ -111,6 +111,16 @@ def test_kitchen_to_warehouse_flow(
     warehouse = make_warehouse(setup["restaurant"].id)
     product = make_product(setup["restaurant"].id)
 
+    # Assign warehouse so stock APIs work; seed stock before DISPATCHED side effects.
+    setup["warehouse_mgr"].warehouse_id = warehouse.id
+    wh_headers = auth_headers(client, "warehouse@test.com")
+    recv = client.post(
+        "/v1/warehouse/stock/receive",
+        json={"product_id": product.id, "quantity": 10},
+        headers=wh_headers,
+    )
+    assert recv.status_code == 200, recv.text
+
     kitchen_headers = auth_headers(client, "kitchen@test.com")
     resp = client.post(
         "/v1/requests",
@@ -127,7 +137,6 @@ def test_kitchen_to_warehouse_flow(
     assert resp.status_code == 200
     request_id = resp.json()["data"]["id"]
 
-    wh_headers = auth_headers(client, "warehouse@test.com")
     for status in (
         KitchenToWarehouseStatus.APPROVED.value,
         KitchenToWarehouseStatus.DISPATCHED.value,
@@ -138,6 +147,10 @@ def test_kitchen_to_warehouse_flow(
             headers=wh_headers,
         )
         assert resp.status_code == 200, resp.text
+
+    inv = client.get("/v1/warehouse/inventory", headers=wh_headers)
+    assert inv.status_code == 200
+    assert inv.json()["data"][0]["quantity"] == 5
 
     resp = client.patch(
         f"/v1/requests/{request_id}/status",
