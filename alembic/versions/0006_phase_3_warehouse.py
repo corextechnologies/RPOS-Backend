@@ -8,23 +8,31 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0006_phase_3_warehouse"
 down_revision: Union[str, None] = "0005_merge_heads"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-stock_movement_type = sa.Enum(
+# create_type=False so op.create_table() does NOT auto-emit CREATE TYPE for
+# each column referencing it (which would collide on the second table). We
+# create it exactly once, explicitly, in upgrade() below.
+stock_movement_type = postgresql.ENUM(
     "RECEIPT",
     "ADJUSTMENT",
     "DISPATCH",
     "WASTE",
     "EXPIRY",
     name="stock_movement_type",
+    create_type=False,
 )
 
 # Reuse location_type created in Phase 6A — do not recreate.
-location_type = sa.Enum(
+# Must be a postgresql.ENUM for create_type=False to be honored; a generic
+# sa.Enum does not propagate create_type to the dialect and would re-emit
+# CREATE TYPE during op.create_table.
+location_type = postgresql.ENUM(
     "BRANCH",
     "KITCHEN",
     "WAREHOUSE",
@@ -163,4 +171,4 @@ def downgrade() -> None:
     op.drop_table("inventory_items")
 
     bind = op.get_bind()
-    sa.Enum(name="stock_movement_type").drop(bind, checkfirst=True)
+    stock_movement_type.drop(bind, checkfirst=True)
