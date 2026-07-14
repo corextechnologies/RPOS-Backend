@@ -9,4 +9,9 @@ from app.models.request_enums import RequestType, LocationType  # noqa: F401
 from app.models.request import Request, RequestLineItem  # noqa: F401
 from app.models.audit_log import AuditLog  # noqa: F401
 from app.models.notification import Notification  # noqa: F401
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice  # noqa: F401
+from app.models.inventory import (  # noqa: F401
+    InventoryItem,
+    StockMovement,
+    StockMovementType,
+)
