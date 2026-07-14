@@ -3,15 +3,17 @@ from app.models.enums import UserRole
 from tests.conftest import auth_headers
 
 
-def test_list_employees_returns_restaurant_users(client, restaurant_setup):
+def test_list_employees_returns_managers_not_admin(client, restaurant_setup):
     headers = auth_headers(client, "admin@test.com")
     resp = client.get("/v1/admin/employees", headers=headers)
     assert resp.status_code == 200
     emails = {u["email"] for u in resp.json()["data"]}
-    assert "admin@test.com" in emails
+    # The ADMIN owner is excluded from the employee roster.
+    assert "admin@test.com" not in emails
     assert "branch@test.com" in emails
     assert "warehouse@test.com" in emails
-    assert resp.json()["meta"]["total"] >= 4
+    assert "kitchen@test.com" in emails
+    assert all(u["role"] != "ADMIN" for u in resp.json()["data"])
 
 
 def test_employees_not_visible_cross_restaurant(

@@ -15,6 +15,11 @@ class LocationCreate(BaseModel):
     location: str | None = Field(default=None, max_length=255)
 
 
+class LocationUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+
+
 class LocationOut(BaseModel):
     id: int
     restaurant_id: int
@@ -41,6 +46,16 @@ class ManagerUserCreateResult(BaseModel):
     credential_email_sent: bool
 
 
+class EmployeeUpdate(BaseModel):
+    """Editable employee fields. Location FK must match the employee's role."""
+
+    full_name: str | None = Field(default=None, max_length=255)
+    is_active: bool | None = None
+    branch_id: int | None = None
+    kitchen_id: int | None = None
+    warehouse_id: int | None = None
+
+
 class EmployeeOut(BaseModel):
     id: int
     email: str
@@ -53,6 +68,23 @@ class EmployeeOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AdminProfileOut(BaseModel):
+    id: int
+    email: str
+    full_name: str | None = None
+    image_url: str | None = None
+    role: UserRole
+
+    model_config = {"from_attributes": True}
+
+
+class AdminProfileUpdate(BaseModel):
+    """Admin settings: own display name and profile picture URL."""
+
+    full_name: str | None = Field(default=None, max_length=255)
+    image_url: str | None = Field(default=None, max_length=1024)
 
 
 class ProductPricingUpdate(BaseModel):

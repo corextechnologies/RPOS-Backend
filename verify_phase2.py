@@ -20,6 +20,8 @@ TESTS = [
     "tests/test_admin_pricing.py",
     "tests/test_admin_requests.py",
     "tests/test_admin_reads.py",
+    "tests/test_admin_settings.py",
+    "tests/test_admin_sales.py",
 ]
 
 

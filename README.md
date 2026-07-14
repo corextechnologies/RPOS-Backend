@@ -42,13 +42,22 @@ pytest                    # full suite
 
 Admin (all require ADMIN role):
 - `POST /v1/admin/branches` · `/kitchens` · `/warehouses` — create locations (`branch_limit` enforced on branches)
+- `PATCH /v1/admin/branches/{id}` · `/kitchens/{id}` · `/warehouses/{id}` — edit name/location
+- `DELETE /v1/admin/branches/{id}` · `/kitchens/{id}` · `/warehouses/{id}` — delete a location
 - `POST /v1/admin/users` — create Warehouse/Kitchen/Branch manager + credential email
+- `PATCH /v1/admin/users/{id}` — edit a manager (name, location, active flag)
+- `POST /v1/admin/users/{id}/revoke` · `/restore` — revoke / restore manager access (soft `is_active`)
+- `DELETE /v1/admin/users/{id}` — delete a manager
+- `GET  /v1/admin/settings` · `PATCH /v1/admin/settings` — admin's own display name + profile picture URL
+- `POST /v1/admin/sales` — record a sale
+- `GET  /v1/admin/sales/records` — list sales (paginated, optional `branch_id`)
+- `GET  /v1/admin/sales/summary?period=daily|weekly|monthly` — aggregated totals (optional `start`/`end`/`branch_id`)
 - `PATCH /v1/admin/products/{id}/pricing` — set `cost_price` (Admin-only field)
 - `GET  /v1/admin/products/pricing` — list products with cost prices
 - `GET  /v1/admin/requests/products` — `BRANCH_TO_ADMIN` inbox
 - `GET  /v1/admin/requests/distribution` — `WAREHOUSE_TO_ADMIN_PO` inbox
 - `GET  /v1/admin/requests/{id}` · `PATCH .../status` — admin request detail/actions (delegates to Phase 6A)
-- `GET  /v1/admin/employees` — all users in restaurant
+- `GET  /v1/admin/employees` — managers in restaurant (excludes the ADMIN owner)
 - `GET  /v1/admin/branches` · `/kitchens` · `/warehouses` — list locations
 - `GET  /v1/admin/billing` — read-only billing for caller's restaurant
 
