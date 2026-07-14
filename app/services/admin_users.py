@@ -9,12 +9,21 @@ from app.core.credentials import (
     get_mailer,
     send_credentials_email,
 )
-from app.core.exceptions import ConflictError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.core.security import hash_password
-from app.deps.rbac import assert_admin_can_create_role, validate_manager_location
+from app.deps.rbac import (
+    ADMIN_CREATABLE_ROLES,
+    assert_admin_can_create_role,
+    validate_manager_location,
+)
 from app.deps.scoping import visible_users
+from app.models.enums import UserRole
 from app.models.user import User
-from app.schemas.admin import ManagerUserCreate, ManagerUserCreateResult
+from app.schemas.admin import (
+    EmployeeUpdate,
+    ManagerUserCreate,
+    ManagerUserCreateResult,
+)
 from app.services.audit import AuditService
 
 
@@ -84,10 +93,93 @@ class AdminUserService:
     def list_employees(db: Session, admin: User, *, offset: int, limit: int) -> tuple[list[User], int]:
         from sqlalchemy import func
 
-        base = visible_users(db, admin)
+        # Exclude the ADMIN owner(s): the employee roster is managers + sub-staff.
+        base = visible_users(db, admin).where(User.role != UserRole.ADMIN)
         count_stmt = select(func.count()).select_from(base.subquery())
         total = db.execute(count_stmt).scalar_one()
         rows = db.execute(
             base.order_by(User.id).offset(offset).limit(limit)
         ).scalars().all()
         return list(rows), total
+
+    @staticmethod
+    def _get_managed_employee(db: Session, admin: User, user_id: int) -> User:
+        """Fetch a manager in the admin's restaurant, or raise.
+
+        Only WH/Kitchen/Branch managers are manageable here — never the admin
+        themselves or another admin/super-admin.
+        """
+        target = db.get(User, user_id)
+        if target is None or target.restaurant_id != admin.restaurant_id:
+            raise NotFoundError("Employee not found.")
+        if target.role not in ADMIN_CREATABLE_ROLES:
+            raise ForbiddenError(
+                "Only Warehouse, Kitchen, or Branch managers can be managed here."
+            )
+        return target
+
+    @staticmethod
+    def update_employee(
+        db: Session, admin: User, user_id: int, body: EmployeeUpdate
+    ) -> User:
+        target = AdminUserService._get_managed_employee(db, admin, user_id)
+        changes = body.model_dump(exclude_unset=True)
+
+        location_fields = {"branch_id", "kitchen_id", "warehouse_id"}
+        if location_fields & changes.keys():
+            validate_manager_location(
+                db,
+                admin.restaurant_id,
+                target.role,
+                branch_id=changes.get("branch_id", target.branch_id),
+                kitchen_id=changes.get("kitchen_id", target.kitchen_id),
+                warehouse_id=changes.get("warehouse_id", target.warehouse_id),
+            )
+
+        for field, value in changes.items():
+            setattr(target, field, value)
+        AuditService.record(
+            db,
+            actor=admin,
+            action="user.update",
+            entity_type="user",
+            entity_id=target.id,
+            restaurant_id=admin.restaurant_id,
+            payload=changes or None,
+        )
+        db.commit()
+        db.refresh(target)
+        return target
+
+    @staticmethod
+    def set_active(
+        db: Session, admin: User, user_id: int, *, is_active: bool
+    ) -> User:
+        target = AdminUserService._get_managed_employee(db, admin, user_id)
+        target.is_active = is_active
+        AuditService.record(
+            db,
+            actor=admin,
+            action="user.restore" if is_active else "user.revoke",
+            entity_type="user",
+            entity_id=target.id,
+            restaurant_id=admin.restaurant_id,
+        )
+        db.commit()
+        db.refresh(target)
+        return target
+
+    @staticmethod
+    def delete_employee(db: Session, admin: User, user_id: int) -> None:
+        target = AdminUserService._get_managed_employee(db, admin, user_id)
+        AuditService.record(
+            db,
+            actor=admin,
+            action="user.delete",
+            entity_type="user",
+            entity_id=target.id,
+            restaurant_id=admin.restaurant_id,
+            payload={"role": target.role.value},
+        )
+        db.delete(target)
+        db.commit()

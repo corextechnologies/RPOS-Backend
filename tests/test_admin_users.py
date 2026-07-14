@@ -102,3 +102,110 @@ def test_branch_manager_requires_branch_id(client, restaurant_setup):
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "missing_location"
+
+
+def test_update_employee_name(client, restaurant_setup):
+    branch_mgr = restaurant_setup["branch_mgr"]
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.patch(
+        f"/v1/admin/users/{branch_mgr.id}",
+        json={"full_name": "Renamed Manager"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["full_name"] == "Renamed Manager"
+
+
+def test_update_employee_reassign_branch(client, restaurant_setup, make_branch):
+    branch_mgr = restaurant_setup["branch_mgr"]
+    branch = make_branch(restaurant_setup["restaurant"].id, name="Assigned")
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.patch(
+        f"/v1/admin/users/{branch_mgr.id}",
+        json={"branch_id": branch.id},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["branch_id"] == branch.id
+
+
+def test_update_employee_wrong_location_field_rejected(
+    client, restaurant_setup, make_kitchen
+):
+    branch_mgr = restaurant_setup["branch_mgr"]
+    kitchen = make_kitchen(restaurant_setup["restaurant"].id)
+    headers = auth_headers(client, "admin@test.com")
+    # A branch manager cannot be given a kitchen_id.
+    resp = client.patch(
+        f"/v1/admin/users/{branch_mgr.id}",
+        json={"kitchen_id": kitchen.id},
+        headers=headers,
+    )
+    assert resp.status_code == 409
+
+
+def test_revoke_and_restore_manager_access(client, restaurant_setup):
+    warehouse_mgr = restaurant_setup["warehouse_mgr"]
+    headers = auth_headers(client, "admin@test.com")
+
+    revoke = client.post(
+        f"/v1/admin/users/{warehouse_mgr.id}/revoke", headers=headers
+    )
+    assert revoke.status_code == 200, revoke.text
+    assert revoke.json()["data"]["is_active"] is False
+
+    # A revoked manager can no longer log in.
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": "warehouse@test.com", "password": "Pass@1234"},
+    )
+    assert login.status_code == 401
+
+    restore = client.post(
+        f"/v1/admin/users/{warehouse_mgr.id}/restore", headers=headers
+    )
+    assert restore.status_code == 200
+    assert restore.json()["data"]["is_active"] is True
+
+
+def test_delete_employee(client, restaurant_setup):
+    kitchen_mgr = restaurant_setup["kitchen_mgr"]
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.delete(f"/v1/admin/users/{kitchen_mgr.id}", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+    listing = client.get("/v1/admin/employees", headers=headers)
+    assert kitchen_mgr.id not in [u["id"] for u in listing.json()["data"]]
+
+
+def test_admin_cannot_manage_another_admin(
+    client, restaurant_setup, make_user
+):
+    from app.models.enums import UserRole
+
+    other_admin = make_user(
+        "second.admin@test.com", UserRole.ADMIN,
+        restaurant_id=restaurant_setup["restaurant"].id,
+    )
+    headers = auth_headers(client, "admin@test.com")
+    # Admin/non-manager roles are not manageable through the employee routes.
+    resp = client.delete(f"/v1/admin/users/{other_admin.id}", headers=headers)
+    assert resp.status_code == 403
+
+
+def test_cannot_manage_employee_in_other_restaurant(
+    client, restaurant_setup, make_restaurant, make_user
+):
+    from app.models.enums import UserRole
+
+    other = make_restaurant("Other")
+    foreign_mgr = make_user(
+        "foreign.branch@test.com", UserRole.BRANCH_MANAGER, restaurant_id=other.id
+    )
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.patch(
+        f"/v1/admin/users/{foreign_mgr.id}",
+        json={"full_name": "Hijack"},
+        headers=headers,
+    )
+    assert resp.status_code == 404

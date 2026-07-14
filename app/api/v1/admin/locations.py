@@ -9,7 +9,7 @@ from app.db.session import get_db
 from app.deps.auth import require_role
 from app.models.enums import UserRole
 from app.models.user import User
-from app.schemas.admin import LocationCreate
+from app.schemas.admin import LocationCreate, LocationUpdate
 from app.services.locations import LocationService
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.ADMIN))])
@@ -43,3 +43,40 @@ def create_warehouse(
 ):
     warehouse = LocationService.create_warehouse(db, current, body)
     return ok(LocationService.to_out(warehouse).model_dump(mode="json"))
+
+
+# --- edit / delete (branch, kitchen, warehouse share one implementation) ---
+
+def _patch(kind: str):
+    def _handler(
+        location_id: int,
+        body: LocationUpdate,
+        current: User = Depends(require_role(UserRole.ADMIN)),
+        db: Session = Depends(get_db),
+    ):
+        row = LocationService.update_location(db, current, kind, location_id, body)
+        return ok(LocationService.to_out(row).model_dump(mode="json"))
+
+    return _handler
+
+
+def _delete(kind: str):
+    def _handler(
+        location_id: int,
+        current: User = Depends(require_role(UserRole.ADMIN)),
+        db: Session = Depends(get_db),
+    ):
+        LocationService.delete_location(db, current, kind, location_id)
+        return ok({"detail": f"{kind.capitalize()} deleted."})
+
+    return _handler
+
+
+for _kind, _prefix in (("branch", "branches"), ("kitchen", "kitchens"),
+                       ("warehouse", "warehouses")):
+    router.add_api_route(
+        f"/{_prefix}/{{location_id}}", _patch(_kind), methods=["PATCH"]
+    )
+    router.add_api_route(
+        f"/{_prefix}/{{location_id}}", _delete(_kind), methods=["DELETE"]
+    )

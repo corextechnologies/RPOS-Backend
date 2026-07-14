@@ -9,7 +9,7 @@ from app.deps.scoping import apply_tenant_scope
 from app.models.location import Branch, Kitchen, Warehouse
 from app.models.restaurant import Restaurant
 from app.models.user import User
-from app.schemas.admin import LocationCreate, LocationOut
+from app.schemas.admin import LocationCreate, LocationOut, LocationUpdate
 from app.services.audit import AuditService
 
 _LOCATION_MODELS = {
@@ -113,6 +113,51 @@ class LocationService:
             Warehouse.id
         )
         return list(db.execute(stmt).scalars().all())
+
+    @staticmethod
+    def _get_owned(db: Session, admin: User, kind: str, location_id: int):
+        model = _LOCATION_MODELS[kind]
+        row = db.get(model, location_id)
+        if row is None or row.restaurant_id != admin.restaurant_id:
+            raise NotFoundError(f"{kind.capitalize()} not found.")
+        return row
+
+    @staticmethod
+    def update_location(
+        db: Session, admin: User, kind: str, location_id: int, body: LocationUpdate
+    ):
+        row = LocationService._get_owned(db, admin, kind, location_id)
+        changes = body.model_dump(exclude_unset=True)
+        for field, value in changes.items():
+            setattr(row, field, value)
+        AuditService.record(
+            db,
+            actor=admin,
+            action=f"location.{kind}.update",
+            entity_type=kind,
+            entity_id=row.id,
+            restaurant_id=admin.restaurant_id,
+            payload=changes or None,
+        )
+        db.commit()
+        db.refresh(row)
+        return row
+
+    @staticmethod
+    def delete_location(
+        db: Session, admin: User, kind: str, location_id: int
+    ) -> None:
+        row = LocationService._get_owned(db, admin, kind, location_id)
+        AuditService.record(
+            db,
+            actor=admin,
+            action=f"location.{kind}.delete",
+            entity_type=kind,
+            entity_id=row.id,
+            restaurant_id=admin.restaurant_id,
+        )
+        db.delete(row)
+        db.commit()
 
     @staticmethod
     def to_out(location) -> LocationOut:

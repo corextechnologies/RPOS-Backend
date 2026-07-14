@@ -15,3 +15,4 @@ from app.models.inventory import (  # noqa: F401
     StockMovement,
     StockMovementType,
 )
+from app.models.sales import SalesRecord  # noqa: F401
