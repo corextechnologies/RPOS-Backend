@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.models.enums import UserRole
 from app.models.inventory import StockMovementType
 from app.schemas.admin import ProductPublicOut
+from app.schemas.request import RequestLineCreate
 
 
 class WarehouseStaffCreate(BaseModel):
@@ -55,6 +56,11 @@ class StockWasteIn(BaseModel):
     quantity: int = Field(gt=0)
     movement_type: StockMovementType = StockMovementType.WASTE
     batch_code: str | None = Field(default=None, max_length=100)
+    notes: str | None = None
+
+
+class WarehousePoCreate(BaseModel):
+    lines: list[RequestLineCreate] = Field(min_length=1)
     notes: str | None = None
 
 

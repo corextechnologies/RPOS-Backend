@@ -39,6 +39,7 @@ python verify_phase0.py   # Phase 0 gate (needs TEST_DATABASE_URL)
 python verify_phase1.py   # Phase 1 gate (+ Phase 0 regression)
 python verify_phase6a.py  # Phase 6A gate (+ Phase 0/1 regression)
 python verify_phase2.py   # Phase 2 gate (+ Phase 0/1/6A regression)
+python verify_phase3.py   # Phase 3 gate (+ Phase 0/1/2/6A + billing smoke)
 python verify_phase8.py   # Phase 8 gate (+ Phase 0–1 regression)
 pytest                    # full suite
 ```
@@ -79,6 +80,18 @@ If payment comes later:
 Update invoice status (Super Admin):
 - `PATCH /v1/super-admin/restaurants/{id}/invoices/{invoice_id}` with `{ "paid": true|false }`
 - Marking an invoice **paid** automatically opens the next month’s unpaid invoice.
+
+## Phase 3 endpoints
+
+Warehouse (all require WAREHOUSE_MANAGER; manager must have `warehouse_id`):
+- `POST /v1/warehouse/users` · `GET /v1/warehouse/users` — create/list sub-staff (`created_by` subtree) + credential email
+- `POST /v1/warehouse/stock/receive` · `/adjust` · `/waste` — inventory intake / adjustment / waste·expiry
+- `GET  /v1/warehouse/inventory` · `/inventory/near-expiry` — on-hand + near-expiry feed (never exposes `cost_price`)
+- `POST /v1/warehouse/requests/po` · `GET .../po` — create/list `WAREHOUSE_TO_ADMIN_PO`
+- `GET  /v1/warehouse/requests/kitchen` — `KITCHEN_TO_WAREHOUSE` inbox
+- `GET  /v1/warehouse/requests/{id}` · `PATCH .../status` — detail / approve·dispatch·mark PO received
+
+`KITCHEN_TO_WAREHOUSE` → `DISPATCHED` decrements warehouse inventory via StockMovement (Phase 6B).
 
 ## Phase 2 endpoints
 
@@ -139,6 +152,10 @@ Admin:
 - **Phase 2 — Admin portal:** location CRUD (branch/kitchen/warehouse),
   manager user provisioning, product `cost_price`, admin request inbox/actions,
   employee and location read APIs. Orders/inventory reads deferred to Phase 3/5.
+- **Phase 3 — Warehouse portal:** inventory ledger (`InventoryItem` /
+  `StockMovement`), warehouse staff provisioning, stock receive/adjust/waste,
+  near-expiry feed, PO + kitchen request wrappers. Dispatching kitchen requests
+  decrements warehouse stock (Phase 6B). Kitchen receive credit deferred to Phase 4.
 - **Phase 8 — Billing core:** `Invoice` model, billing cycle engine
   (`app/services/billing.py`), CLI job (`python -m app.jobs.billing_cycle`),
   invoice history on existing billing read APIs. Billing-due notifications and

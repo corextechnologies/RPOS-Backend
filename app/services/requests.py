@@ -6,11 +6,15 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.deps.request_scoping import user_can_view_request, visible_requests
-from app.models.enums import UserRole
 from app.models.location import Branch, Kitchen, Warehouse
 from app.models.product import Product
 from app.models.request import Request, RequestLineItem
-from app.models.request_enums import INITIAL_STATUS, LocationType, RequestType
+from app.models.request_enums import (
+    INITIAL_STATUS,
+    KitchenToWarehouseStatus,
+    LocationType,
+    RequestType,
+)
 from app.models.user import User
 from app.schemas.request import (
     RequestCreate,
@@ -19,6 +23,7 @@ from app.schemas.request import (
     RequestTransition,
 )
 from app.services.audit import AuditService
+from app.services.inventory import InventoryService
 from app.services.notifications import NotificationService
 from app.services.transitions import (
     FULL_APPROVAL_STATUSES,
@@ -37,10 +42,49 @@ _LOCATION_MODELS = {
 
 
 def _apply_inventory_side_effects(
-    db: Session, *, request: Request, from_status: str, to_status: str
+    db: Session,
+    *,
+    actor: User,
+    request: Request,
+    from_status: str,
+    to_status: str,
 ) -> None:
-    """No-op in Phase 6A. Implemented in Phase 6B with StockMovement."""
-    return None
+    """Phase 6B: decrement warehouse stock when kitchen requests are dispatched."""
+    if request.request_type != RequestType.KITCHEN_TO_WAREHOUSE:
+        return
+    if to_status != KitchenToWarehouseStatus.DISPATCHED.value:
+        return
+    if (
+        request.target_location_type != LocationType.WAREHOUSE
+        or request.target_location_id is None
+    ):
+        raise ConflictError(
+            "Kitchen-to-warehouse request is missing a warehouse target.",
+            code="missing_warehouse_target",
+        )
+
+    for line in request.line_items:
+        qty = line.quantity_approved
+        if qty is None:
+            qty = line.quantity_requested
+        if qty <= 0:
+            continue
+        try:
+            InventoryService.apply_dispatch(
+                db,
+                actor=actor,
+                location_type=LocationType.WAREHOUSE,
+                location_id=request.target_location_id,
+                product_id=line.product_id,
+                quantity=qty,
+                request_id=request.id,
+                notes=f"Dispatch for request #{request.id}",
+            )
+        except NotFoundError as exc:
+            raise ConflictError(
+                "Insufficient stock for this operation.",
+                code="insufficient_stock",
+            ) from exc
 
 
 class RequestService:
@@ -170,7 +214,11 @@ class RequestService:
         request.status = to_status
 
         _apply_inventory_side_effects(
-            db, request=request, from_status=from_status, to_status=to_status
+            db,
+            actor=actor,
+            request=request,
+            from_status=from_status,
+            to_status=to_status,
         )
 
         AuditService.record(
