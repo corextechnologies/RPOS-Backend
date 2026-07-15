@@ -168,19 +168,31 @@ def test_mark_po_received(client, warehouse_ready):
     assert (
         client.patch(
             f"/v1/admin/requests/{request_id}/status",
-            json={"to_status": "IN_QUEUE"},
+            json={"to_status": "DISPATCHED"},
             headers=admin_headers,
         ).status_code
         == 200
     )
 
+    line_id = create.json()["data"]["line_items"][0]["id"]
     received = client.patch(
         f"/v1/warehouse/requests/{request_id}/status",
-        json={"to_status": "RECEIVED"},
+        json={
+            "to_status": "RECEIVED",
+            "line_receipts": [
+                {"line_item_id": line_id, "quantity_received": 4, "batch_code": "PO-1"}
+            ],
+        },
         headers=wh_headers,
     )
     assert received.status_code == 200, received.text
     assert received.json()["data"]["status"] == "RECEIVED"
+
+    # The whole point: receiving a PO credits the warehouse.
+    inv = client.get("/v1/warehouse/inventory", headers=wh_headers).json()["data"]
+    rows = [r for r in inv if r["product_id"] == product.id and r["batch_code"] == "PO-1"]
+    assert len(rows) == 1
+    assert rows[0]["quantity"] == 4
 
 
 def test_warehouse_cannot_get_branch_request_via_inbox(

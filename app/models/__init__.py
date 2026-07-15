@@ -17,4 +17,5 @@ from app.models.inventory import (  # noqa: F401
     WasteReason,
 )
 from app.models.stock_count import StockCount, StockCountLine  # noqa: F401
+from app.models.reorder_level import ReorderLevel  # noqa: F401
 from app.models.sales import SalesRecord  # noqa: F401

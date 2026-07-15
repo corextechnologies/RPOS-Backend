@@ -247,14 +247,20 @@ def test_warehouse_po_flow(
 
     resp = client.patch(
         f"/v1/requests/{request_id}/status",
-        json={"to_status": WarehouseToAdminStatus.IN_QUEUE.value},
+        json={"to_status": WarehouseToAdminStatus.DISPATCHED.value},
         headers=admin_headers,
     )
     assert resp.status_code == 200
 
+    line_id = resp.json()["data"]["line_items"][0]["id"]
     resp = client.patch(
         f"/v1/requests/{request_id}/status",
-        json={"to_status": WarehouseToAdminStatus.RECEIVED.value},
+        json={
+            "to_status": WarehouseToAdminStatus.RECEIVED.value,
+            "line_receipts": [
+                {"line_item_id": line_id, "quantity_received": 20}
+            ],
+        },
         headers=wh_headers,
     )
     assert resp.status_code == 200

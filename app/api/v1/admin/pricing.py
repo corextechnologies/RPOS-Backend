@@ -1,7 +1,7 @@
 """Admin product pricing routes."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.responses import ok
@@ -17,10 +17,13 @@ router = APIRouter(dependencies=[Depends(require_role(UserRole.ADMIN))])
 
 @router.get("/products/pricing")
 def list_product_pricing(
+    unpriced: bool = Query(False, description="Only products with no cost_price yet"),
     current: User = Depends(require_role(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
-    products = PricingService.list_products_with_pricing(db, current)
+    products = PricingService.list_products_with_pricing(
+        db, current, unpriced=unpriced
+    )
     data = [PricingService.to_out(p).model_dump(mode="json") for p in products]
     return ok(data)
 

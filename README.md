@@ -49,6 +49,12 @@ pytest                    # full suite
 > migration still passes `pytest`. Run `alembic upgrade head` against a scratch
 > DB before shipping one.
 
+> The suite rewrites `TEST_DATABASE_URL` to Neon's **direct** endpoint (it strips
+> `-pooler`) — see `_direct_endpoint` in `tests/conftest.py`. Running the schema
+> drop/create through PgBouncer causes intermittent `DROP TABLE` deadlocks and
+> "relation does not exist" errors that move between runs. Keep `-pooler` in
+> `DATABASE_URL` for the app itself; only the test suite needs the direct host.
+
 ## Billing cycle job (Phase 8)
 
 Run daily via cron or manually:
@@ -92,6 +98,7 @@ Cloud Kitchen. `KITCHEN_MANAGER` unless noted; `SUB_CHEF` is read + waste only.
 Every caller must have a `kitchen_id`.
 
 - `POST /v1/kitchen/users` · `GET /v1/kitchen/users` — create/list sub-chefs (`created_by` subtree) + credential email
+- `GET  /v1/kitchen/warehouses` — warehouses in this restaurant, for the request-stock picker *(also SUB_CHEF)*
 - `POST /v1/kitchen/stock/waste` — waste·expiry with a required `waste_reason` *(also SUB_CHEF)*
 - `POST /v1/kitchen/stock/counts` · `GET .../counts` — physical count; variance writes an `ADJUSTMENT` and notifies Admin
 - `GET  /v1/kitchen/inventory` · `/inventory/near-expiry` — on-hand + near-expiry feed *(also SUB_CHEF)*

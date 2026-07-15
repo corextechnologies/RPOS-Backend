@@ -29,7 +29,14 @@ class WarehouseToAdminStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     PARTIALLY_APPROVED = "PARTIALLY_APPROVED"
-    IN_QUEUE = "IN_QUEUE"
+    # Admin has sent the goods. (Was IN_QUEUE.) Note KitchenToWarehouseStatus
+    # also has a DISPATCHED — the state machine keys on RequestType first, so
+    # the two never collide, but don't assume a bare "DISPATCHED" is this flow.
+    DISPATCHED = "DISPATCHED"
+    # Warehouse took delivery but something was short or damaged.
+    REPORTED = "REPORTED"
+    # Admin reviewed the report and accepted it — warehouse may now receive.
+    RESOLVED = "RESOLVED"
     RECEIVED = "RECEIVED"
 
 

@@ -25,7 +25,28 @@ from app.models.product import Product
 from app.models.restaurant import Restaurant
 from app.models.user import User
 
-TEST_URL = settings.test_database_url or os.environ.get("TEST_DATABASE_URL")
+def _direct_endpoint(url: str | None) -> str | None:
+    """Route the test suite past Neon's connection pooler.
+
+    Neon's `-pooler` host is PgBouncer in transaction mode. It's the right choice
+    for app runtime, but this suite creates and drops the whole schema every
+    session, and PgBouncer hands those statements to server connections that may
+    still hold locks from a just-returned transaction. The result is an
+    intermittent `DROP TABLE` deadlock, or DDL that a later connection can't see
+    yet ("relation ... does not exist") — failures that move around between runs
+    and vanish under a debugger, because they're timing-dependent.
+
+    The direct endpoint is the same database, so this changes nothing about what
+    is tested. Non-Neon URLs have no `-pooler` host and pass through untouched.
+    """
+    if url is None:
+        return None
+    return url.replace("-pooler.", ".")
+
+
+TEST_URL = _direct_endpoint(
+    settings.test_database_url or os.environ.get("TEST_DATABASE_URL")
+)
 
 pytestmark = pytest.mark.skipif(TEST_URL is None, reason="TEST_DATABASE_URL not set")
 

@@ -15,6 +15,7 @@ from app.models.request_enums import (
     KitchenToWarehouseStatus,
     LocationType,
     RequestType,
+    WarehouseToAdminStatus,
 )
 from app.models.user import User
 from app.schemas.request import (
@@ -122,7 +123,7 @@ def _receive_into(
 
 
 def _warehouse_dispatches_to_kitchen(
-    db: Session, *, actor: User, request: Request
+    db: Session, *, actor: User, request: Request, body: RequestTransition
 ) -> None:
     """KITCHEN_TO_WAREHOUSE -> DISPATCHED: warehouse stock leaves."""
     warehouse_id = _require_location(
@@ -141,7 +142,7 @@ def _warehouse_dispatches_to_kitchen(
 
 
 def _kitchen_receives_from_warehouse(
-    db: Session, *, actor: User, request: Request
+    db: Session, *, actor: User, request: Request, body: RequestTransition
 ) -> None:
     """KITCHEN_TO_WAREHOUSE -> RECEIVED: the requesting kitchen is credited."""
     kitchen_id = _require_location(
@@ -159,8 +160,49 @@ def _kitchen_receives_from_warehouse(
     )
 
 
+def _warehouse_receives_po(
+    db: Session, *, actor: User, request: Request, body: RequestTransition
+) -> None:
+    """WAREHOUSE_TO_ADMIN_PO -> RECEIVED: the ordering warehouse is credited.
+
+    Credits `quantity_received` — what the warehouse confirmed actually arrived —
+    not what was ordered. This is the only place PO stock enters the ledger, and
+    it happens exactly once: REPORTED deliberately credits nothing, so goods
+    can't be booked twice across a report/resolve round trip.
+    """
+    warehouse_id = _require_location(
+        request,
+        which="source",
+        expected=LocationType.WAREHOUSE,
+        code="missing_warehouse_source",
+    )
+    # Batch/expiry are transient — they belong to the stock, not the paperwork.
+    # They land on InventoryItem and StockMovement, which carries request_id, so
+    # the receipt stays traceable without widening RequestLineItem.
+    receipts = {r.line_item_id: r for r in (body.line_receipts or [])}
+    for line in request.line_items:
+        qty = line.quantity_received
+        if qty is None:
+            qty = _approved_quantity(line)
+        if qty <= 0:
+            continue
+        receipt = receipts.get(line.id)
+        InventoryService.receive_stock(
+            db,
+            actor=actor,
+            location_type=LocationType.WAREHOUSE,
+            location_id=warehouse_id,
+            product_id=line.product_id,
+            quantity=qty,
+            batch_code=receipt.batch_code if receipt else None,
+            expiry_date=receipt.expiry_date if receipt else None,
+            request_id=request.id,
+            notes=f"PO receipt for request #{request.id}",
+        )
+
+
 def _kitchen_allocates_to_branch(
-    db: Session, *, actor: User, request: Request
+    db: Session, *, actor: User, request: Request, body: RequestTransition
 ) -> None:
     """BRANCH_TO_ADMIN -> ALLOCATED: the producing kitchen's stock leaves.
 
@@ -196,6 +238,10 @@ _INVENTORY_SIDE_EFFECTS = {
         RequestType.BRANCH_TO_ADMIN,
         BranchToAdminStatus.ALLOCATED.value,
     ): _kitchen_allocates_to_branch,
+    (
+        RequestType.WAREHOUSE_TO_ADMIN_PO,
+        WarehouseToAdminStatus.RECEIVED.value,
+    ): _warehouse_receives_po,
 }
 
 
@@ -206,11 +252,12 @@ def _apply_inventory_side_effects(
     request: Request,
     from_status: str,
     to_status: str,
+    body: RequestTransition,
 ) -> None:
     handler = _INVENTORY_SIDE_EFFECTS.get((request.request_type, to_status))
     if handler is None:
         return
-    handler(db, actor=actor, request=request)
+    handler(db, actor=actor, request=request, body=body)
 
 
 class RequestService:
@@ -317,6 +364,7 @@ class RequestService:
         assert_role_can_transition(actor.role, request.request_type, to_status)
 
         RequestService._apply_line_approvals(request, body, to_status)
+        RequestService._apply_line_receipts(request, body, to_status)
         RequestService._apply_routing_target(db, request, body, to_status)
 
         if body.notes:
@@ -346,6 +394,7 @@ class RequestService:
             request=request,
             from_status=from_status,
             to_status=to_status,
+            body=body,
         )
 
         AuditService.record(
@@ -410,6 +459,66 @@ class RequestService:
 
         request.target_location_type = target_type
         request.target_location_id = body.target_location_id
+
+    @staticmethod
+    def _apply_line_receipts(
+        request: Request, body: RequestTransition, to_status: str
+    ) -> None:
+        """Record what actually arrived, for REPORTED and RECEIVED on a PO.
+
+        REPORTED is a claim that the delivery was wrong, so it must say how —
+        a report where everything matches and nothing is flagged is rejected
+        rather than silently accepted as a no-op.
+        """
+        if request.request_type != RequestType.WAREHOUSE_TO_ADMIN_PO:
+            return
+        if to_status not in {
+            WarehouseToAdminStatus.REPORTED.value,
+            WarehouseToAdminStatus.RECEIVED.value,
+        }:
+            return
+
+        if not body.line_receipts:
+            raise ConflictError(
+                "line_receipts is required to report or receive a purchase order.",
+                code="missing_line_receipts",
+            )
+
+        line_ids = {line.id for line in request.line_items}
+        receipts = {}
+        for receipt in body.line_receipts:
+            if receipt.line_item_id not in line_ids:
+                raise NotFoundError("Line item does not belong to this request.")
+            receipts[receipt.line_item_id] = receipt
+
+        for line in request.line_items:
+            receipt = receipts.get(line.id)
+            if receipt is None:
+                continue
+            if receipt.quantity_received > _approved_quantity(line):
+                raise ConflictError(
+                    "Received quantity cannot exceed the approved quantity.",
+                    code="invalid_received_quantity",
+                )
+            line.quantity_received = receipt.quantity_received
+            if receipt.issue_note is not None:
+                line.issue_note = receipt.issue_note
+
+        if to_status == WarehouseToAdminStatus.REPORTED.value:
+            has_issue = any(
+                line.id in receipts
+                and (
+                    (line.quantity_received or 0) != _approved_quantity(line)
+                    or line.issue_note
+                )
+                for line in request.line_items
+            )
+            if not has_issue:
+                raise ConflictError(
+                    "A report needs at least one line with a quantity "
+                    "difference or an issue note.",
+                    code="nothing_reported",
+                )
 
     @staticmethod
     def _apply_line_approvals(
@@ -516,6 +625,8 @@ class RequestService:
                     "product_name": item.product.name if item.product else None,
                     "quantity_requested": item.quantity_requested,
                     "quantity_approved": item.quantity_approved,
+                    "quantity_received": item.quantity_received,
+                    "issue_note": item.issue_note,
                 }
             )
         data = {

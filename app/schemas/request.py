@@ -1,7 +1,7 @@
 """Pydantic schemas for the shared request engine."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -35,9 +35,28 @@ class LineApproval(BaseModel):
     quantity_approved: int = Field(ge=0)
 
 
+class LineReceipt(BaseModel):
+    """What actually arrived for one PO line.
+
+    Used both to REPORT a short/damaged delivery and to confirm RECEIVED. The
+    batch/expiry are what the stock is booked in under, exactly as they would be
+    on /stock/receive — without them PO stock would be invisible to the
+    near-expiry feed and expiry labels.
+    """
+
+    line_item_id: int
+    quantity_received: int = Field(ge=0)
+    batch_code: str | None = Field(default=None, max_length=100)
+    expiry_date: date | None = None
+    issue_note: str | None = None
+
+
 class RequestTransition(BaseModel):
     to_status: str
     line_approvals: list[LineApproval] | None = None
+    # Required when a PO moves to REPORTED or RECEIVED — enforced in
+    # RequestService.transition so the error is a domain ConflictError.
+    line_receipts: list[LineReceipt] | None = None
     notes: str | None = None
     assignee_id: int | None = None
     # Routing target set during a transition. Required when Admin forwards a
@@ -54,6 +73,8 @@ class RequestLineOut(BaseModel):
     product_name: str | None = None
     quantity_requested: int
     quantity_approved: int | None = None
+    quantity_received: int | None = None
+    issue_note: str | None = None
 
     model_config = {"from_attributes": True}
 

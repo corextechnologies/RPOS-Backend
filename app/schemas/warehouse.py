@@ -36,12 +36,32 @@ class WarehouseStaffOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProductCreate(BaseModel):
+    """Warehouse-created product. Pricing is Admin-only and set separately."""
+
+    name: str = Field(min_length=1, max_length=255)
+    sku: str | None = Field(default=None, max_length=100)
+
+
+class ReorderLevelUpdate(BaseModel):
+    reorder_level: int = Field(ge=0)
+
+
+class ReorderLevelOut(BaseModel):
+    product_id: int
+    location_type: str
+    location_id: int
+    reorder_level: int
+
+
 class StockReceiveIn(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
     batch_code: str | None = Field(default=None, max_length=100)
     expiry_date: date | None = None
     notes: str | None = None
+    # Set the low-stock limit while adding the item, per the warehouse flow.
+    reorder_level: int | None = Field(default=None, ge=0)
 
 
 class StockAdjustIn(BaseModel):

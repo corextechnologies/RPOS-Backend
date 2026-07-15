@@ -58,6 +58,11 @@ class RequestLineItem(Base, PKMixin, TimestampMixin):
     )
     quantity_requested: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity_approved: Mapped[int | None] = mapped_column(Integer)
+    # What actually turned up. Set when a PO is received, or when the warehouse
+    # reports a short/damaged delivery. This is the quantity RECEIVED credits.
+    quantity_received: Mapped[int | None] = mapped_column(Integer)
+    # Free text from the warehouse on a REPORTED line ("3 crates crushed").
+    issue_note: Mapped[str | None] = mapped_column(Text)
 
     request: Mapped[Request] = relationship("Request", back_populates="line_items")
     product: Mapped["Product"] = relationship("Product")

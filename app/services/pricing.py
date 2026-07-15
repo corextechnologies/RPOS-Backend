@@ -37,9 +37,14 @@ class PricingService:
         return product
 
     @staticmethod
-    def list_products_with_pricing(db: Session, admin: User) -> list[Product]:
-        stmt = apply_tenant_scope(select(Product), admin, Product).order_by(Product.id)
-        return list(db.execute(stmt).scalars().all())
+    def list_products_with_pricing(
+        db: Session, admin: User, *, unpriced: bool = False
+    ) -> list[Product]:
+        stmt = apply_tenant_scope(select(Product), admin, Product)
+        if unpriced:
+            # Products the warehouse introduced that Admin hasn't priced yet.
+            stmt = stmt.where(Product.cost_price.is_(None))
+        return list(db.execute(stmt.order_by(Product.id)).scalars().all())
 
     @staticmethod
     def to_out(product: Product) -> ProductAdminOut:

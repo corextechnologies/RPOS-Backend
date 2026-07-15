@@ -21,6 +21,7 @@ from app.schemas.warehouse import (
     StockWasteIn,
 )
 from app.services.inventory import InventoryService
+from app.services.products import ProductService
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.WAREHOUSE_MANAGER))])
 
@@ -62,6 +63,16 @@ def receive_stock(
         expiry_date=body.expiry_date,
         notes=body.notes,
     )
+    if body.reorder_level is not None:
+        # The keeper sets the low-stock limit while adding the item.
+        ProductService.set_reorder_level(
+            db,
+            current,
+            location_type=LocationType.WAREHOUSE,
+            location_id=warehouse_id,
+            product_id=body.product_id,
+            reorder_level=body.reorder_level,
+        )
     db.commit()
     db.refresh(item)
     product = _load_product(db, item.product_id)

@@ -42,6 +42,49 @@ def flour(db, restaurant_setup, make_product):
     return product
 
 
+def test_kitchen_lists_warehouses_for_the_picker(
+    client, db, restaurant_setup, make_warehouse
+):
+    """The kitchen chooses its warehouse, so it must see every one Admin added."""
+    setup = restaurant_setup
+    second = make_warehouse(setup["restaurant"].id, name="WH North")
+    db.flush()
+
+    resp = client.get(
+        "/v1/kitchen/warehouses", headers=auth_headers(client, "kitchen@test.com")
+    )
+    assert resp.status_code == 200, resp.text
+    names = [w["name"] for w in resp.json()["data"]]
+    assert names == ["Setup Warehouse", "WH North"]
+    assert resp.json()["data"][1]["id"] == second.id
+
+
+def test_sub_chef_can_read_the_warehouse_list(client, restaurant_setup):
+    mgr = auth_headers(client, "kitchen@test.com")
+    client.post("/v1/kitchen/users", json={"email": "priya@test.com"}, headers=mgr)
+    priya = auth_headers(client, "priya@test.com", password="Admin@1234")
+
+    resp = client.get("/v1/kitchen/warehouses", headers=priya)
+    assert resp.status_code == 200
+    assert len(resp.json()["data"]) == 1
+
+
+def test_warehouse_list_never_crosses_tenants(
+    client, db, restaurant_setup, make_restaurant, make_warehouse
+):
+    other = make_restaurant("Other Co")
+    make_warehouse(other.id, name="Foreign WH")
+    db.flush()
+
+    resp = client.get(
+        "/v1/kitchen/warehouses", headers=auth_headers(client, "kitchen@test.com")
+    )
+    assert resp.status_code == 200
+    names = [w["name"] for w in resp.json()["data"]]
+    assert "Foreign WH" not in names
+    assert names == ["Setup Warehouse"]
+
+
 def test_kitchen_pulls_stock_from_warehouse(client, db, restaurant_setup, flour):
     """Kitchen requests 50 flour -> warehouse dispatches -> kitchen is credited."""
     setup = restaurant_setup

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
+from app.models.enums import UserRole
 from app.models.inventory import (
     InventoryItem,
     StockMovement,
@@ -15,13 +16,22 @@ from app.models.inventory import (
 )
 from app.models.location import Branch, Kitchen, Warehouse
 from app.models.product import Product
+from app.models.reorder_level import ReorderLevel
 from app.models.request_enums import LocationType
 from app.models.user import User
+from app.services.notifications import NotificationService
 
 _LOCATION_MODELS = {
     LocationType.BRANCH: Branch,
     LocationType.KITCHEN: Kitchen,
     LocationType.WAREHOUSE: Warehouse,
+}
+
+# Who to tell when stock at a location runs low.
+_LOCATION_MANAGER = {
+    LocationType.BRANCH: (UserRole.BRANCH_MANAGER, User.branch_id),
+    LocationType.KITCHEN: (UserRole.KITCHEN_MANAGER, User.kitchen_id),
+    LocationType.WAREHOUSE: (UserRole.WAREHOUSE_MANAGER, User.warehouse_id),
 }
 
 
@@ -182,6 +192,37 @@ class InventoryService:
         return [(item, product) for item, product in rows]
 
     @staticmethod
+    def list_for_restaurant(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType | None = None,
+        location_id: int | None = None,
+    ) -> list[tuple[InventoryItem, Product]]:
+        """On-hand across every location in the restaurant, optionally filtered.
+
+        Admin's cross-location view. `list_for_location` stays the right call
+        when the caller is scoped to one place.
+        """
+        stmt = (
+            select(InventoryItem, Product)
+            .join(Product, Product.id == InventoryItem.product_id)
+            .where(InventoryItem.restaurant_id == restaurant_id)
+        )
+        if location_type is not None:
+            stmt = stmt.where(InventoryItem.location_type == location_type)
+        if location_id is not None:
+            stmt = stmt.where(InventoryItem.location_id == location_id)
+        rows = db.execute(
+            stmt.order_by(
+                InventoryItem.location_type,
+                InventoryItem.location_id,
+                InventoryItem.id,
+            )
+        ).all()
+        return [(item, product) for item, product in rows]
+
+    @staticmethod
     def list_near_expiry(
         db: Session,
         *,
@@ -271,6 +312,16 @@ class InventoryService:
                 code="insufficient_stock",
             )
 
+        # Totals across every batch, before and after — a reorder level is per
+        # product/location, not per batch.
+        total_before = InventoryService._total_on_hand(
+            db,
+            restaurant_id=restaurant_id,
+            location_type=location_type,
+            location_id=location_id,
+            product_id=product_id,
+        )
+
         item.quantity = new_qty
         db.add(
             StockMovement(
@@ -288,7 +339,117 @@ class InventoryService:
             )
         )
         db.flush()
+
+        if quantity_delta < 0:
+            InventoryService._maybe_alert_low_stock(
+                db,
+                restaurant_id=restaurant_id,
+                location_type=location_type,
+                location_id=location_id,
+                product_id=product_id,
+                total_before=total_before,
+                total_after=total_before + quantity_delta,
+            )
         return item
+
+    @staticmethod
+    def _total_on_hand(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+        product_id: int,
+    ) -> int:
+        total = db.execute(
+            select(func.coalesce(func.sum(InventoryItem.quantity), 0)).where(
+                InventoryItem.restaurant_id == restaurant_id,
+                InventoryItem.location_type == location_type,
+                InventoryItem.location_id == location_id,
+                InventoryItem.product_id == product_id,
+            )
+        ).scalar_one()
+        return int(total)
+
+    @staticmethod
+    def _maybe_alert_low_stock(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+        product_id: int,
+        total_before: int,
+        total_after: int,
+    ) -> None:
+        """Notify the location's managers the moment stock crosses its limit.
+
+        Edge-triggered: fires only on the crossing (`before > level >= after`),
+        not on every movement while already below. Alerting each time would fire
+        on every subsequent dispatch and train people to ignore it.
+
+        No reorder level configured for this product/location => no alert.
+        """
+        level_row = db.execute(
+            select(ReorderLevel).where(
+                ReorderLevel.restaurant_id == restaurant_id,
+                ReorderLevel.location_type == location_type,
+                ReorderLevel.location_id == location_id,
+                ReorderLevel.product_id == product_id,
+            )
+        ).scalar_one_or_none()
+        if level_row is None:
+            return
+
+        level = level_row.reorder_level
+        if not (total_before > level >= total_after):
+            return
+
+        managers = InventoryService._managers_at(
+            db,
+            restaurant_id=restaurant_id,
+            location_type=location_type,
+            location_id=location_id,
+        )
+        if not managers:
+            return
+
+        product = db.get(Product, product_id)
+        product_name = product.name if product else f"Product #{product_id}"
+        NotificationService.notify_users(
+            db,
+            users=managers,
+            restaurant_id=restaurant_id,
+            title="Low stock",
+            body=(
+                f"{product_name} at {location_type.value.lower()} {location_id} "
+                f"is down to {total_after} (limit {level}). Time to request more."
+            ),
+            entity_type="product",
+            entity_id=product_id,
+        )
+
+    @staticmethod
+    def _managers_at(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+    ) -> list[User]:
+        role, column = _LOCATION_MANAGER[location_type]
+        return list(
+            db.execute(
+                select(User).where(
+                    User.restaurant_id == restaurant_id,
+                    User.role == role,
+                    User.is_active.is_(True),
+                    column == location_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     @staticmethod
     def _require_restaurant(actor: User) -> int:

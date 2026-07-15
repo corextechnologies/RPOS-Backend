@@ -30,12 +30,22 @@ ALLOWED_TRANSITIONS: dict[RequestType, dict[str, set[str]]] = {
             WarehouseToAdminStatus.PARTIALLY_APPROVED.value,
         },
         WarehouseToAdminStatus.APPROVED.value: {
-            WarehouseToAdminStatus.IN_QUEUE.value,
+            WarehouseToAdminStatus.DISPATCHED.value,
         },
         WarehouseToAdminStatus.PARTIALLY_APPROVED.value: {
-            WarehouseToAdminStatus.IN_QUEUE.value,
+            WarehouseToAdminStatus.DISPATCHED.value,
         },
-        WarehouseToAdminStatus.IN_QUEUE.value: {
+        WarehouseToAdminStatus.DISPATCHED.value: {
+            # Either the delivery was clean, or it wasn't.
+            WarehouseToAdminStatus.RECEIVED.value,
+            WarehouseToAdminStatus.REPORTED.value,
+        },
+        WarehouseToAdminStatus.REPORTED.value: {
+            # Admin either sends the missing goods again, or accepts the report.
+            WarehouseToAdminStatus.DISPATCHED.value,
+            WarehouseToAdminStatus.RESOLVED.value,
+        },
+        WarehouseToAdminStatus.RESOLVED.value: {
             WarehouseToAdminStatus.RECEIVED.value,
         },
         WarehouseToAdminStatus.RECEIVED.value: set(),
@@ -105,7 +115,9 @@ TRANSITION_ROLES: dict[RequestType, dict[str, set[UserRole]]] = {
     RequestType.WAREHOUSE_TO_ADMIN_PO: {
         WarehouseToAdminStatus.APPROVED.value: {UserRole.ADMIN},
         WarehouseToAdminStatus.PARTIALLY_APPROVED.value: {UserRole.ADMIN},
-        WarehouseToAdminStatus.IN_QUEUE.value: {UserRole.ADMIN},
+        WarehouseToAdminStatus.DISPATCHED.value: {UserRole.ADMIN},
+        WarehouseToAdminStatus.RESOLVED.value: {UserRole.ADMIN},
+        WarehouseToAdminStatus.REPORTED.value: {UserRole.WAREHOUSE_MANAGER},
         WarehouseToAdminStatus.RECEIVED.value: {UserRole.WAREHOUSE_MANAGER},
     },
     RequestType.BRANCH_TO_ADMIN: {

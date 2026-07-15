@@ -78,13 +78,11 @@ def test_admin_approves_branch_request(
     assert resp.json()["data"]["status"] == "APPROVED"
 
 
-def test_admin_cannot_access_kitchen_request_via_inbox(
-    client, restaurant_setup, make_kitchen, make_warehouse, make_product
-):
+def _create_kitchen_request(client, restaurant_setup, make_kitchen,
+                            make_warehouse, make_product):
     kitchen = make_kitchen(restaurant_setup["restaurant"].id)
     warehouse = make_warehouse(restaurant_setup["restaurant"].id)
     product = make_product(restaurant_setup["restaurant"].id)
-    kitchen_headers = auth_headers(client, "kitchen@test.com")
     create = client.post(
         "/v1/requests",
         json={
@@ -95,10 +93,40 @@ def test_admin_cannot_access_kitchen_request_via_inbox(
             "target_location_id": warehouse.id,
             "lines": [{"product_id": product.id, "quantity_requested": 3}],
         },
-        headers=kitchen_headers,
+        headers=auth_headers(client, "kitchen@test.com"),
     )
-    request_id = create.json()["data"]["id"]
+    assert create.status_code == 200, create.text
+    return create.json()["data"]["id"]
 
+
+def test_admin_can_read_kitchen_requests(
+    client, restaurant_setup, make_kitchen, make_warehouse, make_product
+):
+    """Admin oversees the whole supply chain, so kitchen->warehouse is visible."""
+    request_id = _create_kitchen_request(
+        client, restaurant_setup, make_kitchen, make_warehouse, make_product
+    )
     admin_headers = auth_headers(client, "admin@test.com")
+
     resp = client.get(f"/v1/admin/requests/{request_id}", headers=admin_headers)
-    assert resp.status_code == 404
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["request_type"] == "KITCHEN_TO_WAREHOUSE"
+
+    inbox = client.get("/v1/admin/requests/kitchen", headers=admin_headers)
+    assert inbox.status_code == 200
+    assert [r["id"] for r in inbox.json()["data"]] == [request_id]
+
+
+def test_admin_can_read_but_not_action_kitchen_requests(
+    client, restaurant_setup, make_kitchen, make_warehouse, make_product
+):
+    """Oversight only — approving/dispatching stays with the warehouse."""
+    request_id = _create_kitchen_request(
+        client, restaurant_setup, make_kitchen, make_warehouse, make_product
+    )
+    resp = client.patch(
+        f"/v1/admin/requests/{request_id}/status",
+        json={"to_status": "APPROVED"},
+        headers=auth_headers(client, "admin@test.com"),
+    )
+    assert resp.status_code == 403

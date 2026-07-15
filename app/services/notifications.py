@@ -133,8 +133,11 @@ class NotificationService:
                 db, request.restaurant_id, UserRole.ADMIN
             )
         if request.request_type == RequestType.KITCHEN_TO_WAREHOUSE:
+            # Warehouse must act on it; Admin watches the whole supply chain.
             return NotificationService._users_with_role(
                 db, request.restaurant_id, UserRole.WAREHOUSE_MANAGER
+            ) + NotificationService._users_with_role(
+                db, request.restaurant_id, UserRole.ADMIN
             )
         if request.request_type == RequestType.ADMIN_TO_SUPERADMIN_PLAN:
             return NotificationService._users_with_role(db, None, UserRole.SUPER_ADMIN)
@@ -144,28 +147,45 @@ class NotificationService:
     def _recipients_for_transition(
         db: Session, request: Request, to_status: str
     ) -> list[User]:
+        """Who hears about this status change.
+
+        Accumulates rather than branching: a single status often has to reach
+        both the person waiting on it *and* Admin, who oversees the whole supply
+        chain. Duplicates are removed at the end, and `notify_request_transition`
+        drops the actor, so nobody is told about their own action.
+        """
         requester = db.get(User, request.requester_id)
         recipients: list[User] = []
 
+        def add_requester() -> None:
+            if requester:
+                recipients.append(requester)
+
+        def add_admins() -> None:
+            recipients.extend(
+                NotificationService._users_with_role(
+                    db, request.restaurant_id, UserRole.ADMIN
+                )
+            )
+
         if request.request_type == RequestType.WAREHOUSE_TO_ADMIN_PO:
             if to_status in FULL_APPROVAL_STATUSES | PARTIAL_APPROVAL_STATUSES | {
-                WarehouseToAdminStatus.IN_QUEUE.value
+                WarehouseToAdminStatus.DISPATCHED.value,
+                # Admin accepted the discrepancy report — warehouse may receive.
+                WarehouseToAdminStatus.RESOLVED.value,
             }:
-                if requester:
-                    recipients.append(requester)
+                add_requester()
+            elif to_status == WarehouseToAdminStatus.REPORTED.value:
+                # The delivery was wrong; only Admin can resolve it.
+                add_admins()
             elif to_status == WarehouseToAdminStatus.RECEIVED.value:
-                recipients.extend(
-                    NotificationService._users_with_role(
-                        db, request.restaurant_id, UserRole.ADMIN
-                    )
-                )
+                add_admins()
 
         elif request.request_type == RequestType.BRANCH_TO_ADMIN:
             if to_status in FULL_APPROVAL_STATUSES | PARTIAL_APPROVAL_STATUSES | {
                 BranchToAdminStatus.REJECTED.value
             }:
-                if requester:
-                    recipients.append(requester)
+                add_requester()
             elif to_status == BranchToAdminStatus.FORWARDED_TO_KITCHEN.value:
                 # Only the kitchen the request was actually routed to.
                 recipients.extend(
@@ -177,18 +197,23 @@ class NotificationService:
                 BranchToAdminStatus.ALLOCATED.value,
                 BranchToAdminStatus.RECEIVED.value,
             }:
-                if requester:
-                    recipients.append(requester)
+                add_requester()
 
         elif request.request_type == RequestType.KITCHEN_TO_WAREHOUSE:
-            if requester:
-                recipients.append(requester)
+            # The kitchen tracks its own request, and Admin sees the whole loop.
+            add_requester()
+            add_admins()
 
         elif request.request_type == RequestType.ADMIN_TO_SUPERADMIN_PLAN:
-            if requester:
-                recipients.append(requester)
+            add_requester()
 
-        return recipients
+        seen: set[int] = set()
+        unique: list[User] = []
+        for user in recipients:
+            if user.id not in seen:
+                seen.add(user.id)
+                unique.append(user)
+        return unique
 
     @staticmethod
     def _kitchen_managers_at(
