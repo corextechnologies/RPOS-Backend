@@ -1,61 +1,28 @@
-"""Admin sales records + daily/weekly/monthly aggregation."""
+"""Admin sales reporting — read-only daily/weekly/monthly aggregation.
+
+Admin can view sales but never creates them. Sales rows originate from the
+Branch portal (Phase 5); this service only reads and aggregates them.
+"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import NotFoundError
 from app.deps.scoping import apply_tenant_scope
-from app.models.location import Branch
 from app.models.sales import SalesRecord
 from app.models.user import User
 from app.schemas.sales import (
     PERIOD_TRUNC,
     SalesBucketOut,
     SalesPeriod,
-    SalesRecordCreate,
     SalesRecordOut,
     SalesSummaryOut,
 )
-from app.services.audit import AuditService
 
 
 class SalesService:
-    @staticmethod
-    def create_record(
-        db: Session, admin: User, body: SalesRecordCreate
-    ) -> SalesRecord:
-        if body.branch_id is not None:
-            branch = db.get(Branch, body.branch_id)
-            if branch is None or branch.restaurant_id != admin.restaurant_id:
-                raise NotFoundError("Branch not found.")
-
-        occurred_at = body.occurred_at or datetime.now(timezone.utc)
-        record = SalesRecord(
-            restaurant_id=admin.restaurant_id,
-            branch_id=body.branch_id,
-            amount=body.amount,
-            occurred_at=occurred_at,
-            note=body.note,
-        )
-        db.add(record)
-        db.flush()
-        AuditService.record(
-            db,
-            actor=admin,
-            action="sales.create",
-            entity_type="sales_record",
-            entity_id=record.id,
-            restaurant_id=admin.restaurant_id,
-            payload={"amount": str(body.amount)},
-        )
-        db.commit()
-        db.refresh(record)
-        return record
-
     @staticmethod
     def list_records(
         db: Session,

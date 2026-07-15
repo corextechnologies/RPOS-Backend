@@ -1,11 +1,15 @@
-"""Pydantic schemas for the Phase 2 Admin sales records + aggregation."""
+"""Pydantic schemas for the Admin sales reporting (read-only).
+
+Admin views sales; there is no create schema — sales originate from the Branch
+portal (Phase 5).
+"""
 from __future__ import annotations
 
 import enum
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class SalesPeriod(str, enum.Enum):
@@ -20,13 +24,6 @@ PERIOD_TRUNC: dict[SalesPeriod, str] = {
     SalesPeriod.WEEKLY: "week",
     SalesPeriod.MONTHLY: "month",
 }
-
-
-class SalesRecordCreate(BaseModel):
-    amount: Decimal = Field(gt=0)
-    occurred_at: datetime | None = None
-    branch_id: int | None = None
-    note: str | None = Field(default=None, max_length=500)
 
 
 class SalesRecordOut(BaseModel):
