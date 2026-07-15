@@ -1,4 +1,8 @@
-"""Admin sales records + daily/weekly/monthly aggregation."""
+"""Admin sales reporting — read-only daily/weekly/monthly aggregation.
+
+Admin can VIEW sales but never creates them. Sales rows originate from the
+Branch portal (Phase 5); the Admin side only reads and aggregates them.
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -11,23 +15,13 @@ from app.db.session import get_db
 from app.deps.auth import require_role
 from app.models.enums import UserRole
 from app.models.user import User
-from app.schemas.sales import SalesPeriod, SalesRecordCreate
+from app.schemas.sales import SalesPeriod
 from app.services.sales import SalesService
 
 router = APIRouter(
     prefix="/sales",
     dependencies=[Depends(require_role(UserRole.ADMIN))],
 )
-
-
-@router.post("")
-def create_sale(
-    body: SalesRecordCreate,
-    current: User = Depends(require_role(UserRole.ADMIN)),
-    db: Session = Depends(get_db),
-):
-    record = SalesService.create_record(db, current, body)
-    return ok(SalesService.to_out(record).model_dump(mode="json"))
 
 
 @router.get("/records")

@@ -186,9 +186,8 @@ Admin (all require ADMIN role):
 - `POST /v1/admin/users/{id}/revoke` · `/restore` — revoke / restore manager access (soft `is_active`)
 - `DELETE /v1/admin/users/{id}` — delete a manager
 - `GET  /v1/admin/settings` · `PATCH /v1/admin/settings` — admin's own display name + profile picture URL
-- `POST /v1/admin/sales` — record a sale
-- `GET  /v1/admin/sales/records` — list sales (paginated, optional `branch_id`)
-- `GET  /v1/admin/sales/summary?period=daily|weekly|monthly` — aggregated totals (optional `start`/`end`/`branch_id`)
+- `GET  /v1/admin/sales/records` — list sales (read-only; paginated, optional `branch_id`)
+- `GET  /v1/admin/sales/summary?period=daily|weekly|monthly` — aggregated totals, read-only (optional `start`/`end`/`branch_id`)
 - `PATCH /v1/admin/products/{id}/pricing` — set `cost_price` (Admin-only field)
 - `GET  /v1/admin/products/pricing` — list products with cost prices
 - `GET  /v1/admin/requests/products` — `BRANCH_TO_ADMIN` inbox
