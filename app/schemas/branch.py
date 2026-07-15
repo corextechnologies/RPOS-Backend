@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,63 @@ class BranchStaffOut(BaseModel):
     is_active: bool
     branch_id: int | None = None
     created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# --- Slice 5: customers ---
+
+class CustomerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+
+
+class CustomerOut(BaseModel):
+    id: int
+    restaurant_id: int
+    name: str
+    phone: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# --- Slice 4: orders ---
+
+class BranchOrderLineIn(BaseModel):
+    product_id: int
+    quantity: int = Field(gt=0)
+    unit_price: Decimal = Field(ge=0)
+
+
+class BranchOrderCreate(BaseModel):
+    lines: list[BranchOrderLineIn] = Field(min_length=1)
+    customer_id: int | None = None
+    occurred_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=500)
+
+
+class BranchOrderLineOut(BaseModel):
+    id: int
+    product_id: int
+    product_name: str | None = None
+    quantity: int
+    unit_price: Decimal
+
+    model_config = {"from_attributes": True}
+
+
+class BranchOrderOut(BaseModel):
+    id: int
+    restaurant_id: int
+    branch_id: int
+    customer_id: int | None = None
+    created_by_id: int | None = None
+    total_amount: Decimal
+    occurred_at: datetime
+    note: str | None = None
+    created_at: datetime
+    lines: list[BranchOrderLineOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

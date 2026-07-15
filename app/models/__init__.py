@@ -18,3 +18,5 @@ from app.models.inventory import (  # noqa: F401
 )
 from app.models.stock_count import StockCount, StockCountLine  # noqa: F401
 from app.models.sales import SalesRecord  # noqa: F401
+from app.models.customer import Customer  # noqa: F401
+from app.models.order import BranchOrder, BranchOrderLine  # noqa: F401

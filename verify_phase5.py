@@ -42,6 +42,8 @@ TESTS = [
     "tests/test_branch_requests.py",
     "tests/test_branch_inventory.py",
     "tests/test_branch_users.py",
+    "tests/test_branch_orders.py",
+    "tests/test_branch_customers.py",
 ]
 
 

@@ -41,6 +41,7 @@ python verify_phase6a.py  # Phase 6A gate (+ Phase 0/1 regression)
 python verify_phase2.py   # Phase 2 gate (+ Phase 0/1/6A regression)
 python verify_phase3.py   # Phase 3 gate (+ Phase 0/1/2/6A + billing smoke)
 python verify_phase4.py   # Phase 4 gate (+ Phase 0/1/2/3/6A + billing smoke)
+python verify_phase5.py   # Phase 5 gate (+ Phase 0/1/2/3/4/6A/8 regression)
 python verify_phase8.py   # Phase 8 gate (+ Phase 0–1 regression)
 pytest                    # full suite
 ```
@@ -85,6 +86,47 @@ If payment comes later:
 Update invoice status (Super Admin):
 - `PATCH /v1/super-admin/restaurants/{id}/invoices/{invoice_id}` with `{ "paid": true|false }`
 - Marking an invoice **paid** automatically opens the next month’s unpaid invoice.
+
+## Phase 5 endpoints
+
+Branch portal. `BRANCH_MANAGER` unless noted; `BRANCH_STAFF`
+(salesperson / cashier / order-taker, via `position`) may take orders and add
+customers. Every caller must have a `branch_id`.
+
+- `POST /v1/branch/users` · `GET /v1/branch/users` — create/list branch sub-staff (position-based, `created_by` subtree) + credential email
+- `POST /v1/branch/requests` — request product from Admin, **naming the target kitchen** (`kitchen_id`)
+- `GET  /v1/branch/requests` · `GET .../{id}` · `PATCH .../{id}/status` — list own / detail / confirm receipt (`ALLOCATED → RECEIVED`)
+- `GET  /v1/branch/inventory` · `/inventory/near-expiry` — on-hand + near-expiry (never exposes `cost_price`)
+- `POST /v1/branch/stock/waste` — waste·expiry (`WASTE`/`EXPIRY`, optional `waste_reason`)
+- `POST /v1/branch/orders` · `GET /v1/branch/orders` — take/list customer orders *(also BRANCH_STAFF)*
+- `POST /v1/branch/customers` · `GET /v1/branch/customers` — customer records *(also BRANCH_STAFF)*
+
+The branch sets `target = KITCHEN` at request creation, so the whole
+`BRANCH_TO_ADMIN` chain is routed to that kitchen (Admin forwards without
+re-selecting). `RECEIVED` credits branch inventory; taking an order deducts
+branch inventory per line and rolls the total up into `SalesRecord` so the Admin
+sales view reflects real branch sales.
+
+### How the branch flows work
+
+**1 — Branch requests 200 buns from Kitchen A, then receives them**
+
+```
+Branch  POST /v1/branch/requests {kitchen_id: A, 200 buns}   → PENDING (target = Kitchen A)
+Admin   PATCH → APPROVED  →  FORWARDED_TO_KITCHEN            (no kitchen re-selection needed)
+Kitchen A PATCH → IN_PRODUCTION → PRODUCED → ALLOCATED      ⇒ Kitchen A stock −200
+Branch  PATCH /v1/branch/requests/{id}/status → RECEIVED    ⇒ branch stock +200
+```
+
+**2 — Cashier takes a customer order**
+
+```
+Cashier POST /v1/branch/orders {2 burgers @ 10.00}
+  ⇒ branch stock −2, order total 20.00
+  ⇒ a SalesRecord (20.00) is written → shows up in GET /v1/admin/sales/summary
+```
+Goes wrong: ordering more than the branch holds → `409 insufficient_stock`, and
+the whole order rolls back (no partial deduction, no order, no sales row).
 
 ## Phase 4 endpoints
 
