@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, Field
 
 from app.models.enums import UserRole
-from app.models.inventory import StockMovementType
+from app.models.inventory import StockMovementType, WasteReason
 from app.schemas.admin import ProductPublicOut
 from app.schemas.request import RequestLineCreate
 
@@ -55,6 +55,9 @@ class StockWasteIn(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
     movement_type: StockMovementType = StockMovementType.WASTE
+    # Optional here (unlike Kitchen) so existing Phase 3 clients keep working.
+    # Same shared enum — do not fork a warehouse-specific reason list.
+    waste_reason: WasteReason | None = None
     batch_code: str | None = Field(default=None, max_length=100)
     notes: str | None = None
 

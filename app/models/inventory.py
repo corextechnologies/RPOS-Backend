@@ -29,7 +29,24 @@ class StockMovementType(str, enum.Enum):
     EXPIRY = "EXPIRY"
 
 
+class WasteReason(str, enum.Enum):
+    """Structured reason for a WASTE/EXPIRY movement.
+
+    Shared by every portal that logs wastage — Kitchen (Phase 4) and Warehouse
+    (retrofitted). Do not fork this per portal; Phase 7's waste-rate analytics
+    aggregates over it.
+    """
+
+    SPOILAGE = "SPOILAGE"
+    EXPIRED = "EXPIRED"
+    DAMAGED = "DAMAGED"
+    OVERPRODUCTION = "OVERPRODUCTION"
+    PREP_ERROR = "PREP_ERROR"
+    OTHER = "OTHER"
+
+
 _movement_type_enum = SAEnum(StockMovementType, name="stock_movement_type")
+_waste_reason_enum = SAEnum(WasteReason, name="waste_reason")
 
 
 class InventoryItem(Base, PKMixin, TimestampMixin):
@@ -82,6 +99,9 @@ class StockMovement(Base, PKMixin, TimestampMixin):
     movement_type: Mapped[StockMovementType] = mapped_column(
         _movement_type_enum, nullable=False
     )
+    # Only meaningful for WASTE/EXPIRY movements; nullable so existing rows and
+    # every other movement type stay valid.
+    waste_reason: Mapped[WasteReason | None] = mapped_column(_waste_reason_enum)
     batch_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     request_id: Mapped[int | None] = mapped_column(
         ForeignKey("requests.id", ondelete="SET NULL"), index=True

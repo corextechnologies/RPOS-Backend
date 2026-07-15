@@ -121,6 +121,7 @@ def waste_stock(
         movement_type=body.movement_type,
         batch_code=body.batch_code,
         notes=body.notes,
+        waste_reason=body.waste_reason,
     )
     db.commit()
     db.refresh(item)

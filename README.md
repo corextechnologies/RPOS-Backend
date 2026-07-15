@@ -40,9 +40,14 @@ python verify_phase1.py   # Phase 1 gate (+ Phase 0 regression)
 python verify_phase6a.py  # Phase 6A gate (+ Phase 0/1 regression)
 python verify_phase2.py   # Phase 2 gate (+ Phase 0/1/6A regression)
 python verify_phase3.py   # Phase 3 gate (+ Phase 0/1/2/6A + billing smoke)
+python verify_phase4.py   # Phase 4 gate (+ Phase 0/1/2/3/6A + billing smoke)
 python verify_phase8.py   # Phase 8 gate (+ Phase 0–1 regression)
 pytest                    # full suite
 ```
+
+> Tests build the schema with `create_all`, **not** migrations — a broken
+> migration still passes `pytest`. Run `alembic upgrade head` against a scratch
+> DB before shipping one.
 
 ## Billing cycle job (Phase 8)
 
@@ -80,6 +85,83 @@ If payment comes later:
 Update invoice status (Super Admin):
 - `PATCH /v1/super-admin/restaurants/{id}/invoices/{invoice_id}` with `{ "paid": true|false }`
 - Marking an invoice **paid** automatically opens the next month’s unpaid invoice.
+
+## Phase 4 endpoints
+
+Cloud Kitchen. `KITCHEN_MANAGER` unless noted; `SUB_CHEF` is read + waste only.
+Every caller must have a `kitchen_id`.
+
+- `POST /v1/kitchen/users` · `GET /v1/kitchen/users` — create/list sub-chefs (`created_by` subtree) + credential email
+- `POST /v1/kitchen/stock/waste` — waste·expiry with a required `waste_reason` *(also SUB_CHEF)*
+- `POST /v1/kitchen/stock/counts` · `GET .../counts` — physical count; variance writes an `ADJUSTMENT` and notifies Admin
+- `GET  /v1/kitchen/inventory` · `/inventory/near-expiry` — on-hand + near-expiry feed *(also SUB_CHEF)*
+- `GET  /v1/kitchen/inventory/labels` — expiry sticker data (`product_id`/`batch_code` filters) *(also SUB_CHEF)*
+- `POST /v1/kitchen/requests/warehouse` · `GET .../warehouse` — create/list `KITCHEN_TO_WAREHOUSE` (needs `warehouse_id`)
+- `GET  /v1/kitchen/requests/branch` — `BRANCH_TO_ADMIN` inbox, only once forwarded **to this kitchen** *(also SUB_CHEF)*
+- `GET  /v1/kitchen/requests/{id}` *(also SUB_CHEF)* · `PATCH .../status` — detail / production + allocation
+
+No kitchen response ever exposes `cost_price` — same rule as Warehouse.
+
+**Contract change:** `PATCH /v1/requests/{id}/status` now accepts
+`target_location_type` / `target_location_id`, and **requires** them when Admin
+moves a `BRANCH_TO_ADMIN` request to `FORWARDED_TO_KITCHEN`. That target decides
+which kitchen sees the request, who is notified, and whose stock `ALLOCATED`
+decrements. Forwarding without it returns `409 missing_kitchen_target`.
+
+### How the kitchen flows work
+
+**1 — Kitchen Manager onboards a sub-chef**
+
+```
+Manager POST /v1/kitchen/users {"email": "priya@…"}
+  → Priya created as SUB_CHEF, kitchen_id = manager's kitchen, created_by_id = manager
+  → credential email sent
+  → Priya can log waste + read inventory
+  → Priya PATCH .../status  →  403 (sub-chefs never approve)
+```
+Goes wrong: another kitchen's manager calls `GET /v1/kitchen/users` → Priya is
+absent. Staff are only visible to the manager who created them.
+
+**2 — Kitchen pulls 50kg flour from the Warehouse**
+
+```
+Kitchen  POST /v1/kitchen/requests/warehouse {warehouse_id, 50 flour}   → PENDING
+Warehouse PATCH → APPROVED
+Warehouse PATCH → DISPATCHED    ⇒ warehouse stock −50   (in transit: kitchen still 0)
+Kitchen   PATCH → RECEIVED      ⇒ kitchen stock +50
+```
+Goes wrong: dispatching more than the warehouse holds → `409 insufficient_stock`,
+and the status stays put — no movement without stock.
+
+**3 — Branch asks for 200 buns, Kitchen A produces them**
+
+```
+Branch POST /v1/requests (BRANCH_TO_ADMIN, 200 buns)          → PENDING
+Admin  PATCH → APPROVED
+Admin  PATCH → FORWARDED_TO_KITCHEN + target = Kitchen A
+                                    ⇒ only Kitchen A's manager is notified
+                                    ⇒ appears in Kitchen A's /requests/branch inbox
+Kitchen A PATCH → IN_PRODUCTION     (status only, no stock effect)
+Kitchen A PATCH → PRODUCED          (status only, no stock effect)
+Kitchen A PATCH → ALLOCATED         ⇒ Kitchen A stock −200
+Branch    PATCH → RECEIVED          (branch credit lands in Phase 5)
+```
+Goes wrong: Kitchen B opening that request → `404`. Allocating 200 when the
+kitchen holds 150 → `409 insufficient_stock`.
+
+**4 — Waste, then a nightly count**
+
+```
+Priya POST /v1/kitchen/stock/waste {5kg, reason: SPOILAGE}
+  ⇒ kitchen stock −5, WASTE movement carries the reason code
+
+Manager POST /v1/kitchen/stock/counts {flour counted: 42}   (system says 45)
+  ⇒ variance −3 → ADJUSTMENT movement → inventory corrected to 42
+  ⇒ Admin notified: "1 of 1 products differed … (Flour -3)"
+```
+Goes wrong: counting the same product twice in one submission →
+`409 duplicate_count_line`. A count that matches system stock writes no
+movement, but Admin is still told the count happened.
 
 ## Phase 3 endpoints
 
@@ -164,7 +246,15 @@ Admin:
 - **Phase 3 — Warehouse portal:** inventory ledger (`InventoryItem` /
   `StockMovement`), warehouse staff provisioning, stock receive/adjust/waste,
   near-expiry feed, PO + kitchen request wrappers. Dispatching kitchen requests
-  decrements warehouse stock (Phase 6B). Kitchen receive credit deferred to Phase 4.
+  decrements warehouse stock (Phase 6B).
+- **Phase 4 — Cloud Kitchen portal:** `SUB_CHEF` role (read + waste, scoped by
+  `created_by_id`), kitchen waste with a shared `WasteReason` enum (retrofitted
+  onto Warehouse), physical `StockCount` that reconciles inventory and notifies
+  Admin, shared expiry-label service (`app/services/labels.py`), and the
+  warehouse→kitchen request loop. Completes Phase 6B's stock side effects:
+  `KITCHEN_TO_WAREHOUSE → RECEIVED` credits the kitchen and
+  `BRANCH_TO_ADMIN → ALLOCATED` decrements it. Requests are now routed to a
+  specific kitchen, so multi-kitchen restaurants stay isolated.
 - **Phase 8 — Billing core:** `Invoice` model, billing cycle engine
   (`app/services/billing.py`), CLI job (`python -m app.jobs.billing_cycle`),
   invoice history on existing billing read APIs. Billing-due notifications and

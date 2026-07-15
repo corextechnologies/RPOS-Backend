@@ -6,8 +6,40 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import UserRole
 from app.models.request import Request
-from app.models.request_enums import BranchToAdminStatus, RequestType
+from app.models.request_enums import BranchToAdminStatus, LocationType, RequestType
 from app.models.user import User
+
+
+_FORWARDED_STATUSES = [
+    BranchToAdminStatus.FORWARDED_TO_KITCHEN.value,
+    BranchToAdminStatus.IN_PRODUCTION.value,
+    BranchToAdminStatus.PRODUCED.value,
+    BranchToAdminStatus.ALLOCATED.value,
+    BranchToAdminStatus.RECEIVED.value,
+]
+
+
+def _kitchen_visible_requests(user: User, *, kitchen_id: int | None) -> Select:
+    """Requests visible to staff at one kitchen.
+
+    Branch requests are only visible once Admin has forwarded them *to this
+    kitchen* — a request routed to another kitchen must never leak here.
+    """
+    if kitchen_id is None:
+        return select(Request).where(Request.id == -1)
+
+    return select(Request).where(
+        Request.restaurant_id == user.restaurant_id,
+        or_(
+            Request.requester_id == user.id,
+            (
+                (Request.request_type == RequestType.BRANCH_TO_ADMIN)
+                & (Request.status.in_(_FORWARDED_STATUSES))
+                & (Request.target_location_type == LocationType.KITCHEN)
+                & (Request.target_location_id == kitchen_id)
+            ),
+        ),
+    )
 
 
 def visible_requests(db: Session, user: User) -> Select:
@@ -30,23 +62,13 @@ def visible_requests(db: Session, user: User) -> Select:
         )
 
     if user.role == UserRole.KITCHEN_MANAGER:
-        forwarded_statuses = [
-            BranchToAdminStatus.FORWARDED_TO_KITCHEN.value,
-            BranchToAdminStatus.IN_PRODUCTION.value,
-            BranchToAdminStatus.PRODUCED.value,
-            BranchToAdminStatus.ALLOCATED.value,
-            BranchToAdminStatus.RECEIVED.value,
-        ]
-        return select(Request).where(
-            Request.restaurant_id == user.restaurant_id,
-            or_(
-                Request.requester_id == user.id,
-                (
-                    (Request.request_type == RequestType.BRANCH_TO_ADMIN)
-                    & (Request.status.in_(forwarded_statuses))
-                ),
-            ),
-        )
+        return _kitchen_visible_requests(user, kitchen_id=user.kitchen_id)
+
+    if user.role == UserRole.SUB_CHEF:
+        # A sub-chef sees exactly what their kitchen sees. Read-only is enforced
+        # by transitions.py: SUB_CHEF appears in no CREATE_ROLES/TRANSITION_ROLES
+        # entry, so every write fails closed.
+        return _kitchen_visible_requests(user, kitchen_id=user.kitchen_id)
 
     if user.role == UserRole.BRANCH_MANAGER:
         return select(Request).where(

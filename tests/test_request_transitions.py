@@ -1,11 +1,28 @@
 """Phase 6A — request transition tests."""
+from app.models.inventory import InventoryItem
 from app.models.request_enums import (
     AdminToSuperAdminStatus,
     BranchToAdminStatus,
     KitchenToWarehouseStatus,
+    LocationType,
     WarehouseToAdminStatus,
 )
 from tests.conftest import auth_headers
+
+
+def _stock_kitchen(db, setup, product, quantity):
+    """Give the kitchen stock so ALLOCATED has something to dispatch."""
+    db.add(
+        InventoryItem(
+            restaurant_id=setup["restaurant"].id,
+            location_type=LocationType.KITCHEN,
+            location_id=setup["home_kitchen"].id,
+            product_id=product.id,
+            quantity=quantity,
+            batch_code="",
+        )
+    )
+    db.flush()
 
 
 def _create_branch_request(client, setup, make_branch, make_product):
@@ -23,14 +40,15 @@ def _create_branch_request(client, setup, make_branch, make_product):
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()["data"]
+    return resp.json()["data"], product
 
 
 def test_branch_request_happy_path(
-    client, restaurant_setup, make_branch, make_product
+    client, db, restaurant_setup, make_branch, make_product
 ):
     setup = restaurant_setup
-    req = _create_branch_request(client, setup, make_branch, make_product)
+    req, product = _create_branch_request(client, setup, make_branch, make_product)
+    _stock_kitchen(db, setup, product, 10)
     request_id = req["id"]
     admin_headers = auth_headers(client, "admin@test.com")
 
@@ -44,7 +62,11 @@ def test_branch_request_happy_path(
 
     resp = client.patch(
         f"/v1/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.FORWARDED_TO_KITCHEN.value},
+        json={
+            "to_status": BranchToAdminStatus.FORWARDED_TO_KITCHEN.value,
+            "target_location_type": "KITCHEN",
+            "target_location_id": setup["home_kitchen"].id,
+        },
         headers=admin_headers,
     )
     assert resp.status_code == 200
@@ -75,7 +97,7 @@ def test_illegal_transition_rejected(
     client, restaurant_setup, make_branch, make_product
 ):
     setup = restaurant_setup
-    req = _create_branch_request(client, setup, make_branch, make_product)
+    req, _ = _create_branch_request(client, setup, make_branch, make_product)
     admin_headers = auth_headers(client, "admin@test.com")
 
     resp = client.patch(
@@ -91,7 +113,7 @@ def test_wrong_role_gets_forbidden(
     client, restaurant_setup, make_branch, make_product
 ):
     setup = restaurant_setup
-    req = _create_branch_request(client, setup, make_branch, make_product)
+    req, _ = _create_branch_request(client, setup, make_branch, make_product)
     # Branch manager can see their own request but cannot approve it.
     branch_headers = auth_headers(client, "branch@test.com")
 

@@ -83,9 +83,11 @@ def test_list_staff_is_created_by_subtree_only(
 
 
 def test_create_staff_requires_warehouse_assignment(
-    client, restaurant_setup
+    client, db, restaurant_setup
 ):
-    # seeded warehouse mgr has no warehouse_id
+    # A warehouse manager with no warehouse can't provision staff into one.
+    restaurant_setup["warehouse_mgr"].warehouse_id = None
+    db.flush()
     headers = auth_headers(client, "warehouse@test.com")
     resp = client.post(
         "/v1/warehouse/users",

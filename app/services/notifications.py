@@ -68,6 +68,41 @@ class NotificationService:
         return notifications
 
     @staticmethod
+    def notify_users(
+        db: Session,
+        *,
+        users: list[User],
+        restaurant_id: int,
+        title: str,
+        body: str,
+        entity_type: str,
+        entity_id: int,
+        exclude_user_id: int | None = None,
+    ) -> list[Notification]:
+        """Fan a notification out to users for any entity.
+
+        entity_type/entity_id are polymorphic on purpose — a new alert type
+        should never need a schema change.
+        """
+        notifications = []
+        for user in users:
+            if exclude_user_id is not None and user.id == exclude_user_id:
+                continue
+            notification = Notification(
+                restaurant_id=restaurant_id,
+                user_id=user.id,
+                title=title,
+                body=body,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                is_read=False,
+            )
+            db.add(notification)
+            notifications.append(notification)
+        db.flush()
+        return notifications
+
+    @staticmethod
     def _create(
         db: Session,
         *,
@@ -76,18 +111,16 @@ class NotificationService:
         title: str,
         body: str,
     ) -> Notification:
-        notification = Notification(
+        created = NotificationService.notify_users(
+            db,
+            users=[user],
             restaurant_id=request.restaurant_id,
-            user_id=user.id,
             title=title,
             body=body,
             entity_type="request",
             entity_id=request.id,
-            is_read=False,
         )
-        db.add(notification)
-        db.flush()
-        return notification
+        return created[0]
 
     @staticmethod
     def _recipients_for_new_request(db: Session, request: Request) -> list[User]:
@@ -134,9 +167,10 @@ class NotificationService:
                 if requester:
                     recipients.append(requester)
             elif to_status == BranchToAdminStatus.FORWARDED_TO_KITCHEN.value:
+                # Only the kitchen the request was actually routed to.
                 recipients.extend(
-                    NotificationService._users_with_role(
-                        db, request.restaurant_id, UserRole.KITCHEN_MANAGER
+                    NotificationService._kitchen_managers_at(
+                        db, request.restaurant_id, request.target_location_id
                     )
                 )
             elif to_status in {
@@ -155,6 +189,20 @@ class NotificationService:
                 recipients.append(requester)
 
         return recipients
+
+    @staticmethod
+    def _kitchen_managers_at(
+        db: Session, restaurant_id: int, kitchen_id: int | None
+    ) -> list[User]:
+        if kitchen_id is None:
+            return []
+        stmt = select(User).where(
+            User.role == UserRole.KITCHEN_MANAGER,
+            User.is_active.is_(True),
+            User.restaurant_id == restaurant_id,
+            User.kitchen_id == kitchen_id,
+        )
+        return list(db.execute(stmt).scalars().all())
 
     @staticmethod
     def _users_with_role(

@@ -40,6 +40,12 @@ class RequestTransition(BaseModel):
     line_approvals: list[LineApproval] | None = None
     notes: str | None = None
     assignee_id: int | None = None
+    # Routing target set during a transition. Required when Admin forwards a
+    # BRANCH_TO_ADMIN request to a kitchen — that is what tells the engine which
+    # kitchen may see it and whose stock ALLOCATED decrements. Enforced in
+    # RequestService.transition, not here, so the error is a domain ConflictError.
+    target_location_type: LocationType | None = None
+    target_location_id: int | None = None
 
 
 class RequestLineOut(BaseModel):

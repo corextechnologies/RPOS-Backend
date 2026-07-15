@@ -74,7 +74,8 @@ def client(db):
 @pytest.fixture
 def make_user(db):
     def _make(email, role, password="Pass@1234", restaurant_id=None,
-              created_by_id=None, is_active=True):
+              created_by_id=None, is_active=True, branch_id=None,
+              kitchen_id=None, warehouse_id=None):
         user = User(
             email=email,
             hashed_password=hash_password(password),
@@ -83,6 +84,9 @@ def make_user(db):
             restaurant_id=restaurant_id,
             created_by_id=created_by_id,
             is_active=is_active,
+            branch_id=branch_id,
+            kitchen_id=kitchen_id,
+            warehouse_id=warehouse_id,
         )
         db.add(user)
         db.flush()
@@ -147,9 +151,23 @@ def make_product(db):
 
 
 @pytest.fixture
-def restaurant_setup(make_restaurant, make_user):
-    """One restaurant with admin, branch manager, warehouse, kitchen managers."""
+def restaurant_setup(make_restaurant, make_user, make_branch, make_kitchen,
+                     make_warehouse):
+    """One restaurant with admin + one manager per location.
+
+    Each manager carries its location FK, as production requires: see
+    `validate_manager_location` in app/deps/rbac.py — a manager without a
+    location is not a state the API can produce.
+
+    The location keys are prefixed `home_` on purpose: several test modules build
+    their own `{"warehouse": ..., **restaurant_setup}` dicts, and plain names
+    here would silently clobber theirs.
+    """
     restaurant = make_restaurant("Test Restaurant")
+    branch = make_branch(restaurant.id, name="Setup Branch")
+    kitchen = make_kitchen(restaurant.id, name="Setup Kitchen")
+    warehouse = make_warehouse(restaurant.id, name="Setup Warehouse")
+
     super_admin = make_user("super@test.com", UserRole.SUPER_ADMIN)
     admin = make_user(
         "admin@test.com", UserRole.ADMIN, restaurant_id=restaurant.id,
@@ -157,18 +175,23 @@ def restaurant_setup(make_restaurant, make_user):
     )
     branch_mgr = make_user(
         "branch@test.com", UserRole.BRANCH_MANAGER, restaurant_id=restaurant.id,
-        created_by_id=admin.id,
+        created_by_id=admin.id, branch_id=branch.id,
     )
     warehouse_mgr = make_user(
         "warehouse@test.com", UserRole.WAREHOUSE_MANAGER,
         restaurant_id=restaurant.id, created_by_id=admin.id,
+        warehouse_id=warehouse.id,
     )
     kitchen_mgr = make_user(
         "kitchen@test.com", UserRole.KITCHEN_MANAGER,
         restaurant_id=restaurant.id, created_by_id=admin.id,
+        kitchen_id=kitchen.id,
     )
     return {
         "restaurant": restaurant,
+        "home_branch": branch,
+        "home_kitchen": kitchen,
+        "home_warehouse": warehouse,
         "super_admin": super_admin,
         "admin": admin,
         "branch_mgr": branch_mgr,

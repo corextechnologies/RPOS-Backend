@@ -9,13 +9,15 @@ class RestaurantStatus(str, enum.Enum):
 
 
 class UserRole(str, enum.Enum):
-    """The five primary portal roles. Sub-roles are added in later phases."""
+    """The five primary portal roles, plus sub-roles added by later phases."""
 
     SUPER_ADMIN = "SUPER_ADMIN"
     ADMIN = "ADMIN"
     WAREHOUSE_MANAGER = "WAREHOUSE_MANAGER"
     KITCHEN_MANAGER = "KITCHEN_MANAGER"
     BRANCH_MANAGER = "BRANCH_MANAGER"
+    # Phase 4: kitchen sub-staff. Read + waste-log only; never approves requests.
+    SUB_CHEF = "SUB_CHEF"
 
     @property
     def is_manager(self) -> bool:

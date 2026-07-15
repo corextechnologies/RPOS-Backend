@@ -11,6 +11,7 @@ from app.models.product import Product
 from app.models.request import Request, RequestLineItem
 from app.models.request_enums import (
     INITIAL_STATUS,
+    BranchToAdminStatus,
     KitchenToWarehouseStatus,
     LocationType,
     RequestType,
@@ -41,6 +42,163 @@ _LOCATION_MODELS = {
 }
 
 
+def _approved_quantity(line: RequestLineItem) -> int:
+    qty = line.quantity_approved
+    return line.quantity_requested if qty is None else qty
+
+
+def _require_location(
+    request: Request,
+    *,
+    which: str,
+    expected: LocationType,
+    code: str,
+) -> int:
+    loc_type = getattr(request, f"{which}_location_type")
+    loc_id = getattr(request, f"{which}_location_id")
+    if loc_type != expected or loc_id is None:
+        raise ConflictError(
+            f"Request #{request.id} is missing a {expected.value.lower()} "
+            f"{which}.",
+            code=code,
+        )
+    return loc_id
+
+
+def _dispatch_from(
+    db: Session,
+    *,
+    actor: User,
+    request: Request,
+    location_type: LocationType,
+    location_id: int,
+) -> None:
+    for line in request.line_items:
+        qty = _approved_quantity(line)
+        if qty <= 0:
+            continue
+        try:
+            InventoryService.apply_dispatch(
+                db,
+                actor=actor,
+                location_type=location_type,
+                location_id=location_id,
+                product_id=line.product_id,
+                quantity=qty,
+                request_id=request.id,
+                notes=f"Dispatch for request #{request.id}",
+            )
+        except NotFoundError as exc:
+            # No inventory row at all reads the same as an empty one to the
+            # caller: they asked to move stock that isn't there.
+            raise ConflictError(
+                "Insufficient stock for this operation.",
+                code="insufficient_stock",
+            ) from exc
+
+
+def _receive_into(
+    db: Session,
+    *,
+    actor: User,
+    request: Request,
+    location_type: LocationType,
+    location_id: int,
+) -> None:
+    for line in request.line_items:
+        qty = _approved_quantity(line)
+        if qty <= 0:
+            continue
+        InventoryService.receive_stock(
+            db,
+            actor=actor,
+            location_type=location_type,
+            location_id=location_id,
+            product_id=line.product_id,
+            quantity=qty,
+            request_id=request.id,
+            notes=f"Receipt for request #{request.id}",
+        )
+
+
+def _warehouse_dispatches_to_kitchen(
+    db: Session, *, actor: User, request: Request
+) -> None:
+    """KITCHEN_TO_WAREHOUSE -> DISPATCHED: warehouse stock leaves."""
+    warehouse_id = _require_location(
+        request,
+        which="target",
+        expected=LocationType.WAREHOUSE,
+        code="missing_warehouse_target",
+    )
+    _dispatch_from(
+        db,
+        actor=actor,
+        request=request,
+        location_type=LocationType.WAREHOUSE,
+        location_id=warehouse_id,
+    )
+
+
+def _kitchen_receives_from_warehouse(
+    db: Session, *, actor: User, request: Request
+) -> None:
+    """KITCHEN_TO_WAREHOUSE -> RECEIVED: the requesting kitchen is credited."""
+    kitchen_id = _require_location(
+        request,
+        which="source",
+        expected=LocationType.KITCHEN,
+        code="missing_kitchen_source",
+    )
+    _receive_into(
+        db,
+        actor=actor,
+        request=request,
+        location_type=LocationType.KITCHEN,
+        location_id=kitchen_id,
+    )
+
+
+def _kitchen_allocates_to_branch(
+    db: Session, *, actor: User, request: Request
+) -> None:
+    """BRANCH_TO_ADMIN -> ALLOCATED: the producing kitchen's stock leaves.
+
+    The branch is credited later, on RECEIVED (Phase 5).
+    """
+    kitchen_id = _require_location(
+        request,
+        which="target",
+        expected=LocationType.KITCHEN,
+        code="missing_kitchen_target",
+    )
+    _dispatch_from(
+        db,
+        actor=actor,
+        request=request,
+        location_type=LocationType.KITCHEN,
+        location_id=kitchen_id,
+    )
+
+
+# (request_type, to_status) -> handler. Every stock-moving transition lives here
+# so a status change can never silently skip its StockMovement.
+_INVENTORY_SIDE_EFFECTS = {
+    (
+        RequestType.KITCHEN_TO_WAREHOUSE,
+        KitchenToWarehouseStatus.DISPATCHED.value,
+    ): _warehouse_dispatches_to_kitchen,
+    (
+        RequestType.KITCHEN_TO_WAREHOUSE,
+        KitchenToWarehouseStatus.RECEIVED.value,
+    ): _kitchen_receives_from_warehouse,
+    (
+        RequestType.BRANCH_TO_ADMIN,
+        BranchToAdminStatus.ALLOCATED.value,
+    ): _kitchen_allocates_to_branch,
+}
+
+
 def _apply_inventory_side_effects(
     db: Session,
     *,
@@ -49,42 +207,10 @@ def _apply_inventory_side_effects(
     from_status: str,
     to_status: str,
 ) -> None:
-    """Phase 6B: decrement warehouse stock when kitchen requests are dispatched."""
-    if request.request_type != RequestType.KITCHEN_TO_WAREHOUSE:
+    handler = _INVENTORY_SIDE_EFFECTS.get((request.request_type, to_status))
+    if handler is None:
         return
-    if to_status != KitchenToWarehouseStatus.DISPATCHED.value:
-        return
-    if (
-        request.target_location_type != LocationType.WAREHOUSE
-        or request.target_location_id is None
-    ):
-        raise ConflictError(
-            "Kitchen-to-warehouse request is missing a warehouse target.",
-            code="missing_warehouse_target",
-        )
-
-    for line in request.line_items:
-        qty = line.quantity_approved
-        if qty is None:
-            qty = line.quantity_requested
-        if qty <= 0:
-            continue
-        try:
-            InventoryService.apply_dispatch(
-                db,
-                actor=actor,
-                location_type=LocationType.WAREHOUSE,
-                location_id=request.target_location_id,
-                product_id=line.product_id,
-                quantity=qty,
-                request_id=request.id,
-                notes=f"Dispatch for request #{request.id}",
-            )
-        except NotFoundError as exc:
-            raise ConflictError(
-                "Insufficient stock for this operation.",
-                code="insufficient_stock",
-            ) from exc
+    handler(db, actor=actor, request=request)
 
 
 class RequestService:
@@ -191,6 +317,7 @@ class RequestService:
         assert_role_can_transition(actor.role, request.request_type, to_status)
 
         RequestService._apply_line_approvals(request, body, to_status)
+        RequestService._apply_routing_target(db, request, body, to_status)
 
         if body.notes:
             request.notes = body.notes
@@ -239,6 +366,50 @@ class RequestService:
         )
         db.commit()
         return RequestService._load_request(db, request.id)
+
+    @staticmethod
+    def _apply_routing_target(
+        db: Session, request: Request, body: RequestTransition, to_status: str
+    ) -> None:
+        """Set the request's routing target during a transition.
+
+        Forwarding a branch request to a kitchen is the one transition where the
+        target is mandatory: it decides which kitchen may see the request, who
+        gets notified, and whose stock ALLOCATED later decrements.
+        """
+        forwarding = (
+            request.request_type == RequestType.BRANCH_TO_ADMIN
+            and to_status == BranchToAdminStatus.FORWARDED_TO_KITCHEN.value
+        )
+
+        if body.target_location_id is None:
+            if forwarding:
+                raise ConflictError(
+                    "Forwarding to a kitchen requires target_location_type="
+                    "KITCHEN and target_location_id.",
+                    code="missing_kitchen_target",
+                )
+            return
+
+        target_type = body.target_location_type
+        if forwarding and target_type != LocationType.KITCHEN:
+            raise ConflictError(
+                "A branch request can only be forwarded to a KITCHEN.",
+                code="invalid_kitchen_target",
+            )
+        if target_type is None:
+            raise ConflictError(
+                "target_location_type is required with target_location_id.",
+                code="missing_target_location_type",
+            )
+
+        model = _LOCATION_MODELS[target_type]
+        row = db.get(model, body.target_location_id)
+        if row is None or row.restaurant_id != request.restaurant_id:
+            raise NotFoundError("Location not found in this restaurant.")
+
+        request.target_location_type = target_type
+        request.target_location_id = body.target_location_id
 
     @staticmethod
     def _apply_line_approvals(

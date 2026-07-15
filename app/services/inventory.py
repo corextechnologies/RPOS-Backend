@@ -7,7 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
-from app.models.inventory import InventoryItem, StockMovement, StockMovementType
+from app.models.inventory import (
+    InventoryItem,
+    StockMovement,
+    StockMovementType,
+    WasteReason,
+)
 from app.models.location import Branch, Kitchen, Warehouse
 from app.models.product import Product
 from app.models.request_enums import LocationType
@@ -98,6 +103,7 @@ class InventoryService:
         movement_type: StockMovementType,
         batch_code: str | None = None,
         notes: str | None = None,
+        waste_reason: WasteReason | None = None,
     ) -> InventoryItem:
         if movement_type not in {StockMovementType.WASTE, StockMovementType.EXPIRY}:
             raise ConflictError(
@@ -119,6 +125,7 @@ class InventoryService:
             movement_type=movement_type,
             batch_code=batch_code,
             notes=notes,
+            waste_reason=waste_reason,
             allow_create=False,
         )
 
@@ -220,6 +227,7 @@ class InventoryService:
         expiry_date: date | None = None,
         notes: str | None = None,
         request_id: int | None = None,
+        waste_reason: WasteReason | None = None,
         allow_create: bool = False,
         set_expiry_on_create: bool = False,
     ) -> InventoryItem:
@@ -274,6 +282,7 @@ class InventoryService:
                 movement_type=movement_type,
                 batch_code=normalized_batch,
                 request_id=request_id,
+                waste_reason=waste_reason,
                 actor_id=actor.id,
                 notes=notes,
             )
