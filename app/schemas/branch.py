@@ -1,10 +1,43 @@
 """Pydantic schemas for the Phase 5 Branch portal."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
+from app.models.enums import BranchPosition, UserRole
 from app.models.inventory import StockMovementType, WasteReason
 from app.schemas.request import RequestLineCreate
+
+
+class BranchStaffCreate(BaseModel):
+    """Branch manager adds a salesperson / cashier / order-taker."""
+
+    email: str = Field(max_length=255)
+    full_name: str | None = Field(default=None, max_length=255)
+    position: BranchPosition
+
+
+class BranchStaffCreateResult(BaseModel):
+    user_id: int
+    email: str
+    role: UserRole
+    position: BranchPosition
+    branch_id: int
+    credential_email_sent: bool
+
+
+class BranchStaffOut(BaseModel):
+    id: int
+    email: str
+    full_name: str | None = None
+    role: UserRole
+    position: BranchPosition | None = None
+    is_active: bool
+    branch_id: int | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class BranchRequestCreate(BaseModel):

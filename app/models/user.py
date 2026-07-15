@@ -4,7 +4,7 @@ from sqlalchemy import Boolean, ForeignKey, String, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, PKMixin, TimestampMixin
-from app.models.enums import UserRole
+from app.models.enums import BranchPosition, UserRole
 
 
 class User(Base, PKMixin, TimestampMixin):
@@ -39,6 +39,10 @@ class User(Base, PKMixin, TimestampMixin):
     )
     warehouse_id: Mapped[int | None] = mapped_column(
         ForeignKey("warehouses.id", ondelete="SET NULL"), index=True
+    )
+    # Phase 5: only set for BRANCH_STAFF (salesperson / cashier / order-taker).
+    position: Mapped[BranchPosition | None] = mapped_column(
+        SAEnum(BranchPosition, name="branch_position")
     )
 
     restaurant: Mapped["object | None"] = relationship("Restaurant")

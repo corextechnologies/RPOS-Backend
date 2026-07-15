@@ -41,6 +41,7 @@ TESTS = [
     # Phase 5
     "tests/test_branch_requests.py",
     "tests/test_branch_inventory.py",
+    "tests/test_branch_users.py",
 ]
 
 
