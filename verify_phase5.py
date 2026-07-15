@@ -40,6 +40,7 @@ TESTS = [
     "tests/test_kitchen_scoping.py",
     # Phase 5
     "tests/test_branch_requests.py",
+    "tests/test_branch_inventory.py",
 ]
 
 
