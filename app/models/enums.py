@@ -18,6 +18,8 @@ class UserRole(str, enum.Enum):
     BRANCH_MANAGER = "BRANCH_MANAGER"
     # Phase 4: kitchen sub-staff. Read + waste-log only; never approves requests.
     SUB_CHEF = "SUB_CHEF"
+    # Phase 5: branch sub-staff (salesperson / cashier / order-taker via position).
+    BRANCH_STAFF = "BRANCH_STAFF"
 
     @property
     def is_manager(self) -> bool:
@@ -26,3 +28,11 @@ class UserRole(str, enum.Enum):
             UserRole.KITCHEN_MANAGER,
             UserRole.BRANCH_MANAGER,
         }
+
+
+class BranchPosition(str, enum.Enum):
+    """Phase 5: the position of a branch sub-staff member (role stays BRANCH_STAFF)."""
+
+    SALESPERSON = "SALESPERSON"
+    CASHIER = "CASHIER"
+    ORDER_TAKER = "ORDER_TAKER"

@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     admin,
     auth,
+    branch,
     kitchen,
     notifications,
     requests,
@@ -19,5 +20,6 @@ api_router.include_router(super_admin.router)
 api_router.include_router(admin.router)
 api_router.include_router(warehouse.router)
 api_router.include_router(kitchen.router)
+api_router.include_router(branch.router)
 api_router.include_router(requests.router)
 api_router.include_router(notifications.router)
