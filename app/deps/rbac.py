@@ -102,6 +102,18 @@ def require_actor_warehouse_id(actor: User) -> int:
     return actor.warehouse_id
 
 
+def require_actor_branch_id(actor: User) -> int:
+    """The caller's branch. Slice 3 will broaden this to branch sub-staff."""
+    if actor.role != UserRole.BRANCH_MANAGER:
+        raise ForbiddenError("Branch access required.")
+    if actor.branch_id is None:
+        raise ConflictError(
+            "Branch manager must be assigned to a branch.",
+            code="missing_branch_assignment",
+        )
+    return actor.branch_id
+
+
 def assert_kitchen_manager_can_create_staff(actor: User) -> None:
     """Kitchen managers may only create sub-chefs under themselves."""
     if actor.role != UserRole.KITCHEN_MANAGER:

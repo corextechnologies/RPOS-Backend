@@ -181,6 +181,25 @@ def _kitchen_allocates_to_branch(
     )
 
 
+def _branch_receives_stock(
+    db: Session, *, actor: User, request: Request
+) -> None:
+    """BRANCH_TO_ADMIN -> RECEIVED: the requesting branch is credited."""
+    branch_id = _require_location(
+        request,
+        which="source",
+        expected=LocationType.BRANCH,
+        code="missing_branch_source",
+    )
+    _receive_into(
+        db,
+        actor=actor,
+        request=request,
+        location_type=LocationType.BRANCH,
+        location_id=branch_id,
+    )
+
+
 # (request_type, to_status) -> handler. Every stock-moving transition lives here
 # so a status change can never silently skip its StockMovement.
 _INVENTORY_SIDE_EFFECTS = {
@@ -196,6 +215,10 @@ _INVENTORY_SIDE_EFFECTS = {
         RequestType.BRANCH_TO_ADMIN,
         BranchToAdminStatus.ALLOCATED.value,
     ): _kitchen_allocates_to_branch,
+    (
+        RequestType.BRANCH_TO_ADMIN,
+        BranchToAdminStatus.RECEIVED.value,
+    ): _branch_receives_stock,
 }
 
 
@@ -383,7 +406,13 @@ class RequestService:
         )
 
         if body.target_location_id is None:
-            if forwarding:
+            if forwarding and (
+                request.target_location_type != LocationType.KITCHEN
+                or request.target_location_id is None
+            ):
+                # The branch names the target kitchen at create time; only error
+                # if no kitchen target exists at all (neither branch nor admin set
+                # one). An admin may still override by supplying one in the body.
                 raise ConflictError(
                     "Forwarding to a kitchen requires target_location_type="
                     "KITCHEN and target_location_id.",
