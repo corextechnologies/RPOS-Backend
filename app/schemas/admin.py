@@ -4,9 +4,10 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.enums import UserRole
+from app.models.product import ProductKind
 from app.schemas.request import RequestTransition
 
 
@@ -88,16 +89,35 @@ class AdminProfileUpdate(BaseModel):
 
 
 class ProductPricingUpdate(BaseModel):
-    cost_price: Decimal = Field(ge=0)
+    """Partial update: only fields present are written. An explicit null clears
+    the field; an omitted field is left unchanged."""
+
+    cost_price: Decimal | None = Field(default=None, ge=0)
+    selling_price: Decimal | None = Field(default=None, ge=0)
+    category: str | None = Field(default=None, max_length=100)
+    is_available: bool | None = None
 
 
 class ProductAdminOut(BaseModel):
     id: int
     name: str
     sku: str | None = None
+    kind: ProductKind
+    #: True when this kind can carry a selling price and go on a menu. The UI
+    #: should hide the sell-price field entirely when this is false — a raw
+    #: material is consumed, not sold.
+    is_sellable: bool = False
     cost_price: Decimal | None = None
+    selling_price: Decimal | None = None
+    category: str | None = None
+    is_available: bool = True
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def _derive_sellable(self):
+        object.__setattr__(self, "is_sellable", self.kind.is_sellable)
+        return self
 
 
 class ProductPublicOut(BaseModel):
@@ -106,6 +126,7 @@ class ProductPublicOut(BaseModel):
     id: int
     name: str
     sku: str | None = None
+    kind: ProductKind = ProductKind.RAW_MATERIAL
 
     model_config = {"from_attributes": True}
 

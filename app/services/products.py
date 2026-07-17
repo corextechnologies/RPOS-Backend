@@ -1,9 +1,14 @@
 """Product catalogue service.
 
-The warehouse keeper introduces products (name/SKU); Admin prices them
-afterwards via `app/services/pricing.py`. `cost_price` is deliberately absent
-from every function here — a product created through this service is always
-unpriced, and only Admin can ever set that field.
+WHO INTRODUCES WHAT — the caller's role decides the `kind`, and no caller can ask
+for a different one:
+
+  * Warehouse -> RAW_MATERIAL (flour, patties) and RESALE (bottled drinks)
+  * Kitchen   -> FINISHED_GOOD (the burger it assembles from those raws)
+
+Admin prices them afterwards via `app/services/pricing.py`. `cost_price` and
+`selling_price` are deliberately absent from every function here — a product
+created through this service is always unpriced, and only Admin sets price.
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.deps.scoping import apply_tenant_scope
-from app.models.product import Product
+from app.models.product import Product, ProductKind
 from app.models.reorder_level import ReorderLevel
 from app.models.request_enums import LocationType
 from app.models.user import User
@@ -22,7 +27,14 @@ from app.services.audit import AuditService
 
 class ProductService:
     @staticmethod
-    def create_product(db: Session, actor: User, *, name: str, sku: str | None) -> Product:
+    def create_product(
+        db: Session,
+        actor: User,
+        *,
+        name: str,
+        sku: str | None,
+        kind: ProductKind = ProductKind.RAW_MATERIAL,
+    ) -> Product:
         if actor.restaurant_id is None:
             raise ConflictError(
                 "Actor must belong to a restaurant.",
@@ -47,6 +59,7 @@ class ProductService:
             restaurant_id=actor.restaurant_id,
             name=name.strip(),
             sku=normalized_sku,
+            kind=kind,
             # Never set here — Admin prices it later.
             cost_price=None,
         )
@@ -59,16 +72,26 @@ class ProductService:
             entity_type="product",
             entity_id=product.id,
             restaurant_id=actor.restaurant_id,
-            payload={"name": product.name, "sku": product.sku},
+            payload={"name": product.name, "sku": product.sku, "kind": kind.value},
         )
         db.commit()
         db.refresh(product)
         return product
 
     @staticmethod
-    def list_products(db: Session, actor: User) -> list[Product]:
-        stmt = apply_tenant_scope(select(Product), actor, Product).order_by(Product.id)
-        return list(db.execute(stmt).scalars().all())
+    def list_products(
+        db: Session,
+        actor: User,
+        *,
+        kind: ProductKind | None = None,
+        kinds: frozenset[ProductKind] | None = None,
+    ) -> list[Product]:
+        stmt = apply_tenant_scope(select(Product), actor, Product)
+        if kind is not None:
+            stmt = stmt.where(Product.kind == kind)
+        elif kinds is not None:
+            stmt = stmt.where(Product.kind.in_(list(kinds)))
+        return list(db.execute(stmt.order_by(Product.id)).scalars().all())
 
     @staticmethod
     def to_public(product: Product) -> ProductPublicOut:

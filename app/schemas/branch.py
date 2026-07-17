@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.models.enums import BranchPosition, UserRole
 from app.models.inventory import StockMovementType, WasteReason
+from app.models.production_enums import ProductionLineRole
 from app.schemas.request import RequestLineCreate
 
 
@@ -44,13 +45,22 @@ class BranchStaffOut(BaseModel):
 # --- Slice 5: customers ---
 
 class CustomerCreate(BaseModel):
+    # No branch_id: the branch comes from the caller's token, never the body.
     name: str = Field(min_length=1, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+
+
+class CustomerUpdate(BaseModel):
+    """Partial update. An omitted field is left unchanged; phone may be cleared."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     phone: str | None = Field(default=None, max_length=50)
 
 
 class CustomerOut(BaseModel):
     id: int
     restaurant_id: int
+    branch_id: int
     name: str
     phone: str | None = None
     created_at: datetime
@@ -63,7 +73,11 @@ class CustomerOut(BaseModel):
 class BranchOrderLineIn(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
-    unit_price: Decimal = Field(ge=0)
+    # The device's *proposed* price, for display only. The server prices
+    # authoritatively; if a proposal disagrees with the current price the whole
+    # order is rejected with 409 price_mismatch and the server's breakdown, so a
+    # stale menu never silently over/under-charges. Omit to accept server pricing.
+    unit_price: Decimal | None = Field(default=None, ge=0)
 
 
 class BranchOrderCreate(BaseModel):
@@ -94,6 +108,54 @@ class BranchOrderOut(BaseModel):
     note: str | None = None
     created_at: datetime
     lines: list[BranchOrderLineOut] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+# --- P5-R: sub-kitchen (branch production log) ---
+
+class ProductionRunLineIn(BaseModel):
+    product_id: int
+    role: ProductionLineRole
+    quantity: int = Field(gt=0)
+    batch_code: str | None = Field(default=None, max_length=100)
+
+
+class ProductionRunCreate(BaseModel):
+    """One prep/shaping run: what was used (INPUT) and what it became (OUTPUT).
+
+    Quantities are stated explicitly — there is no recipe/BOM until POS-5.
+    """
+
+    lines: list[ProductionRunLineIn] = Field(min_length=2)
+    occurred_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=500)
+
+
+class ProductionRunLineOut(BaseModel):
+    id: int
+    product_id: int
+    product_name: str | None = None
+    role: ProductionLineRole
+    quantity: int
+    batch_code: str
+
+    model_config = {"from_attributes": True}
+
+
+class ProductionRunOut(BaseModel):
+    id: int
+    restaurant_id: int
+    location_type: str
+    location_id: int
+    #: Set when a kitchen run was driven by a recipe; null for a branch
+    #: sub-kitchen run, where inputs/outputs are stated by hand.
+    recipe_id: int | None = None
+    created_by_id: int | None = None
+    occurred_at: datetime
+    note: str | None = None
+    created_at: datetime
+    lines: list[ProductionRunLineOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

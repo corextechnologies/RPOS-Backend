@@ -44,6 +44,11 @@ class User(Base, PKMixin, TimestampMixin):
     position: Mapped[BranchPosition | None] = mapped_column(
         SAEnum(BranchPosition, name="branch_position")
     )
+    # POS-0: fast re-auth on a shared terminal. Hashed like a password and never
+    # returned. A PIN is a convenience *within* a device already bound to a
+    # branch — it is not a credential on its own, which is why pin-unlock still
+    # requires a registered device_uid.
+    pin_hash: Mapped[str | None] = mapped_column(String(255))
 
     restaurant: Mapped["object | None"] = relationship("Restaurant")
     created_by: Mapped["User | None"] = relationship(

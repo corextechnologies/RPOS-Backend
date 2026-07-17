@@ -25,6 +25,14 @@ class SalesRecord(Base, PKMixin, TimestampMixin):
     branch_id: Mapped[int | None] = mapped_column(
         ForeignKey("branches.id", ondelete="SET NULL"), index=True
     )
+    # The order that produced this sale. Unique so an order maps to exactly one
+    # sales row. Nullable forever: Admin-entered sales legitimately have no order.
+    # (Phase 5.1 pointed this at branch_orders; POS-1 superseded that table with
+    # `orders` and repointed the FK — the column name lost the "branch_" prefix
+    # because an order is no longer branch-portal-specific.)
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("orders.id", ondelete="SET NULL"), unique=True, index=True
+    )
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True

@@ -134,3 +134,39 @@ def test_branch_inventory_forbidden_for_non_branch(client, branch_stock):
         json={"product_id": 1, "quantity": 1},
         headers=headers,
     ).status_code == 403
+
+
+def test_sub_staff_can_read_stock_but_not_waste_it(client, branch_stock, make_user):
+    """A salesperson must see that an item is out of stock while taking the
+    order — but writing stock off is a manager's call."""
+    from app.models.enums import BranchPosition, UserRole
+
+    make_user(
+        "seller@test.com", UserRole.BRANCH_STAFF,
+        restaurant_id=branch_stock["restaurant"].id,
+        branch_id=branch_stock["branch"].id,
+        position=BranchPosition.SALESPERSON,
+    )
+    headers = auth_headers(client, "seller@test.com")
+
+    listing = client.get("/v1/branch/inventory", headers=headers)
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["data"][0]["quantity"] == 50
+    assert "cost_price" not in listing.json()["data"][0]["product"]
+
+    assert client.get(
+        "/v1/branch/inventory/near-expiry", headers=headers
+    ).status_code == 200
+
+    waste = client.post(
+        "/v1/branch/stock/waste",
+        json={
+            "product_id": branch_stock["product"].id,
+            "quantity": 1,
+            "movement_type": "WASTE",
+            "batch_code": "B-1",
+        },
+        headers=headers,
+    )
+    assert waste.status_code == 403
+    assert waste.json()["error"]["code"] == "position_forbidden"

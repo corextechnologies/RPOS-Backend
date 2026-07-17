@@ -27,7 +27,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def create_access_token(subject: str | int) -> str:
+def create_access_token(subject: str | int, *, device_id: int | None = None) -> str:
+    """Mint an access token, optionally bound to a registered POS device.
+
+    The device claim is what makes "a token minted for terminal A at branch X is
+    invalid at branch Y" enforceable. It is optional so every non-POS portal keeps
+    its existing tokens unchanged.
+    """
     expire = _now() + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {
         "sub": str(subject),
@@ -35,6 +41,8 @@ def create_access_token(subject: str | int) -> str:
         "exp": expire,
         "iat": _now(),
     }
+    if device_id is not None:
+        payload["did"] = device_id
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 

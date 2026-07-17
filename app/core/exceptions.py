@@ -19,9 +19,13 @@ class AppError(Exception):
     code: str = "app_error"
 
     def __init__(self, message: str, *, code: str | None = None,
-                 status_code: int | None = None):
+                 status_code: int | None = None, details=None):
         super().__init__(message)
         self.message = message
+        # Structured, machine-readable extra context (e.g. the server's price
+        # breakdown on a 409 mismatch). Omitted from the body when None, so every
+        # existing error keeps its exact shape.
+        self.details = details
         if code is not None:
             self.code = code
         if status_code is not None:
@@ -60,7 +64,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _app_error(_: Request, exc: AppError):
         return JSONResponse(
             status_code=exc.status_code,
-            content=_error_body(exc.code, exc.message),
+            content=_error_body(exc.code, exc.message, exc.details),
         )
 
     @app.exception_handler(StarletteHTTPException)

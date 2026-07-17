@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import UserRole
 from app.models.inventory import StockMovementType, WasteReason
+from app.models.product import ProductKind
 from app.schemas.admin import ProductPublicOut
 from app.schemas.request import RequestLineCreate
 
@@ -37,10 +38,26 @@ class WarehouseStaffOut(BaseModel):
 
 
 class ProductCreate(BaseModel):
-    """Warehouse-created product. Pricing is Admin-only and set separately."""
+    """Warehouse-created product. Pricing is Admin-only and set separately.
+
+    RAW_MATERIAL (the default) is consumed by the kitchen and never sold. RESALE
+    is bought and sold untouched — a bottled drink. FINISHED_GOOD is rejected
+    here: the kitchen introduces what the kitchen makes.
+    """
 
     name: str = Field(min_length=1, max_length=255)
     sku: str | None = Field(default=None, max_length=100)
+    kind: ProductKind = ProductKind.RAW_MATERIAL
+
+    @field_validator("kind")
+    @classmethod
+    def _warehouse_kinds_only(cls, v: ProductKind) -> ProductKind:
+        if v is ProductKind.FINISHED_GOOD:
+            raise ValueError(
+                "The warehouse cannot introduce a FINISHED_GOOD — the kitchen "
+                "creates what it makes (POST /v1/kitchen/products)."
+            )
+        return v
 
 
 class ReorderLevelUpdate(BaseModel):

@@ -7,6 +7,7 @@ from app.api.v1 import (
     branch,
     kitchen,
     notifications,
+    pos,
     requests,
     super_admin,
     users,
@@ -21,5 +22,6 @@ api_router.include_router(admin.router)
 api_router.include_router(warehouse.router)
 api_router.include_router(kitchen.router)
 api_router.include_router(branch.router)
+api_router.include_router(pos.router)
 api_router.include_router(requests.router)
 api_router.include_router(notifications.router)

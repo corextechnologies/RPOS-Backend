@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Iterable
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
@@ -26,6 +28,19 @@ _LOCATION_MODELS = {
     LocationType.KITCHEN: Kitchen,
     LocationType.WAREHOUSE: Warehouse,
 }
+
+
+def sort_lock_order(product_ids: Iterable[int]) -> list[int]:
+    """Deterministic row-lock acquisition order for a multi-line stock mutation.
+
+    Concurrent orders that touch the same products must acquire their row locks
+    in the *same* order or they deadlock (order A locks P1 then P2 while order B
+    locks P2 then P1). Sorting by product_id gives every caller one order.
+
+    Branch orders are unbatched, so product_id alone suffices; POS-5's BOM
+    deduction extends the key to (product_id, batch_code).
+    """
+    return sorted(set(product_ids))
 
 # Who to tell when stock at a location runs low.
 _LOCATION_MANAGER = {
@@ -172,6 +187,45 @@ class InventoryService:
         )
 
     @staticmethod
+    def apply_sale_deduction(
+        db: Session,
+        *,
+        actor: User,
+        branch_id: int,
+        product_id: int,
+        quantity: int,
+        batch_code: str | None = None,
+        notes: str | None = None,
+    ) -> InventoryItem:
+        """Take a sold product off branch stock, 1:1.
+
+        A branch sells what it HOLDS. The kitchen makes burgers from raw
+        materials and allocates finished burgers to the branch, so selling one
+        deducts one burger — the branch never held the buns.
+
+        This deliberately does NOT explode the product's recipe. A recipe is the
+        KITCHEN's bill of materials and is consumed by kitchen production
+        (see ProductionService.produce_at_kitchen), where the components actually
+        live. Exploding it here would hunt for buns at a branch that has none and
+        fail every sale with `insufficient_stock`.
+
+        The seam stays because it is still the single place a sale touches stock:
+        if a future branch assembles on site, that behaviour goes here and
+        nowhere else. Branch-side assembly today is an explicit, logged
+        sub-kitchen production run instead — see /v1/branch/production.
+        """
+        return InventoryService.apply_dispatch(
+            db,
+            actor=actor,
+            location_type=LocationType.BRANCH,
+            location_id=branch_id,
+            product_id=product_id,
+            quantity=quantity,
+            batch_code=batch_code,
+            notes=notes,
+        )
+
+    @staticmethod
     def list_for_location(
         db: Session,
         *,
@@ -279,6 +333,10 @@ class InventoryService:
         InventoryService._validate_product(db, restaurant_id, product_id)
 
         normalized_batch = (batch_code or "").strip()
+        # Lock the on-hand row for the rest of this transaction so a concurrent
+        # order at the same branch can't read the same quantity and oversell. The
+        # lock is held until the caller commits/rolls back — which is exactly the
+        # select-check-write window that must be serialized.
         item = InventoryService._get_item(
             db,
             restaurant_id=restaurant_id,
@@ -286,22 +344,49 @@ class InventoryService:
             location_id=location_id,
             product_id=product_id,
             batch_code=normalized_batch,
+            for_update=True,
         )
 
         if item is None:
             if not allow_create:
                 raise NotFoundError("Inventory item not found.")
-            item = InventoryItem(
+            # FOR UPDATE cannot lock a row that doesn't exist yet, so two
+            # concurrent receipts could both INSERT and the loser would hit the
+            # unique constraint. Upsert instead: on_conflict_do_nothing is a
+            # no-op for the loser, then we re-select FOR UPDATE and block on the
+            # winner's row.
+            db.execute(
+                pg_insert(InventoryItem)
+                .values(
+                    restaurant_id=restaurant_id,
+                    location_type=location_type,
+                    location_id=location_id,
+                    product_id=product_id,
+                    quantity=0,
+                    batch_code=normalized_batch,
+                    expiry_date=expiry_date if set_expiry_on_create else None,
+                )
+                .on_conflict_do_nothing(
+                    constraint="uq_inventory_item_location_product_batch"
+                )
+            )
+            db.flush()
+            item = InventoryService._get_item(
+                db,
                 restaurant_id=restaurant_id,
                 location_type=location_type,
                 location_id=location_id,
                 product_id=product_id,
-                quantity=0,
                 batch_code=normalized_batch,
-                expiry_date=expiry_date if set_expiry_on_create else None,
+                for_update=True,
             )
-            db.add(item)
-            db.flush()
+            if item is None:  # pragma: no cover - row exists after the upsert
+                raise ConflictError(
+                    "Failed to create inventory item.",
+                    code="inventory_create_failed",
+                )
+            if set_expiry_on_create and expiry_date is not None:
+                item.expiry_date = expiry_date
         elif set_expiry_on_create and expiry_date is not None:
             item.expiry_date = expiry_date
 
@@ -314,6 +399,15 @@ class InventoryService:
 
         # Totals across every batch, before and after — a reorder level is per
         # product/location, not per batch.
+        #
+        # Known and accepted: this aggregate reads sibling batch rows that are NOT
+        # locked (only our own batch row is). The `new_qty < 0` guard above IS
+        # per-batch and so is fully protected; the only thing a concurrent writer
+        # can skew here is the low-stock *alert*, which may fire twice or miss the
+        # exact crossing. That's a duplicate notification, not a money bug, so it
+        # doesn't justify locking every batch of the product on every movement.
+        # POS-5's BOM deduction spans batches and WILL need a product-grain lock
+        # (`... WHERE product_id = :id FOR UPDATE`, rows taken in id order).
         total_before = InventoryService._total_on_hand(
             db,
             restaurant_id=restaurant_id,
@@ -487,13 +581,15 @@ class InventoryService:
         location_id: int,
         product_id: int,
         batch_code: str,
+        for_update: bool = False,
     ) -> InventoryItem | None:
-        return db.execute(
-            select(InventoryItem).where(
-                InventoryItem.restaurant_id == restaurant_id,
-                InventoryItem.location_type == location_type,
-                InventoryItem.location_id == location_id,
-                InventoryItem.product_id == product_id,
-                InventoryItem.batch_code == batch_code,
-            )
-        ).scalar_one_or_none()
+        stmt = select(InventoryItem).where(
+            InventoryItem.restaurant_id == restaurant_id,
+            InventoryItem.location_type == location_type,
+            InventoryItem.location_id == location_id,
+            InventoryItem.product_id == product_id,
+            InventoryItem.batch_code == batch_code,
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        return db.execute(stmt).scalar_one_or_none()

@@ -1,0 +1,219 @@
+"""POS-2/3/4 routes: quotes, tenders, refunds, discounts, shifts, drawer, sync."""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.core.responses import ok
+from app.db.session import get_db
+from app.deps.auth import require_role
+from app.deps.pos import PosSession, get_pos_session, require_idempotency_key
+from app.deps.rbac import require_actor_branch_id
+from app.models.enums import UserRole
+from app.models.payment import DiscountRule
+from app.models.user import User
+from app.schemas.pos import (
+    CashMovementIn,
+    DiscountApplyIn,
+    DiscountRuleIn,
+    PaymentIn,
+    PaymentOut,
+    PosOrderOut,
+    PriceQuoteIn,
+    RefundIn,
+    RefundOut,
+    ShiftCloseIn,
+    ShiftOpenIn,
+    ShiftOut,
+    SyncBatchIn,
+)
+from app.services.idempotency import IdempotencyService
+from app.services.payments import PaymentService, PricingQuoteService
+from app.services.shifts import ShiftService
+from app.services.sync import SyncService
+
+router = APIRouter()
+
+
+# ---- POS-2: money ----------------------------------------------------------
+
+@router.post("/price-quote/{order_id}")
+def price_quote(
+    order_id: int,
+    body: PriceQuoteIn,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    """Re-price for a tender, with no side effects.
+
+    Exists because tax can depend on HOW the customer pays — the single biggest
+    structural requirement the Pakistan pack imposes.
+    """
+    return ok(PricingQuoteService.quote(db, session, order_id, body.payment_method))
+
+
+@router.post("/orders/{order_id}/payments")
+def take_payment(
+    order_id: int,
+    body: PaymentIn,
+    idempotency_key: str = Depends(require_idempotency_key),
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    """Take one tender. A split bill is simply several of these."""
+    slot = IdempotencyService.claim(
+        db,
+        session.user,
+        endpoint="pos.payments.create",
+        key=idempotency_key,
+        body={"order_id": order_id, **body.model_dump(mode="json")},
+        branch_id=session.branch_id,
+    )
+    if slot.replay:
+        return slot.response
+    payment = PaymentService.take(db, session, order_id, body)
+    payload = ok(PaymentOut.model_validate(payment).model_dump(mode="json"))
+    slot.complete(payload, status=200)
+    db.commit()
+    return payload
+
+
+@router.post("/refunds")
+def refund(
+    body: RefundIn,
+    idempotency_key: str = Depends(require_idempotency_key),
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    """Refund against the original order — never a negative line on the sale."""
+    slot = IdempotencyService.claim(
+        db,
+        session.user,
+        endpoint="pos.refunds.create",
+        key=idempotency_key,
+        body=body.model_dump(mode="json"),
+        branch_id=session.branch_id,
+    )
+    if slot.replay:
+        return slot.response
+    row = PaymentService.refund(db, session, body)
+    payload = ok(RefundOut.model_validate(row).model_dump(mode="json"))
+    slot.complete(payload, status=200)
+    db.commit()
+    return payload
+
+
+@router.post("/orders/{order_id}/discounts")
+def apply_discount(
+    order_id: int,
+    body: DiscountApplyIn,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    order = PaymentService.apply_discount(db, session, order_id, body)
+    return ok(PosOrderOut.model_validate(order).model_dump(mode="json"))
+
+
+@router.post("/discount-rules")
+def create_discount_rule(
+    body: DiscountRuleIn,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Admin defines what a discount may be. The till enforces it."""
+    rule = DiscountRule(
+        restaurant_id=current.restaurant_id,
+        code=body.code,
+        name=body.name,
+        scope=body.scope,
+        type=body.type,
+        value_bp=body.value_bp,
+        amount_minor=body.amount_minor,
+        max_pct_bp=body.max_pct_bp,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return ok({"id": rule.id, "code": rule.code, "max_pct_bp": rule.max_pct_bp})
+
+
+# ---- POS-3: control --------------------------------------------------------
+
+@router.post("/shifts")
+def open_shift(
+    body: ShiftOpenIn,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    shift = ShiftService.open_shift(db, session, body.opening_float_minor)
+    return ok(ShiftOut.model_validate(shift).model_dump(mode="json"))
+
+
+@router.get("/shifts/current")
+def current_shift(
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    shift = ShiftService.get_open(db, session)
+    return ok(ShiftOut.model_validate(shift).model_dump(mode="json"))
+
+
+@router.patch("/shifts/{shift_id}/close")
+def close_shift(
+    shift_id: int,
+    body: ShiftCloseIn,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    """Blind close: declare first, then the system reveals the variance."""
+    shift = ShiftService.close_shift(db, session, shift_id, body)
+    return ok(ShiftOut.model_validate(shift).model_dump(mode="json"))
+
+
+@router.post("/cash-movements")
+def cash_movement(
+    body: CashMovementIn,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    movement = ShiftService.cash_movement(db, session, body)
+    return ok(
+        {
+            "id": movement.id,
+            "type": movement.type.value,
+            "amount_minor": movement.amount_minor,
+        }
+    )
+
+
+@router.get("/reports/shift/{shift_id}")
+def shift_report(
+    shift_id: int,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    """X-report while open (no expected cash), Z-report once closed."""
+    return ok(ShiftService.report(db, session, shift_id))
+
+
+# ---- POS-4: sync -----------------------------------------------------------
+
+@router.post("/sync/batch")
+def sync_batch(
+    body: SyncBatchIn,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    """Replay a device's offline queue. Per-element results, capped at 50."""
+    return ok(SyncService.replay(db, session, body.envelopes))
+
+
+@router.get("/orders/flagged")
+def flagged_orders(
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    """The manager's review queue: sales that priced differently offline."""
+    branch_id = require_actor_branch_id(current)
+    rows = SyncService.flagged(db, current.restaurant_id, branch_id)
+    return ok([PosOrderOut.model_validate(o).model_dump(mode="json") for o in rows])

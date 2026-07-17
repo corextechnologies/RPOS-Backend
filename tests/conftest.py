@@ -19,9 +19,10 @@ from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+from app.models.customer import Customer
 from app.models.enums import UserRole
 from app.models.location import Branch, Kitchen, Warehouse
-from app.models.product import Product
+from app.models.product import Product, ProductKind
 from app.models.restaurant import Restaurant
 from app.models.user import User
 
@@ -96,7 +97,7 @@ def client(db):
 def make_user(db):
     def _make(email, role, password="Pass@1234", restaurant_id=None,
               created_by_id=None, is_active=True, branch_id=None,
-              kitchen_id=None, warehouse_id=None):
+              kitchen_id=None, warehouse_id=None, position=None):
         user = User(
             email=email,
             hashed_password=hash_password(password),
@@ -108,6 +109,7 @@ def make_user(db):
             branch_id=branch_id,
             kitchen_id=kitchen_id,
             warehouse_id=warehouse_id,
+            position=position,
         )
         db.add(user)
         db.flush()
@@ -162,11 +164,36 @@ def make_warehouse(db):
 
 @pytest.fixture
 def make_product(db):
-    def _make(restaurant_id, name="Product A", sku="SKU-1"):
-        p = Product(restaurant_id=restaurant_id, name=name, sku=sku)
+    def _make(restaurant_id, name="Product A", sku="SKU-1",
+              selling_price=None, category=None, is_available=True,
+              kind=ProductKind.FINISHED_GOOD):
+        # Tests overwhelmingly make things that get SOLD, so default to a
+        # finished good. Pass kind=ProductKind.RAW_MATERIAL for an ingredient.
+        p = Product(
+            restaurant_id=restaurant_id,
+            name=name,
+            sku=sku,
+            kind=kind,
+            selling_price=selling_price,
+            category=category,
+            is_available=is_available,
+        )
         db.add(p)
         db.flush()
         return p
+
+    return _make
+
+
+@pytest.fixture
+def make_customer(db):
+    def _make(restaurant_id, branch_id, name="Customer A", phone=None):
+        c = Customer(
+            restaurant_id=restaurant_id, branch_id=branch_id, name=name, phone=phone
+        )
+        db.add(c)
+        db.flush()
+        return c
 
     return _make
 

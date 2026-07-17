@@ -7,21 +7,24 @@ from sqlalchemy.orm import Session
 from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.auth import require_role
+from app.deps.capabilities import Capability, require_capability
 from app.deps.rbac import require_actor_branch_id
 from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.branch import BranchOrderCreate
 from app.services.orders import OrderService
 
-_BRANCH_STAFF = require_role(UserRole.BRANCH_MANAGER, UserRole.BRANCH_STAFF)
+# Blanket branch gate (non-branch roles get the generic 403); the per-endpoint
+# capability guard then narrows by position.
+_BRANCH = require_role(UserRole.BRANCH_MANAGER, UserRole.BRANCH_STAFF)
 
-router = APIRouter(dependencies=[Depends(_BRANCH_STAFF)])
+router = APIRouter(dependencies=[Depends(_BRANCH)])
 
 
 @router.post("/orders")
 def create_order(
     body: BranchOrderCreate,
-    current: User = Depends(_BRANCH_STAFF),
+    current: User = Depends(require_capability(Capability.ORDER_CREATE)),
     db: Session = Depends(get_db),
 ):
     branch_id = require_actor_branch_id(current)
@@ -33,7 +36,7 @@ def create_order(
 def list_orders(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    current: User = Depends(_BRANCH_STAFF),
+    current: User = Depends(require_capability(Capability.ORDER_READ)),
     db: Session = Depends(get_db),
 ):
     branch_id = require_actor_branch_id(current)
