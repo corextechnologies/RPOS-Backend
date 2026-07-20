@@ -259,3 +259,16 @@ def test_dispatch_notification_forbidden_for_non_kitchen(client, kd_ctx):
     ah = auth_headers(client, "admin@test.com")
     resp = _create_notification(client, ah, kd_ctx["product"].id, 5)
     assert resp.status_code == 403
+
+
+def test_kitchen_can_fetch_dispatch_notification_by_id(client, kd_ctx):
+    """The generic kitchen request detail route resolves KITCHEN_TO_ADMIN too."""
+    kh = auth_headers(client, "kitchen@test.com")
+    created = _create_notification(client, kh, kd_ctx["product"].id, 15)
+    rid = created.json()["data"]["id"]
+    resp = client.get(f"/v1/kitchen/requests/{rid}", headers=kh)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["id"] == rid
+    assert data["request_type"] == "KITCHEN_TO_ADMIN"
+    assert data["from_label"] == kd_ctx["kitchen"].name

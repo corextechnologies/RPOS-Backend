@@ -34,6 +34,9 @@ _KITCHEN_MANAGER = require_role(UserRole.KITCHEN_MANAGER)
 _KITCHEN_REQUEST_TYPES = {
     RequestType.KITCHEN_TO_WAREHOUSE,
     RequestType.BRANCH_TO_ADMIN,
+    # The kitchen's own dispatch notifications — detail is served here as well as
+    # under /dispatch-notifications, so the generic request detail view resolves.
+    RequestType.KITCHEN_TO_ADMIN,
 }
 
 
@@ -120,7 +123,11 @@ def get_kitchen_request(
 ):
     request = RequestService.get_request(db, current, request_id)
     _assert_kitchen_request_type(request)
-    return ok(RequestService.to_out(request).model_dump(mode="json"))
+    return ok(
+        RequestService.to_out(
+            request, from_label=RequestService.source_label(db, request)
+        ).model_dump(mode="json")
+    )
 
 
 @router.patch("/{request_id}/status")
