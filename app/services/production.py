@@ -25,7 +25,7 @@ from app.schemas.branch import (
     ProductionRunOut,
 )
 from app.services.audit import AuditService
-from app.services.inventory import InventoryService
+from app.services.inventory import InventoryService, insufficient_stock_error
 
 
 class ProductionService:
@@ -198,9 +198,18 @@ class ProductionService:
                         notes=f"{label} run #{run.id} (input)",
                     )
                 except NotFoundError as exc:
-                    raise ConflictError(
-                        "Insufficient stock for this operation.",
-                        code="insufficient_stock",
+                    # No inventory row for this input batch at all: nothing on
+                    # hand to consume. A short-but-present batch raises the rich
+                    # 409 from _apply_delta's guard instead and never reaches here.
+                    product = db.get(Product, pid)
+                    raise insufficient_stock_error(
+                        product_id=pid,
+                        product_name=product.name if product else None,
+                        location_type=location_type,
+                        location_id=location_id,
+                        requested=qty,
+                        available=0,
+                        batch_code=batch or "",
                     ) from exc
 
             for (pid, batch), qty in sorted(ProductionService._coalesce_raw(outputs).items()):

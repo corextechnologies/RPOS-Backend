@@ -42,6 +42,42 @@ def sort_lock_order(product_ids: Iterable[int]) -> list[int]:
     """
     return sorted(set(product_ids))
 
+def insufficient_stock_error(
+    *,
+    product_id: int,
+    product_name: str | None,
+    location_type: LocationType,
+    location_id: int,
+    requested: int,
+    available: int,
+    batch_code: str = "",
+) -> ConflictError:
+    """The single shape every stock shortfall (409 insufficient_stock) returns.
+
+    Kept identical across dispatch, sale, production and waste/adjust so the
+    frontend renders one message everywhere it can occur. `batch_code` is set
+    only when the shortfall is scoped to a single batch; on those paths
+    `available` is that batch's on-hand, NOT the product's total across batches
+    (the batched dispatch path reports the product-wide dispatchable total and
+    omits batch_code).
+    """
+    details: dict = {
+        "product_id": product_id,
+        "product_name": product_name,
+        "location_type": location_type.value,
+        "location_id": location_id,
+        "requested": requested,
+        "available": available,
+    }
+    if batch_code:
+        details["batch_code"] = batch_code
+    return ConflictError(
+        "Insufficient stock for this operation.",
+        code="insufficient_stock",
+        details=details,
+    )
+
+
 # Who to tell when stock at a location runs low.
 _LOCATION_MANAGER = {
     LocationType.BRANCH: (UserRole.BRANCH_MANAGER, User.branch_id),
@@ -256,17 +292,15 @@ class InventoryService:
         available = sum(r.quantity for r in usable)
         if available < quantity:
             product = db.get(Product, product_id)
-            raise ConflictError(
-                "Insufficient stock for this operation.",
-                code="insufficient_stock",
-                details={
-                    "product_id": product_id,
-                    "product_name": product.name if product else None,
-                    "location_type": location_type.value,
-                    "location_id": location_id,
-                    "requested": quantity,
-                    "available": available,
-                },
+            # Product-wide total across usable batches; no batch_code, since the
+            # shortfall isn't scoped to one batch.
+            raise insufficient_stock_error(
+                product_id=product_id,
+                product_name=product.name if product else None,
+                location_type=location_type,
+                location_id=location_id,
+                requested=quantity,
+                available=available,
             )
 
         remaining = quantity
@@ -496,9 +530,18 @@ class InventoryService:
 
         new_qty = item.quantity + quantity_delta
         if new_qty < 0:
-            raise ConflictError(
-                "Insufficient stock for this operation.",
-                code="insufficient_stock",
+            # Batch-scoped shortfall: this one row is short. `available` is this
+            # batch's on-hand and `requested` is how much this movement tried to
+            # remove — batch_code disambiguates it from a product-wide total.
+            product = db.get(Product, product_id)
+            raise insufficient_stock_error(
+                product_id=product_id,
+                product_name=product.name if product else None,
+                location_type=location_type,
+                location_id=location_id,
+                requested=-quantity_delta,
+                available=item.quantity,
+                batch_code=normalized_batch,
             )
 
         # Totals across every batch, before and after — a reorder level is per

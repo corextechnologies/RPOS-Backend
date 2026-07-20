@@ -35,7 +35,11 @@ from app.schemas.branch import (
     BranchOrderOut,
 )
 from app.services.audit import AuditService
-from app.services.inventory import InventoryService, sort_lock_order
+from app.services.inventory import (
+    InventoryService,
+    insufficient_stock_error,
+    sort_lock_order,
+)
 from app.services.pricing import PricingService
 
 
@@ -74,9 +78,18 @@ def settle_stock_and_sales(
                 notes=f"Order #{order.id}",
             )
         except NotFoundError as exc:
-            raise ConflictError(
-                "Insufficient stock for this operation.",
-                code="insufficient_stock",
+            # Branch holds no row for this product: nothing on hand to sell. A
+            # present-but-short row raises the rich 409 from _apply_delta's guard
+            # (with the branch's on-hand) before we get here. Branch stock is
+            # unbatched, so no batch_code and `available` is the product total.
+            product = db.get(Product, product_id)
+            raise insufficient_stock_error(
+                product_id=product_id,
+                product_name=product.name if product else None,
+                location_type=LocationType.BRANCH,
+                location_id=branch_id,
+                requested=qty,
+                available=0,
             ) from exc
 
     db.add(
