@@ -253,3 +253,31 @@ def auth_headers(client, email, password="Pass@1234"):
     assert resp.status_code == 200, resp.text
     token = resp.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+import uuid as _uuid
+
+
+def pair_terminal(client, mgr_headers, *, code="T1", profile="COUNTER",
+                  device_uid=None):
+    """Create a terminal (manager) and pair a device to it (activation code).
+
+    Returns the bound device_uid. Centralises the create -> activate flow so the
+    POS test suites don't each reimplement it. The manager reads the one-time
+    code straight off the create response; the device generates its own uid.
+    """
+    created = client.post(
+        "/v1/branch/devices",
+        json={"code": code, "profile": profile},
+        headers=mgr_headers,
+    )
+    assert created.status_code == 200, created.text
+    activation_code = created.json()["data"]["activation_code"]
+
+    uid = device_uid or _uuid.uuid4().hex
+    activated = client.post(
+        "/v1/pos/session/activate",
+        json={"activation_code": activation_code, "device_uid": uid},
+    )
+    assert activated.status_code == 200, activated.text
+    return uid

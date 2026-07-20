@@ -18,7 +18,15 @@ _cors_origins = (
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=False,
+    # Credentials must be allowed so the POS device_uid httpOnly cookie travels
+    # cross-origin (separate frontend host). The frontend must call the API with
+    # `fetch(..., {credentials: "include"})`.
+    #
+    # ⚠️ Production: set CORS_ORIGINS to an explicit list, not "*". A browser
+    # refuses the literal wildcard together with credentials; Starlette works
+    # around it by echoing the request origin, which with credentials means
+    # "any origin" — fine for local dev, unsafe for production.
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

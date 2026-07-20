@@ -10,17 +10,60 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.exceptions import AuthError, ForbiddenError
 from app.core.security import ACCESS_TOKEN, decode_token
 from app.db.session import get_db
 from app.deps.auth import get_current_user
 from app.deps.rbac import require_actor_branch_id
-from app.models.pos import Device
+from app.models.pos import Device, DeviceStatus
 from app.models.user import User
+
+#: Cookie name the browser holds its device_uid in (httpOnly, set server-side).
+DEVICE_UID_COOKIE = "device_uid"
+#: Header a native/app client may present its device_uid in instead of a cookie.
+DEVICE_UID_HEADER = "X-Device-Uid"
+#: ~10 years — the pairing is durable until the manager revokes/reissues.
+_COOKIE_MAX_AGE = 10 * 365 * 24 * 3600
+
+
+def set_device_cookie(response: Response, device_uid: str) -> None:
+    """Persist the device_uid in an httpOnly cookie so a plain cache-clear (which
+    kills localStorage) doesn't lose the terminal's identity. httpOnly keeps it
+    out of JS/XSS reach. Attributes come from config: cross-origin production
+    needs secure=True + samesite='none'."""
+    response.set_cookie(
+        key=DEVICE_UID_COOKIE,
+        value=device_uid,
+        max_age=_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+        path="/v1",
+    )
+
+
+def resolve_device_uid(body_uid: str | None, request: Request) -> str:
+    """The device_uid for a login, from whichever transport carries it.
+
+    Priority: explicit request body → httpOnly cookie (browser) → header (app).
+    A browser sends nothing extra; the cookie rides automatically.
+    """
+    uid = (
+        body_uid
+        or request.cookies.get(DEVICE_UID_COOKIE)
+        or request.headers.get(DEVICE_UID_HEADER)
+    )
+    if not uid:
+        raise AuthError(
+            "This device is not paired. Activate the terminal first.",
+            code="device_uid_missing",
+        )
+    return uid
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -61,9 +104,15 @@ def get_pos_session(
         )
 
     device = db.get(Device, int(device_id))
-    if device is None or not device.is_active:
+    if device is None:
         raise ForbiddenError("Unknown or inactive device.", code="unknown_device")
     if device.restaurant_id != current.restaurant_id:
+        raise ForbiddenError("Unknown or inactive device.", code="unknown_device")
+    # Live status check on every request — a revoke takes effect within one
+    # request, not at token expiry.
+    if device.status == DeviceStatus.REVOKED:
+        raise ForbiddenError("This terminal has been revoked.", code="device_revoked")
+    if device.status != DeviceStatus.ACTIVE:
         raise ForbiddenError("Unknown or inactive device.", code="unknown_device")
 
     branch_id = require_actor_branch_id(current)

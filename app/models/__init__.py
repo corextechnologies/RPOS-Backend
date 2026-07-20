@@ -40,6 +40,7 @@ from app.models.production import ProductionRun, ProductionRunLine  # noqa: F401
 from app.models.pos import (  # noqa: F401
     Device,
     DeviceProfile,
+    DeviceStatus,
     IdempotencyKey,
     IdempotencyStatus,
     TaxProfile,

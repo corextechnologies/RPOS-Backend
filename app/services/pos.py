@@ -1,11 +1,14 @@
-"""POS-0 services: device registration, device-bound sign-in, bootstrap."""
+"""POS-0 services: device pairing (activation codes), device-bound sign-in, bootstrap."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.credentials import generate_activation_code
 from app.core.exceptions import AuthError, ConflictError, ForbiddenError, NotFoundError
 from app.core.security import (
     create_access_token,
@@ -16,7 +19,7 @@ from app.deps.auth import enforce_not_halted
 from app.deps.capabilities import capabilities_for
 from app.deps.rbac import BRANCH_ROLES
 from app.models.location import Branch
-from app.models.pos import Device
+from app.models.pos import Device, DeviceStatus
 from app.models.user import User
 from app.pricing import registry
 from app.pricing.money import minor_units_for
@@ -33,19 +36,41 @@ from app.schemas.pos import (
 )
 from app.services.audit import AuditService
 
+# How long a freshly issued activation code stays valid. Generous on purpose —
+# terminal setup isn't time-critical like a 2FA code, and the code is strong.
+ACTIVATION_CODE_TTL = timedelta(hours=24)
+
+
+def _normalise_code(code: str) -> str:
+    return code.strip().upper().replace("-", "").replace(" ", "")
+
+
+def _hash_code(code: str) -> str:
+    return hashlib.sha256(_normalise_code(code).encode("utf-8")).hexdigest()
+
+
+def _issue_code() -> tuple[str, str, datetime]:
+    """Return (plaintext, hash, expires_at) for a fresh activation code."""
+    plaintext = generate_activation_code()
+    return plaintext, _hash_code(plaintext), datetime.now(timezone.utc) + ACTIVATION_CODE_TTL
+
+
+def _display_code(plaintext: str) -> str:
+    """Group as XXXX-XXXX for readability. Stored/compared form strips the dash."""
+    mid = len(plaintext) // 2
+    return f"{plaintext[:mid]}-{plaintext[mid:]}" if len(plaintext) > 4 else plaintext
+
 
 class DeviceService:
     @staticmethod
-    def register(
+    def create(
         db: Session, manager: User, branch_id: int, body: DeviceRegisterIn
-    ) -> Device:
-        existing = db.execute(
-            select(Device).where(Device.device_uid == body.device_uid)
-        ).scalar_one_or_none()
-        if existing is not None:
-            raise ConflictError(
-                "This device is already registered.", code="device_exists"
-            )
+    ) -> tuple[Device, str, datetime]:
+        """Manager declares a terminal exists. No device is bound yet.
+
+        Returns (device, plaintext_activation_code, expires_at). The plaintext is
+        shown ONCE here and never stored — only its hash lives on the row.
+        """
         clash = db.execute(
             select(Device).where(
                 Device.restaurant_id == manager.restaurant_id,
@@ -57,13 +82,17 @@ class DeviceService:
                 "A device with this code already exists.", code="device_code_exists"
             )
 
+        plaintext, code_hash, expires_at = _issue_code()
         device = Device(
             restaurant_id=manager.restaurant_id,
             branch_id=branch_id,
-            device_uid=body.device_uid,
+            device_uid=None,
             code=body.code,
             name=body.name,
             profile=body.profile,
+            status=DeviceStatus.PENDING,
+            activation_code_hash=code_hash,
+            activation_expires_at=expires_at,
             registered_by_id=manager.id,
         )
         db.add(device)
@@ -71,7 +100,7 @@ class DeviceService:
         AuditService.record(
             db,
             actor=manager,
-            action="pos.device.register",
+            action="pos.device.create",
             entity_type="pos_device",
             entity_id=device.id,
             restaurant_id=manager.restaurant_id,
@@ -81,7 +110,162 @@ class DeviceService:
         )
         db.commit()
         db.refresh(device)
+        return device, _display_code(plaintext), expires_at
+
+    @staticmethod
+    def _owned(db: Session, manager: User, branch_id: int, device_id: int) -> Device:
+        device = db.get(Device, device_id)
+        if (
+            device is None
+            or device.restaurant_id != manager.restaurant_id
+            or device.branch_id != branch_id
+        ):
+            raise NotFoundError("Terminal not found.")
         return device
+
+    @staticmethod
+    def reissue(
+        db: Session, manager: User, branch_id: int, device_id: int
+    ) -> tuple[Device, str, datetime]:
+        """Mint a fresh code for an existing terminal.
+
+        On a PENDING terminal it replaces the (possibly expired) code. On an
+        ACTIVE one it offers a rebind: the current device keeps working until a
+        new device claims the code. On a REVOKED one it brings the slot back to
+        PENDING.
+        """
+        device = DeviceService._owned(db, manager, branch_id, device_id)
+        plaintext, code_hash, expires_at = _issue_code()
+        device.activation_code_hash = code_hash
+        device.activation_expires_at = expires_at
+        if device.status == DeviceStatus.REVOKED:
+            device.status = DeviceStatus.PENDING
+        AuditService.record(
+            db,
+            actor=manager,
+            action="pos.device.activation.reissue",
+            entity_type="pos_device",
+            entity_id=device.id,
+            restaurant_id=manager.restaurant_id,
+            terminal_id=device.id,
+            after={"status": device.status.value},
+        )
+        db.commit()
+        db.refresh(device)
+        return device, _display_code(plaintext), expires_at
+
+    @staticmethod
+    def revoke(db: Session, manager: User, branch_id: int, device_id: int) -> Device:
+        """Kill a terminal. Its uid is freed so the same physical device can be
+        re-paired to a new terminal later; its tokens die on the next request."""
+        device = DeviceService._owned(db, manager, branch_id, device_id)
+        old_uid = device.device_uid
+        device.status = DeviceStatus.REVOKED
+        device.device_uid = None
+        device.activation_code_hash = None
+        device.activation_expires_at = None
+        AuditService.record(
+            db,
+            actor=manager,
+            action="pos.device.revoke",
+            entity_type="pos_device",
+            entity_id=device.id,
+            restaurant_id=manager.restaurant_id,
+            terminal_id=device.id,
+            before={"device_uid": old_uid, "status": "ACTIVE"},
+            after={"status": "REVOKED"},
+        )
+        db.commit()
+        db.refresh(device)
+        return device
+
+    @staticmethod
+    def activate(db: Session, device_uid: str, code: str) -> Device:
+        """Public: a physical device claims a terminal with its activation code.
+
+        Binds `device_uid` to the terminal and returns it. Issues no user token —
+        the cashier logs in separately.
+        """
+        code_hash = _hash_code(code)
+        now = datetime.now(timezone.utc)
+
+        # A non-null device_uid only ever sits on an ACTIVE terminal (PENDING has
+        # none; revoke NULLs it), so this is "the terminal this device is on", if
+        # any.
+        bound = db.execute(
+            select(Device).where(Device.device_uid == device_uid)
+        ).scalar_one_or_none()
+
+        # The terminal whose outstanding, unexpired code was presented.
+        target = db.execute(
+            select(Device).where(
+                Device.activation_code_hash == code_hash,
+                Device.activation_expires_at > now,
+            )
+        ).scalar_one_or_none()
+
+        if target is None:
+            # No live code matches. If this device is already bound, it's a retry
+            # of a claim that already succeeded (the code was consumed) — return
+            # it idempotently. Otherwise the code is simply bad/expired/used.
+            if bound is not None:
+                return bound
+            raise ConflictError(
+                "Invalid or expired activation code.",
+                code="invalid_activation_code",
+            )
+
+        # A valid code points at `target`. If this uid is already live on a
+        # DIFFERENT terminal, it can't also become this one.
+        if bound is not None and bound.id != target.id:
+            raise ConflictError(
+                "This device is already paired to another terminal.",
+                code="device_uid_in_use",
+            )
+
+        old_uid = target.device_uid
+        # Race-safe compare-and-set: only one claimant wins a given code. rowcount
+        # 0 => someone else claimed it between our SELECT and UPDATE.
+        row = db.execute(
+            text(
+                "UPDATE pos_devices "
+                "SET device_uid = :uid, status = 'ACTIVE', activated_at = :now, "
+                "    activation_code_hash = NULL, activation_expires_at = NULL "
+                "WHERE id = :id AND activation_code_hash = :hash "
+                "  AND activation_expires_at > :now "
+                "RETURNING id"
+            ),
+            {"uid": device_uid, "now": now, "hash": code_hash, "id": target.id},
+        ).first()
+        if row is None:
+            raise ConflictError(
+                "Invalid or expired activation code.",
+                code="invalid_activation_code",
+            )
+
+        db.expire(target)  # the row changed under it via raw SQL
+        AuditService.record(
+            db,
+            actor=None,  # public action, no signed-in user
+            action="pos.device.activation.claim",
+            entity_type="pos_device",
+            entity_id=target.id,
+            restaurant_id=target.restaurant_id,
+            terminal_id=target.id,
+            before={"device_uid": old_uid} if old_uid else None,
+            after={"device_uid": device_uid, "status": "ACTIVE"},
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            # uq_pos_device_uid backstop: the uid landed on another terminal
+            # between our check and commit.
+            db.rollback()
+            raise ConflictError(
+                "This device is already paired to another terminal.",
+                code="device_uid_in_use",
+            )
+        return db.get(Device, target.id)
 
     @staticmethod
     def list_for_branch(db: Session, actor: User, branch_id: int) -> list[Device]:
@@ -105,9 +289,14 @@ class PosAuthService:
         device = db.execute(
             select(Device).where(Device.device_uid == device_uid)
         ).scalar_one_or_none()
-        if device is None or not device.is_active:
+        # An unbound uid (PENDING/REVOKED clear it) simply doesn't match any row.
+        if device is None:
             raise ForbiddenError("Unknown or inactive device.", code="unknown_device")
         if device.restaurant_id != user.restaurant_id:
+            raise ForbiddenError("Unknown or inactive device.", code="unknown_device")
+        if device.status == DeviceStatus.REVOKED:
+            raise ForbiddenError("This terminal has been revoked.", code="device_revoked")
+        if device.status != DeviceStatus.ACTIVE:
             raise ForbiddenError("Unknown or inactive device.", code="unknown_device")
         if user.role not in BRANCH_ROLES:
             raise ForbiddenError("Only branch staff can sign in to the POS.")

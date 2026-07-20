@@ -24,7 +24,15 @@ class Settings(BaseSettings):
     env: str = "development"
     # Comma-separated browser origins (where the frontend is served from).
     # Use * for local/dev only (e.g. localhost:3000, another PC on LAN).
+    # NOTE: when the POS device cookie is used cross-origin, this MUST list
+    # explicit origins (a browser rejects "*" together with credentials).
     cors_origins: str = "*"
+
+    # POS device_uid cookie. Dev defaults suit local http + a same-origin or lax
+    # setup. Production cross-origin (separate frontend host) needs
+    # cookie_secure=True and cookie_samesite="none".
+    cookie_secure: bool = False
+    cookie_samesite: str = "lax"
 
 
 @lru_cache

@@ -7,7 +7,7 @@ import pytest
 from app.models.enums import BranchPosition, UserRole
 from app.models.request_enums import LocationType
 from app.services.inventory import InventoryService
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, pair_terminal
 
 
 @pytest.fixture
@@ -77,15 +77,11 @@ def sell_ctx(db, restaurant_setup, make_product, client):
     assert published.status_code == 200, published.text
 
     mgr = auth_headers(client, "branch@test.com")
-    client.post(
-        "/v1/branch/devices",
-        json={"device_uid": "TERMINAL-0001", "code": "T1", "profile": "COUNTER"},
-        headers=mgr,
-    )
+    device_uid = pair_terminal(client, mgr, code="T1", profile="COUNTER")
     return {
         **restaurant_setup, "branch": branch, "products": products,
         "version_id": vid, "burger": burger, "fries": fries, "cola": cola,
-        "combo": combo, "group_id": gid,
+        "combo": combo, "group_id": gid, "device_uid": device_uid,
     }
 
 
@@ -98,7 +94,7 @@ def _pos_headers(client, sell_ctx, make_user, position=BranchPosition.CASHIER):
     login = client.post(
         "/v1/pos/session/login",
         json={"email": "cashier@test.com", "password": "Pass@1234",
-              "device_uid": "TERMINAL-0001"},
+              "device_uid": sell_ctx["device_uid"]},
     )
     assert login.status_code == 200, login.text
     return {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
@@ -427,16 +423,14 @@ def test_pos_order_is_branch_scoped(client, sell_ctx, make_user, make_branch, db
     make_user("branch2@test.com", UserRole.BRANCH_MANAGER,
               restaurant_id=sell_ctx["restaurant"].id, branch_id=b2.id)
     mgr2 = auth_headers(client, "branch2@test.com")
-    client.post("/v1/branch/devices",
-                json={"device_uid": "TERMINAL-0002", "code": "T2", "profile": "COUNTER"},
-                headers=mgr2)
+    uid2 = pair_terminal(client, mgr2, code="T2", profile="COUNTER")
     make_user("cashier2@test.com", UserRole.BRANCH_STAFF,
               restaurant_id=sell_ctx["restaurant"].id, branch_id=b2.id,
               position=BranchPosition.CASHIER)
     login2 = client.post(
         "/v1/pos/session/login",
         json={"email": "cashier2@test.com", "password": "Pass@1234",
-              "device_uid": "TERMINAL-0002"},
+              "device_uid": uid2},
     )
     h2 = {"Authorization": f"Bearer {login2.json()['data']['access_token']}"}
     assert client.get(f"/v1/pos/orders/{order['id']}", headers=h2).status_code == 404

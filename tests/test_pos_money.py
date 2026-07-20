@@ -194,7 +194,7 @@ def _mgr_pos(client, sell_ctx):
     login = client.post(
         "/v1/pos/session/login",
         json={"email": "branch@test.com", "password": "Pass@1234",
-              "device_uid": "TERMINAL-0001"},
+              "device_uid": sell_ctx["device_uid"]},
     )
     assert login.status_code == 200, login.text
     return {"Authorization": f"Bearer {login.json()['data']['access_token']}"}

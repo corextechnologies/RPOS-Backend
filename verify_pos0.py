@@ -24,6 +24,7 @@ TESTS = [
     # POS-0
     "tests/test_money.py",
     "tests/test_idempotency.py",
+    "tests/test_pos_activation.py",
     "tests/test_pos_foundation.py",
 ]
 

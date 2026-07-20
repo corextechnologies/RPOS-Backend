@@ -12,7 +12,7 @@ class AuditService:
     def record(
         db: Session,
         *,
-        actor: User,
+        actor: User | None,
         action: str,
         entity_type: str,
         entity_id: int,
@@ -29,10 +29,13 @@ class AuditService:
         The POS-0 arguments are all optional so every existing caller is
         unchanged; money-touching POS actions fill them in (see the AuditLog
         docstring for why they are columns and not payload keys).
+
+        `actor` may be None for a public/system action with no signed-in user —
+        e.g. a device claiming an activation code. actor_id is nullable.
         """
         entry = AuditLog(
             restaurant_id=restaurant_id,
-            actor_id=actor.id,
+            actor_id=actor.id if actor is not None else None,
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,

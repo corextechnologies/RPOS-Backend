@@ -17,14 +17,17 @@ from app.models.payment import (
     ReasonCode,
     ShiftStatus,
 )
-from app.models.pos import DeviceProfile
+from app.models.pos import DeviceProfile, DeviceStatus
 from app.pricing.types import OrderChannel, OrderType, PaymentMethod
 
 
 class DeviceRegisterIn(BaseModel):
-    """A Branch Manager registers a terminal to their own branch."""
+    """A Branch Manager declares a terminal exists at their branch.
 
-    device_uid: str = Field(min_length=8, max_length=64)
+    No device_uid: the manager doesn't know it and shouldn't. A physical device
+    binds itself later by claiming the activation code this create returns.
+    """
+
     code: str = Field(min_length=1, max_length=16)
     profile: DeviceProfile
     name: str | None = Field(default=None, max_length=255)
@@ -33,26 +36,53 @@ class DeviceRegisterIn(BaseModel):
 class DeviceOut(BaseModel):
     id: int
     branch_id: int
-    device_uid: str
     code: str
     name: str | None = None
     profile: DeviceProfile
-    is_active: bool
+    status: DeviceStatus
+    has_outstanding_code: bool = False
+    last_seen_at: datetime | None = None
+    activated_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
-class PosLoginIn(BaseModel):
-    """Full credential sign-in from a registered terminal.
+class DeviceCreatedOut(DeviceOut):
+    """The create/reissue response — carries the one-time activation code."""
 
-    Reuses Phase 0's password check; the only addition is device_uid, which binds
-    the issued token to the terminal.
+    activation_code: str
+    activation_expires_at: datetime
+
+
+class DeviceActivateIn(BaseModel):
+    """A device claims a terminal. Public — no auth, just the code."""
+
+    activation_code: str = Field(min_length=4, max_length=32)
+    # The device's own generated identity (persist it BEFORE sending). uuid4 hex
+    # is 32 chars; the min pushes callers toward real entropy — the uid doubles
+    # as a possession secret.
+    device_uid: str = Field(min_length=16, max_length=64)
+
+
+class DeviceActivateOut(BaseModel):
+    device_id: int
+    code: str
+    branch_id: int
+    profile: DeviceProfile
+
+
+class PosLoginIn(BaseModel):
+    """Full credential sign-in from a paired terminal.
+
+    device_uid is optional here: a browser carries it in an httpOnly cookie set
+    at activation, a native app may send it in the X-Device-Uid header, and only
+    a client without either supplies it in the body.
     """
 
     email: str
     password: str
-    device_uid: str = Field(min_length=8, max_length=64)
+    device_uid: str | None = Field(default=None, max_length=64)
 
 
 class PinUnlockIn(BaseModel):
@@ -60,7 +90,7 @@ class PinUnlockIn(BaseModel):
 
     email: str
     pin: str = Field(min_length=4, max_length=12)
-    device_uid: str = Field(min_length=8, max_length=64)
+    device_uid: str | None = Field(default=None, max_length=64)
 
 
 class PosTokenOut(BaseModel):

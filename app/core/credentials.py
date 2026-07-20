@@ -32,6 +32,20 @@ def generate_password(length: int = 12) -> str:
     return "".join(secrets.choice(_ALPHABET) for _ in range(length))
 
 
+# No ambiguous glyphs (0/O, 1/I/L dropped) so a code read off a screen or over the
+# phone can't be mistyped. 31 symbols ^ 8 ≈ 8.5e11 — brute force is hopeless given
+# the code is single-use and expires. Do NOT reuse generate_password here: its dev
+# stub is a fixed constant, which would collide across terminals.
+_ACTIVATION_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+
+
+def generate_activation_code(length: int = 8) -> str:
+    """A one-time terminal-pairing code. Always real random, even in dev — the
+    plaintext is returned once in the create/reissue response, so tests read it
+    from there rather than relying on a predictable value."""
+    return "".join(secrets.choice(_ACTIVATION_ALPHABET) for _ in range(length))
+
+
 class Mailer:
     """Interface for outbound email."""
 

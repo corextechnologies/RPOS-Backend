@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import enum
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
-    Boolean,
     Date,
     DateTime,
     Enum as SAEnum,
@@ -31,6 +30,22 @@ class DeviceProfile(str, enum.Enum):
 
     COUNTER = "COUNTER"      # terminal with cash drawer + receipt printer
     CURBSIDE = "CURBSIDE"    # tablet, no drawer, optional belt printer
+
+
+class DeviceStatus(str, enum.Enum):
+    """A terminal's pairing lifecycle.
+
+    PENDING — the manager created the terminal ("T1 exists at branch A") but no
+              physical device is bound yet; it holds an outstanding activation
+              code, no device_uid.
+    ACTIVE  — a device claimed the code; device_uid is bound; it can transact.
+    REVOKED — the manager killed it; it cannot transact and its uid is freed. To
+              bring it back the manager reissues a code and a device re-pairs.
+    """
+
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    REVOKED = "REVOKED"
 
 
 class IdempotencyStatus(str, enum.Enum):
@@ -68,6 +83,12 @@ class TaxProfile(Base, PKMixin, TimestampMixin):
 class Device(Base, PKMixin, TimestampMixin):
     """A registered POS terminal, bound to exactly one branch.
 
+    Two-step lifecycle. The manager CREATES the terminal (status PENDING, a
+    device_uid is not known yet) and gets a one-time activation code; a physical
+    device then CLAIMS that code, presenting a uid it generated, which binds it
+    (status ACTIVE). The uid is never supplied by the manager — that is the whole
+    point of the activation flow.
+
     Device binding is a real security boundary: a token minted for terminal A at
     branch X must be invalid at branch Y.
     """
@@ -75,6 +96,8 @@ class Device(Base, PKMixin, TimestampMixin):
     __tablename__ = "pos_devices"
     __table_args__ = (
         UniqueConstraint("restaurant_id", "code", name="uq_pos_device_restaurant_code"),
+        # Postgres treats NULLs as distinct, so many PENDING rows (uid NULL)
+        # coexist; only bound uids are enforced unique.
         UniqueConstraint("device_uid", name="uq_pos_device_uid"),
     )
 
@@ -85,19 +108,39 @@ class Device(Base, PKMixin, TimestampMixin):
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True
     )
     # Opaque id the device presents; the {terminal_code} in the printed order no.
-    device_uid: Mapped[str] = mapped_column(String(64), nullable=False)
+    # NULL until a device claims the terminal (PENDING), and again after revoke.
+    device_uid: Mapped[str | None] = mapped_column(String(64))
     code: Mapped[str] = mapped_column(String(16), nullable=False)
     name: Mapped[str | None] = mapped_column(String(255))
     profile: Mapped[DeviceProfile] = mapped_column(
         SAEnum(DeviceProfile, name="device_profile"), nullable=False
     )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default="true"
+    status: Mapped[DeviceStatus] = mapped_column(
+        SAEnum(DeviceStatus, name="device_status"),
+        nullable=False,
+        default=DeviceStatus.PENDING,
+        server_default="PENDING",
+        index=True,
     )
+    # sha256 hex of the normalised activation code, non-null only while a code is
+    # outstanding. The plaintext is shown once (create/reissue response) and never
+    # stored.
+    activation_code_hash: Mapped[str | None] = mapped_column(String(64))
+    activation_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     registered_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def has_outstanding_code(self) -> bool:
+        """True while an unexpired activation code is waiting to be claimed."""
+        if self.activation_code_hash is None or self.activation_expires_at is None:
+            return False
+        return self.activation_expires_at > datetime.now(timezone.utc)
 
 
 class IdempotencyKey(Base, PKMixin, TimestampMixin):
