@@ -78,24 +78,21 @@ def _dispatch_from(
         qty = _approved_quantity(line)
         if qty <= 0:
             continue
-        try:
-            InventoryService.apply_dispatch(
-                db,
-                actor=actor,
-                location_type=location_type,
-                location_id=location_id,
-                product_id=line.product_id,
-                quantity=qty,
-                request_id=request.id,
-                notes=f"Dispatch for request #{request.id}",
-            )
-        except NotFoundError as exc:
-            # No inventory row at all reads the same as an empty one to the
-            # caller: they asked to move stock that isn't there.
-            raise ConflictError(
-                "Insufficient stock for this operation.",
-                code="insufficient_stock",
-            ) from exc
+        # FEFO across batches, not a probe of the empty-batch bucket: PO-received
+        # warehouse stock lives in named batches, so a batch-blind dispatch would
+        # report insufficient_stock while the product is fully on hand. The service
+        # raises insufficient_stock itself (with a product/qty breakdown) when the
+        # summed on-hand across usable batches falls short.
+        InventoryService.apply_dispatch_fefo(
+            db,
+            actor=actor,
+            location_type=location_type,
+            location_id=location_id,
+            product_id=line.product_id,
+            quantity=qty,
+            request_id=request.id,
+            notes=f"Dispatch for request #{request.id}",
+        )
 
 
 def _receive_into(

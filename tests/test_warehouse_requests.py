@@ -143,6 +143,131 @@ def test_dispatch_fails_without_stock(client, warehouse_ready):
     assert dispatch.json()["error"]["code"] == "insufficient_stock"
 
 
+def test_dispatch_consumes_batched_stock_fefo(client, warehouse_ready):
+    """Repro for the frontend's 409: batched warehouse stock must dispatch.
+
+    Stock received against named batches (a PO receipt) used to be invisible to
+    the dispatch check, which only probed the empty-batch bucket and reported
+    insufficient_stock. Dispatch now sums across batches and consumes them
+    earliest-expiry-first.
+    """
+    from datetime import date, timedelta
+
+    wh_headers = auth_headers(client, "warehouse@test.com")
+    product = warehouse_ready["product"]
+    kitchen = warehouse_ready["kitchen"]
+    warehouse = warehouse_ready["warehouse"]
+
+    # Two in-date batches, mirroring request #10's Cheese: 60 on hand, none in
+    # the empty bucket. Dates are relative to today so the test never rots.
+    later = (date.today() + timedelta(days=8)).isoformat()
+    sooner = (date.today() + timedelta(days=3)).isoformat()
+    for batch, qty, exp in (("B-CH-01", 20, later), ("B-CH-26", 40, sooner)):
+        recv = client.post(
+            "/v1/warehouse/stock/receive",
+            json={
+                "product_id": product.id,
+                "quantity": qty,
+                "batch_code": batch,
+                "expiry_date": exp,
+            },
+            headers=wh_headers,
+        )
+        assert recv.status_code == 200, recv.text
+
+    kitchen_headers = auth_headers(client, "kitchen@test.com")
+    create = client.post(
+        "/v1/requests",
+        json={
+            "request_type": "KITCHEN_TO_WAREHOUSE",
+            "source_location_type": "KITCHEN",
+            "source_location_id": kitchen.id,
+            "target_location_type": "WAREHOUSE",
+            "target_location_id": warehouse.id,
+            "lines": [{"product_id": product.id, "quantity_requested": 5}],
+        },
+        headers=kitchen_headers,
+    )
+    assert create.status_code == 200, create.text
+    request_id = create.json()["data"]["id"]
+
+    # Request-level approval only: quantity_approved stays null (as on #10).
+    assert (
+        client.patch(
+            f"/v1/warehouse/requests/{request_id}/status",
+            json={"to_status": "APPROVED"},
+            headers=wh_headers,
+        ).status_code
+        == 200
+    )
+
+    dispatch = client.patch(
+        f"/v1/warehouse/requests/{request_id}/status",
+        json={"to_status": "DISPATCHED"},
+        headers=wh_headers,
+    )
+    assert dispatch.status_code == 200, dispatch.text
+
+    inv = client.get("/v1/warehouse/inventory", headers=wh_headers).json()["data"]
+    by_batch = {
+        r["batch_code"]: r["quantity"]
+        for r in inv
+        if r["product_id"] == product.id
+    }
+    # FEFO: the sooner-expiring B-CH-26 is drained first.
+    assert by_batch == {"B-CH-01": 20, "B-CH-26": 35}
+
+
+def test_dispatch_shortfall_reports_available_quantity(client, warehouse_ready):
+    """A genuine shortfall now names the product and the summed on-hand."""
+    wh_headers = auth_headers(client, "warehouse@test.com")
+    product = warehouse_ready["product"]
+    kitchen = warehouse_ready["kitchen"]
+    warehouse = warehouse_ready["warehouse"]
+
+    recv = client.post(
+        "/v1/warehouse/stock/receive",
+        json={"product_id": product.id, "quantity": 2, "batch_code": "B-1"},
+        headers=wh_headers,
+    )
+    assert recv.status_code == 200
+
+    kitchen_headers = auth_headers(client, "kitchen@test.com")
+    create = client.post(
+        "/v1/requests",
+        json={
+            "request_type": "KITCHEN_TO_WAREHOUSE",
+            "source_location_type": "KITCHEN",
+            "source_location_id": kitchen.id,
+            "target_location_type": "WAREHOUSE",
+            "target_location_id": warehouse.id,
+            "lines": [{"product_id": product.id, "quantity_requested": 5}],
+        },
+        headers=kitchen_headers,
+    )
+    request_id = create.json()["data"]["id"]
+    assert (
+        client.patch(
+            f"/v1/warehouse/requests/{request_id}/status",
+            json={"to_status": "APPROVED"},
+            headers=wh_headers,
+        ).status_code
+        == 200
+    )
+
+    dispatch = client.patch(
+        f"/v1/warehouse/requests/{request_id}/status",
+        json={"to_status": "DISPATCHED"},
+        headers=wh_headers,
+    )
+    assert dispatch.status_code == 409
+    err = dispatch.json()["error"]
+    assert err["code"] == "insufficient_stock"
+    assert err["details"]["product_id"] == product.id
+    assert err["details"]["requested"] == 5
+    assert err["details"]["available"] == 2
+
+
 def test_mark_po_received(client, warehouse_ready):
     wh_headers = auth_headers(client, "warehouse@test.com")
     admin_headers = auth_headers(client, "admin@test.com")

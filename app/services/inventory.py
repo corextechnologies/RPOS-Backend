@@ -187,6 +187,110 @@ class InventoryService:
         )
 
     @staticmethod
+    def apply_dispatch_fefo(
+        db: Session,
+        *,
+        actor: User,
+        location_type: LocationType,
+        location_id: int,
+        product_id: int,
+        quantity: int,
+        request_id: int | None = None,
+        notes: str | None = None,
+        as_of: date | None = None,
+    ) -> list[InventoryItem]:
+        """Dispatch `quantity` of a product across its batches, earliest-expiry-first.
+
+        `apply_dispatch` deducts from a SINGLE inventory row keyed on an exact
+        `batch_code` (defaulting to the empty/unbatched bucket). That is wrong for
+        stock that lives in named batches: a warehouse credited by a PO receipt
+        holds e.g. 20 of "B-CH-01" + 40 of "B-CH-26" and NOTHING in the empty
+        bucket, so a batch-blind dispatch probes an empty row and reports
+        `insufficient_stock` even though 60 are on hand.
+
+        This sums the product across every batch at the location and consumes them
+        FEFO — earliest expiry first — skipping batches already expired as of
+        `as_of`. Each batch it touches still goes through `apply_dispatch`, so the
+        single-write-path invariant holds: one locked read + one StockMovement per
+        batch. Undated batches never expire and are consumed last.
+        """
+        if quantity <= 0:
+            raise ConflictError(
+                "Dispatch quantity must be positive.",
+                code="invalid_quantity",
+            )
+        restaurant_id = InventoryService._require_restaurant(actor)
+        InventoryService._validate_location(
+            db, restaurant_id, location_type, location_id
+        )
+        InventoryService._validate_product(db, restaurant_id, product_id)
+
+        today = as_of or date.today()
+        # Lock every on-hand batch row for this product/location up front, in the
+        # same FEFO order we consume them, so a concurrent dispatch of the same
+        # product serializes behind us instead of reading the same on-hand twice.
+        rows = (
+            db.execute(
+                select(InventoryItem)
+                .where(
+                    InventoryItem.restaurant_id == restaurant_id,
+                    InventoryItem.location_type == location_type,
+                    InventoryItem.location_id == location_id,
+                    InventoryItem.product_id == product_id,
+                    InventoryItem.quantity > 0,
+                )
+                .order_by(
+                    # Dated batches (expiry NOT NULL) before undated ones, then
+                    # soonest expiry first, then a stable id tiebreak.
+                    InventoryItem.expiry_date.is_(None),
+                    InventoryItem.expiry_date.asc(),
+                    InventoryItem.id.asc(),
+                )
+                .with_for_update()
+            )
+            .scalars()
+            .all()
+        )
+
+        usable = [r for r in rows if r.expiry_date is None or r.expiry_date >= today]
+        available = sum(r.quantity for r in usable)
+        if available < quantity:
+            product = db.get(Product, product_id)
+            raise ConflictError(
+                "Insufficient stock for this operation.",
+                code="insufficient_stock",
+                details={
+                    "product_id": product_id,
+                    "product_name": product.name if product else None,
+                    "location_type": location_type.value,
+                    "location_id": location_id,
+                    "requested": quantity,
+                    "available": available,
+                },
+            )
+
+        remaining = quantity
+        touched: list[InventoryItem] = []
+        for row in usable:
+            if remaining <= 0:
+                break
+            take = min(row.quantity, remaining)
+            item = InventoryService.apply_dispatch(
+                db,
+                actor=actor,
+                location_type=location_type,
+                location_id=location_id,
+                product_id=product_id,
+                quantity=take,
+                batch_code=row.batch_code or None,
+                request_id=request_id,
+                notes=notes,
+            )
+            touched.append(item)
+            remaining -= take
+        return touched
+
+    @staticmethod
     def apply_sale_deduction(
         db: Session,
         *,
