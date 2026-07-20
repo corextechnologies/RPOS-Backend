@@ -38,6 +38,13 @@ def _kitchen_visible_requests(user: User, *, kitchen_id: int | None) -> Select:
                 & (Request.target_location_type == LocationType.KITCHEN)
                 & (Request.target_location_id == kitchen_id)
             ),
+            # This kitchen's own dispatch notifications, visible to all its staff
+            # (not just the manager who raised them) — source is the kitchen.
+            (
+                (Request.request_type == RequestType.KITCHEN_TO_ADMIN)
+                & (Request.source_location_type == LocationType.KITCHEN)
+                & (Request.source_location_id == kitchen_id)
+            ),
         ),
     )
 

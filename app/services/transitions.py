@@ -6,6 +6,7 @@ from app.models.enums import UserRole
 from app.models.request_enums import (
     AdminToSuperAdminStatus,
     BranchToAdminStatus,
+    KitchenToAdminStatus,
     KitchenToWarehouseStatus,
     RequestType,
     WarehouseToAdminStatus,
@@ -77,6 +78,22 @@ ALLOWED_TRANSITIONS: dict[RequestType, dict[str, set[str]]] = {
         BranchToAdminStatus.REJECTED.value: set(),
         BranchToAdminStatus.RECEIVED.value: set(),
     },
+    RequestType.KITCHEN_TO_ADMIN: {
+        # Only REJECT is a generic transition. PENDING -> ALLOCATED (Admin),
+        # ALLOCATED -> DISPATCHED (kitchen) and DISPATCHED -> RECEIVED (branch,
+        # once every allocation lands) each carry side effects — allocation
+        # fan-out or a stock movement — so they run through dedicated endpoints
+        # (/allocate, /dispatch, /deliveries/{id}/receive) and are deliberately
+        # absent here. That is what stops a bare admin status PATCH from reaching
+        # ALLOCATED and silently skipping the allocation write.
+        KitchenToAdminStatus.PENDING.value: {
+            KitchenToAdminStatus.REJECTED.value,
+        },
+        KitchenToAdminStatus.ALLOCATED.value: set(),
+        KitchenToAdminStatus.DISPATCHED.value: set(),
+        KitchenToAdminStatus.RECEIVED.value: set(),
+        KitchenToAdminStatus.REJECTED.value: set(),
+    },
     RequestType.ADMIN_TO_SUPERADMIN_PLAN: {
         AdminToSuperAdminStatus.PENDING.value: {
             AdminToSuperAdminStatus.APPROVED.value,
@@ -103,6 +120,7 @@ CREATE_ROLES: dict[RequestType, set[UserRole]] = {
     RequestType.WAREHOUSE_TO_ADMIN_PO: {UserRole.WAREHOUSE_MANAGER},
     RequestType.BRANCH_TO_ADMIN: {UserRole.BRANCH_MANAGER},
     RequestType.ADMIN_TO_SUPERADMIN_PLAN: {UserRole.ADMIN},
+    RequestType.KITCHEN_TO_ADMIN: {UserRole.KITCHEN_MANAGER},
 }
 
 # Who may transition *to* each target status.
@@ -129,6 +147,11 @@ TRANSITION_ROLES: dict[RequestType, dict[str, set[UserRole]]] = {
         BranchToAdminStatus.PRODUCED.value: {UserRole.KITCHEN_MANAGER},
         BranchToAdminStatus.ALLOCATED.value: {UserRole.KITCHEN_MANAGER},
         BranchToAdminStatus.RECEIVED.value: {UserRole.BRANCH_MANAGER},
+    },
+    RequestType.KITCHEN_TO_ADMIN: {
+        # Only the generic REJECT is role-gated here; the allocate/dispatch/
+        # receive transitions are authorised inside their dedicated endpoints.
+        KitchenToAdminStatus.REJECTED.value: {UserRole.ADMIN},
     },
     RequestType.ADMIN_TO_SUPERADMIN_PLAN: {
         AdminToSuperAdminStatus.APPROVED.value: {UserRole.SUPER_ADMIN},

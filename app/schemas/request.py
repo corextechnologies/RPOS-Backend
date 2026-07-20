@@ -67,6 +67,23 @@ class RequestTransition(BaseModel):
     target_location_id: int | None = None
 
 
+class AllocationCreate(BaseModel):
+    line_item_id: int
+    branch_id: int
+    quantity: int = Field(gt=0)
+
+
+class AllocateRequest(BaseModel):
+    """Admin splits a ready KITCHEN_TO_ADMIN batch across branches.
+
+    Several entries may share one line_item_id (one product going to many
+    branches). Per line, the summed quantity may not exceed quantity_requested.
+    """
+
+    allocations: list[AllocationCreate] = Field(min_length=1)
+    notes: str | None = None
+
+
 class RequestLineOut(BaseModel):
     id: int
     product_id: int
@@ -75,6 +92,19 @@ class RequestLineOut(BaseModel):
     quantity_approved: int | None = None
     quantity_received: int | None = None
     issue_note: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class RequestAllocationOut(BaseModel):
+    id: int
+    line_item_id: int
+    product_id: int
+    product_name: str | None = None
+    branch_id: int
+    branch_name: str | None = None
+    quantity: int
+    status: str
 
     model_config = {"from_attributes": True}
 
@@ -91,9 +121,14 @@ class RequestOut(BaseModel):
     target_location_type: LocationType | None = None
     target_location_id: int | None = None
     notes: str | None = None
+    #: Human label for the request's source (e.g. the branch or kitchen name).
+    #: Populated where a portal needs it (dispatch/deliveries); None otherwise.
+    from_label: str | None = None
     created_at: datetime
     updated_at: datetime
     line_items: list[RequestLineOut] = Field(default_factory=list)
+    #: Present only for KITCHEN_TO_ADMIN; empty for every other request type.
+    allocations: list[RequestAllocationOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

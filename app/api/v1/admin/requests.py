@@ -12,7 +12,7 @@ from app.models.enums import UserRole
 from app.models.request_enums import RequestType
 from app.models.user import User
 from app.schemas.admin import AdminRequestAction
-from app.schemas.request import RequestListFilters
+from app.schemas.request import AllocateRequest, RequestListFilters
 from app.services.requests import RequestService
 
 router = APIRouter(
@@ -25,6 +25,8 @@ _ADMIN_REQUEST_TYPES = {
     RequestType.WAREHOUSE_TO_ADMIN_PO,
     # Admin doesn't action these, but oversees the whole supply chain.
     RequestType.KITCHEN_TO_WAREHOUSE,
+    # Kitchen dispatch notifications: Admin allocates these across branches.
+    RequestType.KITCHEN_TO_ADMIN,
 }
 
 
@@ -91,6 +93,31 @@ def list_kitchen_requests(
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 
+@router.get("/dispatch")
+def list_dispatch_requests(
+    status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Kitchen -> Admin dispatch notifications: the Admin "Dispatch" tab."""
+    filters = RequestListFilters(
+        request_type=RequestType.KITCHEN_TO_ADMIN,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+    rows, total = RequestService.list_requests(db, current, filters)
+    data = [
+        RequestService.to_out(
+            r, from_label=RequestService.source_label(db, r)
+        ).model_dump(mode="json")
+        for r in rows
+    ]
+    return ok(data, meta={"total": total, "page": page, "page_size": page_size})
+
+
 @router.get("/{request_id}")
 def get_admin_request(
     request_id: int,
@@ -99,7 +126,27 @@ def get_admin_request(
 ):
     request = RequestService.get_request(db, current, request_id)
     _assert_admin_request_type(request)
-    return ok(RequestService.to_out(request).model_dump(mode="json"))
+    return ok(
+        RequestService.to_out(
+            request, from_label=RequestService.source_label(db, request)
+        ).model_dump(mode="json")
+    )
+
+
+@router.post("/{request_id}/allocate")
+def allocate_dispatch_request(
+    request_id: int,
+    body: AllocateRequest,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Split a ready KITCHEN_TO_ADMIN batch across branches (PENDING -> ALLOCATED)."""
+    request = RequestService.allocate(db, current, request_id, body)
+    return ok(
+        RequestService.to_out(
+            request, from_label=RequestService.source_label(db, request)
+        ).model_dump(mode="json")
+    )
 
 
 @router.patch("/{request_id}/status")

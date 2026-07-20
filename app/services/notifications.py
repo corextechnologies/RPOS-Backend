@@ -9,6 +9,7 @@ from app.models.notification import Notification
 from app.models.request import Request
 from app.models.request_enums import (
     BranchToAdminStatus,
+    KitchenToAdminStatus,
     RequestType,
     WarehouseToAdminStatus,
 )
@@ -141,6 +142,11 @@ class NotificationService:
             )
         if request.request_type == RequestType.ADMIN_TO_SUPERADMIN_PLAN:
             return NotificationService._users_with_role(db, None, UserRole.SUPER_ADMIN)
+        if request.request_type == RequestType.KITCHEN_TO_ADMIN:
+            # Admin decides how the ready batch is split across branches.
+            return NotificationService._users_with_role(
+                db, request.restaurant_id, UserRole.ADMIN
+            )
         return []
 
     @staticmethod
@@ -199,6 +205,29 @@ class NotificationService:
             }:
                 add_requester()
 
+        elif request.request_type == RequestType.KITCHEN_TO_ADMIN:
+            if to_status == KitchenToAdminStatus.ALLOCATED.value:
+                # The kitchen must now ship what Admin allocated.
+                recipients.extend(
+                    NotificationService._kitchen_managers_at(
+                        db, request.restaurant_id, request.source_location_id
+                    )
+                )
+            elif to_status == KitchenToAdminStatus.DISPATCHED.value:
+                # Every branch expecting a slice, plus the shipping kitchen.
+                branch_ids = [alloc.branch_id for alloc in request.allocations]
+                recipients.extend(
+                    NotificationService._branch_managers_at(
+                        db, request.restaurant_id, branch_ids
+                    )
+                )
+                add_requester()
+            elif to_status == KitchenToAdminStatus.RECEIVED.value:
+                add_requester()
+                add_admins()
+            elif to_status == KitchenToAdminStatus.REJECTED.value:
+                add_requester()
+
         elif request.request_type == RequestType.KITCHEN_TO_WAREHOUSE:
             # The kitchen tracks its own request, and Admin sees the whole loop.
             add_requester()
@@ -226,6 +255,20 @@ class NotificationService:
             User.is_active.is_(True),
             User.restaurant_id == restaurant_id,
             User.kitchen_id == kitchen_id,
+        )
+        return list(db.execute(stmt).scalars().all())
+
+    @staticmethod
+    def _branch_managers_at(
+        db: Session, restaurant_id: int, branch_ids: list[int]
+    ) -> list[User]:
+        if not branch_ids:
+            return []
+        stmt = select(User).where(
+            User.role == UserRole.BRANCH_MANAGER,
+            User.is_active.is_(True),
+            User.restaurant_id == restaurant_id,
+            User.branch_id.in_(set(branch_ids)),
         )
         return list(db.execute(stmt).scalars().all())
 

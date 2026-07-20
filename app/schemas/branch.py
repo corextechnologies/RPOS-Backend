@@ -172,6 +172,34 @@ class BranchRequestCreate(BaseModel):
     notes: str | None = None
 
 
+class KitchenPickerOut(BaseModel):
+    """A kitchen a branch may name as the fulfiller of a stock request."""
+
+    id: int
+    name: str
+    location: str | None = None
+    restaurant_id: int
+
+    model_config = {"from_attributes": True}
+
+
+class DeliveryOut(BaseModel):
+    """One incoming kitchen delivery, as the branch sees it.
+
+    `id` is the allocation id — the unit the branch confirms via
+    POST /branch/deliveries/{id}/receive. `from_label` is the shipping kitchen.
+    """
+
+    id: int
+    request_id: int
+    from_label: str | None = None
+    product_id: int
+    product_name: str | None = None
+    quantity: int
+    status: str
+    created_at: datetime
+
+
 class BranchWasteIn(BaseModel):
     """Log wasted/expired branch stock. Mirrors the warehouse/kitchen shape."""
 

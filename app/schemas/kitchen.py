@@ -52,6 +52,20 @@ class KitchenStockRequestCreate(BaseModel):
     notes: str | None = None
 
 
+class DispatchNotificationLineIn(BaseModel):
+    product_id: int
+    # How many finished units are ready to hand to Admin. Must be > 0 and, at
+    # create time, no more than the kitchen's on-hand finished-goods stock.
+    quantity: int = Field(gt=0)
+
+
+class DispatchNotificationCreate(BaseModel):
+    """Kitchen tells Admin a finished-goods batch is ready to distribute."""
+
+    lines: list[DispatchNotificationLineIn] = Field(min_length=1)
+    notes: str | None = None
+
+
 class StockCountLineIn(BaseModel):
     product_id: int
     counted_quantity: int = Field(ge=0)

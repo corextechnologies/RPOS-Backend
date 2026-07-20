@@ -9,6 +9,11 @@ class RequestType(str, enum.Enum):
     WAREHOUSE_TO_ADMIN_PO = "WAREHOUSE_TO_ADMIN_PO"
     BRANCH_TO_ADMIN = "BRANCH_TO_ADMIN"
     ADMIN_TO_SUPERADMIN_PLAN = "ADMIN_TO_SUPERADMIN_PLAN"
+    # A kitchen tells Admin a production batch is ready; Admin allocates it across
+    # branches (one request fans out to many), each branch receiving its slice
+    # independently. Unlike every other flow this is one-source-to-many-targets,
+    # so its fan-out lives in request_allocations, not on the single target_* pair.
+    KITCHEN_TO_ADMIN = "KITCHEN_TO_ADMIN"
 
 
 class LocationType(str, enum.Enum):
@@ -52,6 +57,33 @@ class BranchToAdminStatus(str, enum.Enum):
     RECEIVED = "RECEIVED"
 
 
+class KitchenToAdminStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    # Admin has split the ready batch across branches (allocations written). The
+    # move PENDING -> ALLOCATED happens only via the /allocate endpoint, never a
+    # bare status PATCH, so the admin inbox can only ever REJECT from PENDING.
+    ALLOCATED = "ALLOCATED"
+    # The kitchen has shipped every allocation; kitchen finished-goods debited.
+    DISPATCHED = "DISPATCHED"
+    # Every allocation has been received by its branch (per-allocation receipts
+    # roll up to here once the last one lands).
+    RECEIVED = "RECEIVED"
+    REJECTED = "REJECTED"
+
+
+class AllocationStatus(str, enum.Enum):
+    """Per-branch lifecycle of one slice of a KITCHEN_TO_ADMIN batch.
+
+    Tracked on request_allocations so branches receive independently: the request
+    is DISPATCHED as a whole (one kitchen shipment), but each branch confirms its
+    own slice, and the request only reaches RECEIVED once all of them have.
+    """
+
+    ALLOCATED = "ALLOCATED"
+    DISPATCHED = "DISPATCHED"
+    RECEIVED = "RECEIVED"
+
+
 class AdminToSuperAdminStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -66,4 +98,5 @@ INITIAL_STATUS: dict[RequestType, str] = {
     RequestType.WAREHOUSE_TO_ADMIN_PO: WarehouseToAdminStatus.PENDING.value,
     RequestType.BRANCH_TO_ADMIN: BranchToAdminStatus.PENDING.value,
     RequestType.ADMIN_TO_SUPERADMIN_PLAN: AdminToSuperAdminStatus.PENDING.value,
+    RequestType.KITCHEN_TO_ADMIN: KitchenToAdminStatus.PENDING.value,
 }

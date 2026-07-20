@@ -8,10 +8,12 @@ from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.deps.request_scoping import user_can_view_request, visible_requests
 from app.models.location import Branch, Kitchen, Warehouse
 from app.models.product import Product
-from app.models.request import Request, RequestLineItem
+from app.models.request import Request, RequestAllocation, RequestLineItem
 from app.models.request_enums import (
     INITIAL_STATUS,
+    AllocationStatus,
     BranchToAdminStatus,
+    KitchenToAdminStatus,
     KitchenToWarehouseStatus,
     LocationType,
     RequestType,
@@ -19,6 +21,7 @@ from app.models.request_enums import (
 )
 from app.models.user import User
 from app.schemas.request import (
+    AllocateRequest,
     RequestCreate,
     RequestListFilters,
     RequestOut,
@@ -299,6 +302,11 @@ class RequestService:
         if product_ids:
             RequestService._validate_products(db, restaurant_id, product_ids)
 
+        if body.request_type == RequestType.KITCHEN_TO_ADMIN:
+            RequestService._validate_dispatch_notification_stock(
+                db, restaurant_id, body
+            )
+
         request = Request(
             restaurant_id=restaurant_id,
             request_type=body.request_type,
@@ -435,6 +443,327 @@ class RequestService:
         )
         db.commit()
         return RequestService._load_request(db, request.id)
+
+    @staticmethod
+    def allocate(
+        db: Session, actor: User, request_id: int, body: AllocateRequest
+    ) -> Request:
+        """Admin splits a ready KITCHEN_TO_ADMIN batch across branches.
+
+        Writes one RequestAllocation per (line, branch, quantity), sets each
+        line's quantity_approved to its allocated total, and moves the request
+        PENDING -> ALLOCATED. The whole call is rejected if any line/branch is
+        invalid or a line is over-allocated — no partial writes.
+        """
+        request = RequestService._load_request(db, request_id)
+        if not user_can_view_request(db, actor, request):
+            raise NotFoundError("Request not found.")
+        if request.request_type != RequestType.KITCHEN_TO_ADMIN:
+            raise NotFoundError("Request not found.")
+        if request.status != KitchenToAdminStatus.PENDING.value:
+            raise ConflictError(
+                "Only a pending dispatch request can be allocated.",
+                code="invalid_transition",
+            )
+
+        lines_by_id = {line.id: line for line in request.line_items}
+
+        # Validate every named branch belongs to this restaurant, once each.
+        for branch_id in {a.branch_id for a in body.allocations}:
+            branch = db.get(Branch, branch_id)
+            if branch is None or branch.restaurant_id != request.restaurant_id:
+                raise NotFoundError("Branch not found in this restaurant.")
+
+        totals: dict[int, int] = {}
+        for alloc in body.allocations:
+            if alloc.line_item_id not in lines_by_id:
+                raise NotFoundError("Line item does not belong to this request.")
+            totals[alloc.line_item_id] = (
+                totals.get(alloc.line_item_id, 0) + alloc.quantity
+            )
+
+        for line_id, total in totals.items():
+            line = lines_by_id[line_id]
+            if total > line.quantity_requested:
+                raise ConflictError(
+                    "Allocated quantity exceeds the ready quantity for a line.",
+                    code="invalid_allocation_quantity",
+                )
+
+        for alloc in body.allocations:
+            db.add(
+                RequestAllocation(
+                    request_id=request.id,
+                    line_item_id=alloc.line_item_id,
+                    branch_id=alloc.branch_id,
+                    quantity=alloc.quantity,
+                    status=AllocationStatus.ALLOCATED.value,
+                )
+            )
+        # quantity_approved becomes the total shipped for that line, keeping the
+        # existing "approved is what moves" convention that _dispatch relies on.
+        for line_id, total in totals.items():
+            lines_by_id[line_id].quantity_approved = total
+
+        if body.notes:
+            request.notes = body.notes
+
+        RequestService._compare_and_set(
+            db,
+            request=request,
+            from_status=KitchenToAdminStatus.PENDING.value,
+            to_status=KitchenToAdminStatus.ALLOCATED.value,
+        )
+        AuditService.record(
+            db,
+            actor=actor,
+            action="request.allocate",
+            entity_type="request",
+            entity_id=request.id,
+            restaurant_id=request.restaurant_id,
+            payload={"allocation_count": len(body.allocations)},
+        )
+        NotificationService.notify_request_transition(
+            db,
+            request=request,
+            actor=actor,
+            from_status=KitchenToAdminStatus.PENDING.value,
+            to_status=KitchenToAdminStatus.ALLOCATED.value,
+        )
+        db.commit()
+        return RequestService._load_request(db, request.id)
+
+    @staticmethod
+    def dispatch(db: Session, actor: User, request_id: int) -> Request:
+        """Kitchen ships an ALLOCATED batch: debit finished goods, flip to DISPATCHED.
+
+        Debits exactly each line's allocated total (quantity_approved) from the
+        source kitchen; a line that was never allocated is skipped (not shipped at
+        its requested quantity). Every allocation moves to DISPATCHED together —
+        the shipment leaves as one, branches receive it one by one.
+        """
+        request = RequestService._load_request(db, request_id)
+        if not user_can_view_request(db, actor, request):
+            raise NotFoundError("Request not found.")
+        if request.request_type != RequestType.KITCHEN_TO_ADMIN:
+            raise NotFoundError("Request not found.")
+        if request.status != KitchenToAdminStatus.ALLOCATED.value:
+            raise ConflictError(
+                "Only an allocated dispatch request can be shipped.",
+                code="invalid_transition",
+            )
+
+        kitchen_id = _require_location(
+            request,
+            which="source",
+            expected=LocationType.KITCHEN,
+            code="missing_kitchen_source",
+        )
+
+        for line in request.line_items:
+            qty = line.quantity_approved or 0
+            if qty <= 0:
+                continue
+            InventoryService.apply_dispatch_fefo(
+                db,
+                actor=actor,
+                location_type=LocationType.KITCHEN,
+                location_id=kitchen_id,
+                product_id=line.product_id,
+                quantity=qty,
+                request_id=request.id,
+                notes=f"Dispatch for request #{request.id}",
+            )
+
+        for alloc in request.allocations:
+            alloc.status = AllocationStatus.DISPATCHED.value
+
+        RequestService._compare_and_set(
+            db,
+            request=request,
+            from_status=KitchenToAdminStatus.ALLOCATED.value,
+            to_status=KitchenToAdminStatus.DISPATCHED.value,
+        )
+        AuditService.record(
+            db,
+            actor=actor,
+            action="request.dispatch",
+            entity_type="request",
+            entity_id=request.id,
+            restaurant_id=request.restaurant_id,
+            payload={"from_status": "ALLOCATED", "to_status": "DISPATCHED"},
+        )
+        NotificationService.notify_request_transition(
+            db,
+            request=request,
+            actor=actor,
+            from_status=KitchenToAdminStatus.ALLOCATED.value,
+            to_status=KitchenToAdminStatus.DISPATCHED.value,
+        )
+        db.commit()
+        return RequestService._load_request(db, request.id)
+
+    @staticmethod
+    def receive_allocation(
+        db: Session, actor: User, allocation_id: int
+    ) -> Request:
+        """A branch confirms one delivery: credit branch stock, mark it RECEIVED.
+
+        The allocation — not the request — is the unit received. Only the owning
+        branch may receive it, and only once (DISPATCHED -> RECEIVED). When the
+        last outstanding allocation lands, the request rolls up to RECEIVED.
+        """
+        alloc = (
+            db.execute(
+                select(RequestAllocation)
+                .where(RequestAllocation.id == allocation_id)
+                .options(selectinload(RequestAllocation.line_item))
+            )
+            .scalar_one_or_none()
+        )
+        if alloc is None or actor.branch_id != alloc.branch_id:
+            # Scoping is by ownership: a branch only sees its own deliveries.
+            raise NotFoundError("Delivery not found.")
+        if alloc.status != AllocationStatus.DISPATCHED.value:
+            raise ConflictError(
+                "Only a dispatched delivery can be received.",
+                code="invalid_transition",
+            )
+
+        request = RequestService._load_request(db, alloc.request_id)
+
+        InventoryService.receive_stock(
+            db,
+            actor=actor,
+            location_type=LocationType.BRANCH,
+            location_id=alloc.branch_id,
+            product_id=alloc.line_item.product_id,
+            quantity=alloc.quantity,
+            request_id=alloc.request_id,
+            notes=f"Delivery receipt for request #{alloc.request_id}",
+        )
+
+        result = db.execute(
+            update(RequestAllocation)
+            .where(
+                RequestAllocation.id == alloc.id,
+                RequestAllocation.status == AllocationStatus.DISPATCHED.value,
+            )
+            .values(status=AllocationStatus.RECEIVED.value)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise ConflictError(
+                "Delivery status has changed. Please refresh and retry.",
+                code="stale_status",
+            )
+        db.flush()
+
+        # Roll the request up to RECEIVED only once no allocation is outstanding.
+        outstanding = db.execute(
+            select(func.count())
+            .select_from(RequestAllocation)
+            .where(
+                RequestAllocation.request_id == alloc.request_id,
+                RequestAllocation.status != AllocationStatus.RECEIVED.value,
+            )
+        ).scalar_one()
+        if outstanding == 0:
+            db.execute(
+                update(Request)
+                .where(
+                    Request.id == alloc.request_id,
+                    Request.status == KitchenToAdminStatus.DISPATCHED.value,
+                )
+                .values(status=KitchenToAdminStatus.RECEIVED.value)
+            )
+            db.flush()
+            request.status = KitchenToAdminStatus.RECEIVED.value
+            NotificationService.notify_request_transition(
+                db,
+                request=request,
+                actor=actor,
+                from_status=KitchenToAdminStatus.DISPATCHED.value,
+                to_status=KitchenToAdminStatus.RECEIVED.value,
+            )
+
+        AuditService.record(
+            db,
+            actor=actor,
+            action="request.allocation_received",
+            entity_type="request",
+            entity_id=alloc.request_id,
+            restaurant_id=request.restaurant_id,
+            payload={"allocation_id": alloc.id, "branch_id": alloc.branch_id},
+        )
+        db.commit()
+        return RequestService._load_request(db, alloc.request_id)
+
+    @staticmethod
+    def _compare_and_set(
+        db: Session, *, request: Request, from_status: str, to_status: str
+    ) -> None:
+        """Move request.status from_status -> to_status, rejecting stale writes."""
+        result = db.execute(
+            update(Request)
+            .where(Request.id == request.id, Request.status == from_status)
+            .values(status=to_status)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise ConflictError(
+                "Request status has changed. Please refresh and retry.",
+                code="stale_status",
+            )
+        db.flush()
+        request.status = to_status
+
+    @staticmethod
+    def _validate_dispatch_notification_stock(
+        db: Session, restaurant_id: int, body: RequestCreate
+    ) -> None:
+        """Every notified line must be backed by finished-goods on hand.
+
+        A kitchen can only tell Admin about stock it actually holds, so each
+        product's total across the request may not exceed on-hand at the source
+        kitchen. Lines are summed per product in case the same product appears
+        more than once.
+        """
+        if (
+            body.source_location_type != LocationType.KITCHEN
+            or body.source_location_id is None
+        ):
+            raise ConflictError(
+                "A dispatch notification must come from a kitchen.",
+                code="missing_kitchen_source",
+            )
+        wanted: dict[int, int] = {}
+        for line in body.lines:
+            wanted[line.product_id] = (
+                wanted.get(line.product_id, 0) + line.quantity_requested
+            )
+        for product_id, quantity in wanted.items():
+            available = InventoryService.on_hand(
+                db,
+                restaurant_id=restaurant_id,
+                location_type=LocationType.KITCHEN,
+                location_id=body.source_location_id,
+                product_id=product_id,
+            )
+            if quantity > available:
+                product = db.get(Product, product_id)
+                raise ConflictError(
+                    "Insufficient finished-goods stock to notify this quantity.",
+                    code="insufficient_stock",
+                    details={
+                        "product_id": product_id,
+                        "product_name": product.name if product else None,
+                        "location_type": LocationType.KITCHEN.value,
+                        "location_id": body.source_location_id,
+                        "requested": quantity,
+                        "available": available,
+                    },
+                )
 
     @staticmethod
     def _apply_routing_target(
@@ -631,7 +960,13 @@ class RequestService:
                 .options(
                     selectinload(Request.line_items).selectinload(
                         RequestLineItem.product
-                    )
+                    ),
+                    selectinload(Request.allocations).selectinload(
+                        RequestAllocation.line_item
+                    ).selectinload(RequestLineItem.product),
+                    selectinload(Request.allocations).selectinload(
+                        RequestAllocation.branch
+                    ),
                 )
             )
             .scalar_one_or_none()
@@ -641,7 +976,16 @@ class RequestService:
         return request
 
     @staticmethod
-    def to_out(request: Request) -> RequestOut:
+    def source_label(db: Session, request: Request) -> str | None:
+        """Human name of the request's source location, for RequestOut.from_label."""
+        if request.source_location_type is None or request.source_location_id is None:
+            return None
+        model = _LOCATION_MODELS[request.source_location_type]
+        row = db.get(model, request.source_location_id)
+        return row.name if row else None
+
+    @staticmethod
+    def to_out(request: Request, *, from_label: str | None = None) -> RequestOut:
         lines = []
         for item in request.line_items:
             lines.append(
@@ -653,6 +997,21 @@ class RequestService:
                     "quantity_approved": item.quantity_approved,
                     "quantity_received": item.quantity_received,
                     "issue_note": item.issue_note,
+                }
+            )
+        allocations = []
+        for alloc in request.allocations:
+            product = alloc.line_item.product if alloc.line_item else None
+            allocations.append(
+                {
+                    "id": alloc.id,
+                    "line_item_id": alloc.line_item_id,
+                    "product_id": alloc.line_item.product_id if alloc.line_item else None,
+                    "product_name": product.name if product else None,
+                    "branch_id": alloc.branch_id,
+                    "branch_name": alloc.branch.name if alloc.branch else None,
+                    "quantity": alloc.quantity,
+                    "status": alloc.status,
                 }
             )
         data = {
@@ -667,8 +1026,10 @@ class RequestService:
             "target_location_type": request.target_location_type,
             "target_location_id": request.target_location_id,
             "notes": request.notes,
+            "from_label": from_label,
             "created_at": request.created_at,
             "updated_at": request.updated_at,
             "line_items": lines,
+            "allocations": allocations,
         }
         return RequestOut.model_validate(data)

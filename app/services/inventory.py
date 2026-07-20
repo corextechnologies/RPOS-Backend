@@ -594,6 +594,28 @@ class InventoryService:
         return item
 
     @staticmethod
+    def on_hand(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+        product_id: int,
+    ) -> int:
+        """Total units of a product on hand at a location, summed across batches.
+
+        Public read for callers that need to gate on availability before writing
+        (e.g. a kitchen can only notify Admin of stock it actually holds).
+        """
+        return InventoryService._total_on_hand(
+            db,
+            restaurant_id=restaurant_id,
+            location_type=location_type,
+            location_id=location_id,
+            product_id=product_id,
+        )
+
+    @staticmethod
     def _total_on_hand(
         db: Session,
         *,

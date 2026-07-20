@@ -44,6 +44,11 @@ class Request(Base, PKMixin, TimestampMixin):
     line_items: Mapped[list["RequestLineItem"]] = relationship(
         "RequestLineItem", back_populates="request", cascade="all, delete-orphan"
     )
+    # Populated only for KITCHEN_TO_ADMIN: how a ready batch is split across
+    # branches. Empty for every other request type.
+    allocations: Mapped[list["RequestAllocation"]] = relationship(
+        "RequestAllocation", back_populates="request", cascade="all, delete-orphan"
+    )
     requester: Mapped["User"] = relationship("User", foreign_keys=[requester_id])
 
 
@@ -66,3 +71,40 @@ class RequestLineItem(Base, PKMixin, TimestampMixin):
 
     request: Mapped[Request] = relationship("Request", back_populates="line_items")
     product: Mapped["Product"] = relationship("Product")
+
+
+class RequestAllocation(Base, PKMixin, TimestampMixin):
+    """One branch's slice of a KITCHEN_TO_ADMIN production batch.
+
+    A single request line (a product the kitchen produced) is split into one or
+    more allocations, each naming a branch and quantity. The allocation — not the
+    line — is the unit the branch dispatches to and receives: `id` here is the
+    `deliveryId` the branch confirms against, and `status` moves independently of
+    its siblings (ALLOCATED -> DISPATCHED -> RECEIVED).
+    """
+
+    __tablename__ = "request_allocations"
+
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    line_item_id: Mapped[int] = mapped_column(
+        ForeignKey("request_line_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    branch_id: Mapped[int] = mapped_column(
+        ForeignKey("branches.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    request: Mapped[Request] = relationship("Request", back_populates="allocations")
+    line_item: Mapped[RequestLineItem] = relationship("RequestLineItem")
+    branch: Mapped["Branch"] = relationship("Branch")
