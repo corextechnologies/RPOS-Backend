@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 from app.services.audit import AuditService
 
@@ -140,8 +140,10 @@ def create_restaurant(
     except Exception:  # pragma: no cover - real SMTP failure path
         sent = False
 
+    rest_out = RestaurantOut.model_validate(restaurant)
+    rest_out.admin_full_name = admin.full_name
     result = RestaurantCreateResult(
-        restaurant=RestaurantOut.model_validate(restaurant),
+        restaurant=rest_out,
         admin_user_id=admin.id,
         admin_email=admin.email,
         credential_email_sent=sent,
@@ -151,14 +153,37 @@ def create_restaurant(
 
 @router.get("/restaurants")
 def list_restaurants(db: Session = Depends(get_db)):
-    rows = db.execute(select(Restaurant).order_by(Restaurant.id)).scalars().all()
-    return ok([RestaurantOut.model_validate(r).model_dump(mode="json") for r in rows])
+    rows = db.execute(
+        select(Restaurant, User.full_name)
+        .outerjoin(
+            User,
+            and_(
+                User.restaurant_id == Restaurant.id,
+                User.role == UserRole.ADMIN,
+            ),
+        )
+        .order_by(Restaurant.id)
+    ).all()
+    result = []
+    for r, admin_name in rows:
+        out = RestaurantOut.model_validate(r)
+        out.admin_full_name = admin_name
+        result.append(out.model_dump(mode="json"))
+    return ok(result)
 
 
 @router.get("/restaurants/{restaurant_id}")
 def get_restaurant(restaurant_id: int, db: Session = Depends(get_db)):
     restaurant = _get_restaurant(db, restaurant_id)
-    return ok(RestaurantOut.model_validate(restaurant).model_dump(mode="json"))
+    admin_name = db.execute(
+        select(User.full_name).where(
+            User.restaurant_id == restaurant_id,
+            User.role == UserRole.ADMIN,
+        )
+    ).scalar_one_or_none()
+    out = RestaurantOut.model_validate(restaurant)
+    out.admin_full_name = admin_name
+    return ok(out.model_dump(mode="json"))
 
 
 @router.patch("/restaurants/{restaurant_id}")
@@ -175,7 +200,15 @@ def update_restaurant(
     _record_audit(db, "restaurant.update", restaurant.id, current)  # affects billing
     db.commit()
     db.refresh(restaurant)
-    return ok(RestaurantOut.model_validate(restaurant).model_dump(mode="json"))
+    admin_name = db.execute(
+        select(User.full_name).where(
+            User.restaurant_id == restaurant_id,
+            User.role == UserRole.ADMIN,
+        )
+    ).scalar_one_or_none()
+    out = RestaurantOut.model_validate(restaurant)
+    out.admin_full_name = admin_name
+    return ok(out.model_dump(mode="json"))
 
 
 def _set_status(db: Session, restaurant_id: int, status: RestaurantStatus,

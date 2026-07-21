@@ -62,6 +62,7 @@ class RestaurantOut(BaseModel):
 
     id: int
     name: str
+    admin_full_name: str | None = None
     owner_contact_number: str | None = None
     owner_contact_email: str | None = None
     status: RestaurantStatus

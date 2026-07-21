@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import NotFoundError
 from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.auth import require_role
@@ -16,6 +18,8 @@ from app.schemas.pos import (
     CashMovementIn,
     DiscountApplyIn,
     DiscountRuleIn,
+    DiscountRuleOut,
+    DiscountRuleUpdate,
     PaymentIn,
     PaymentOut,
     PosOrderOut,
@@ -114,6 +118,19 @@ def apply_discount(
     return ok(PosOrderOut.model_validate(order).model_dump(mode="json"))
 
 
+@router.get("/discount-rules")
+def list_discount_rules(
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        select(DiscountRule)
+        .where(DiscountRule.restaurant_id == current.restaurant_id)
+        .order_by(DiscountRule.id)
+    ).scalars().all()
+    return ok([DiscountRuleOut.model_validate(r).model_dump(mode="json") for r in rows])
+
+
 @router.post("/discount-rules")
 def create_discount_rule(
     body: DiscountRuleIn,
@@ -130,11 +147,51 @@ def create_discount_rule(
         value_bp=body.value_bp,
         amount_minor=body.amount_minor,
         max_pct_bp=body.max_pct_bp,
+        valid_from=body.valid_from,
+        valid_to=body.valid_to,
+        active_days=body.active_days,
+        active_hours_start=body.active_hours_start,
+        active_hours_end=body.active_hours_end,
     )
     db.add(rule)
     db.commit()
     db.refresh(rule)
     return ok({"id": rule.id, "code": rule.code, "max_pct_bp": rule.max_pct_bp})
+
+
+def _get_discount_rule(db: Session, rule_id: int, restaurant_id: int) -> DiscountRule:
+    rule = db.get(DiscountRule, rule_id)
+    if rule is None or rule.restaurant_id != restaurant_id:
+        raise NotFoundError("Discount rule not found.")
+    return rule
+
+
+@router.patch("/discount-rules/{rule_id}")
+def update_discount_rule(
+    rule_id: int,
+    body: DiscountRuleUpdate,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    rule = _get_discount_rule(db, rule_id, current.restaurant_id)
+    changes = body.model_dump(exclude_unset=True)
+    for field, value in changes.items():
+        setattr(rule, field, value)
+    db.commit()
+    db.refresh(rule)
+    return ok(DiscountRuleOut.model_validate(rule).model_dump(mode="json"))
+
+
+@router.delete("/discount-rules/{rule_id}", status_code=200)
+def delete_discount_rule(
+    rule_id: int,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    rule = _get_discount_rule(db, rule_id, current.restaurant_id)
+    db.delete(rule)
+    db.commit()
+    return ok(None)
 
 
 # ---- POS-3: control --------------------------------------------------------

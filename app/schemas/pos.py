@@ -1,7 +1,7 @@
 """Pydantic schemas for the POS surface (POS-0)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 
 from pydantic import BaseModel, Field
 
@@ -359,6 +359,46 @@ class DiscountRuleIn(BaseModel):
     amount_minor: int = Field(default=0, ge=0)
     #: Above this, a manager is required. 0 = always needs a manager.
     max_pct_bp: int = Field(default=0, ge=0, le=10000)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    active_days: list[str] | None = None
+    active_hours_start: time | None = None
+    active_hours_end: time | None = None
+
+
+class DiscountRuleUpdate(BaseModel):
+    code: str | None = Field(default=None, max_length=32)
+    name: str | None = Field(default=None, max_length=255)
+    scope: DiscountScope | None = None
+    type: DiscountType | None = None
+    value_bp: int | None = Field(default=None, ge=0, le=10000)
+    amount_minor: int | None = Field(default=None, ge=0)
+    max_pct_bp: int | None = Field(default=None, ge=0, le=10000)
+    is_active: bool | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    active_days: list[str] | None = None
+    active_hours_start: time | None = None
+    active_hours_end: time | None = None
+
+
+class DiscountRuleOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    code: str
+    name: str
+    scope: DiscountScope
+    type: DiscountType
+    value_bp: int
+    amount_minor: int
+    max_pct_bp: int
+    is_active: bool
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    active_days: list[str] | None = None
+    active_hours_start: time | None = None
+    active_hours_end: time | None = None
 
 
 # --- POS-3: control -----------------------------------------------------------

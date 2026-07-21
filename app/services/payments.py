@@ -344,6 +344,32 @@ class PaymentService:
         if rule is None:
             raise NotFoundError("Discount rule not found.")
 
+        now = datetime.now(timezone.utc)
+        if rule.valid_from and now < rule.valid_from:
+            raise ConflictError(
+                "This discount is not yet valid.",
+                code="discount_not_valid_yet",
+            )
+        if rule.valid_to and now > rule.valid_to:
+            raise ConflictError(
+                "This discount has expired.",
+                code="discount_expired",
+            )
+        if rule.active_days:
+            day_abbr = now.strftime("%a").lower()[:3]
+            if day_abbr not in rule.active_days:
+                raise ConflictError(
+                    "This discount is not available today.",
+                    code="discount_wrong_day",
+                )
+        if rule.active_hours_start and rule.active_hours_end:
+            current_time = now.time()
+            if not (rule.active_hours_start <= current_time < rule.active_hours_end):
+                raise ConflictError(
+                    "This discount is not available at this time.",
+                    code="discount_outside_hours",
+                )
+
         base = order.subtotal_minor
         if rule.type == DiscountType.PCT:
             amount = base * rule.value_bp // 10000

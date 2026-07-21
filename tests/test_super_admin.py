@@ -40,6 +40,7 @@ def test_create_restaurant_provisions_admin_and_emails(client, db, make_user, ma
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["restaurant"]["name"] == "New Bistro"
+    assert data["restaurant"]["admin_full_name"] == "New Owner"
     assert data["restaurant"]["branch_limit"] == 3
     assert data["restaurant"]["status"] == "ACTIVE"
     assert data["admin_email"] == "new.owner@acme.com"
@@ -151,6 +152,57 @@ def test_halt_blocks_admin_on_authenticated_request(client, make_restaurant, mak
     assert client.get("/v1/auth/me", headers=admin_h).status_code == 200
     client.post(f"/v1/super-admin/restaurants/{r.id}/halt", headers=su)
     assert client.get("/v1/auth/me", headers=admin_h).status_code == 403
+
+
+def test_list_and_get_restaurant_includes_name_and_admin(
+    client, make_restaurant, make_user, mailer,
+):
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    su = auth_headers(client, "super@test.com")
+
+    # Create via API so an Admin user is provisioned.
+    resp = client.post(
+        "/v1/super-admin/restaurants",
+        json=_new_restaurant_body(), headers=su,
+    )
+    assert resp.status_code == 200, resp.text
+    rid = resp.json()["data"]["restaurant"]["id"]
+
+    # GET list — name and admin_full_name present
+    resp = client.get("/v1/super-admin/restaurants", headers=su)
+    assert resp.status_code == 200
+    items = resp.json()["data"]
+    match = [i for i in items if i["id"] == rid]
+    assert len(match) == 1
+    assert match[0]["name"] == "New Bistro"
+    assert match[0]["admin_full_name"] == "New Owner"
+
+    # GET detail — same fields
+    resp = client.get(f"/v1/super-admin/restaurants/{rid}", headers=su)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["name"] == "New Bistro"
+    assert resp.json()["data"]["admin_full_name"] == "New Owner"
+
+    # Name and admin_full_name survive a PATCH that touches other fields
+    client.patch(f"/v1/super-admin/restaurants/{rid}",
+                 json={"plan_tier": "premium"}, headers=su)
+    resp = client.get(f"/v1/super-admin/restaurants/{rid}", headers=su)
+    assert resp.json()["data"]["name"] == "New Bistro"
+    assert resp.json()["data"]["admin_full_name"] == "New Owner"
+
+
+def test_list_restaurant_without_admin_returns_null_admin_name(
+    client, make_restaurant, make_user,
+):
+    """Restaurant created via fixture (no admin user) returns null admin_full_name."""
+    r = make_restaurant("Rest A")
+    make_user("super@test.com", UserRole.SUPER_ADMIN)
+    su = auth_headers(client, "super@test.com")
+
+    resp = client.get(f"/v1/super-admin/restaurants/{r.id}", headers=su)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["name"] == "Rest A"
+    assert resp.json()["data"]["admin_full_name"] is None
 
 
 def test_update_restaurant_and_billing_shapes(client, make_restaurant, make_user):

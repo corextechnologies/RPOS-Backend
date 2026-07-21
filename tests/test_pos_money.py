@@ -1,7 +1,8 @@
 """POS-2/3/4/5/6 — money, control, sync, recipes, and the pack abstraction."""
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
@@ -198,6 +199,197 @@ def _mgr_pos(client, sell_ctx):
     )
     assert login.status_code == 200, login.text
     return {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+
+
+def test_list_discount_rules(client, sell_ctx):
+    admin = auth_headers(client, "admin@test.com")
+
+    # Empty at first.
+    resp = client.get("/v1/pos/discount-rules", headers=admin)
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+    # Create two rules.
+    client.post("/v1/pos/discount-rules",
+                json={"code": "HAPPY10", "name": "Happy Hour 10%", "type": "PCT",
+                      "value_bp": 1000, "max_pct_bp": 1000},
+                headers=admin)
+    client.post("/v1/pos/discount-rules",
+                json={"code": "FLAT5", "name": "Flat $5 Off", "type": "AMT",
+                      "scope": "LINE", "amount_minor": 500, "max_pct_bp": 5000},
+                headers=admin)
+
+    resp = client.get("/v1/pos/discount-rules", headers=admin)
+    assert resp.status_code == 200
+    rules = resp.json()["data"]
+    assert len(rules) == 2
+    assert rules[0]["code"] == "HAPPY10"
+    assert rules[0]["name"] == "Happy Hour 10%"
+    assert rules[0]["type"] == "PCT"
+    assert rules[0]["is_active"] is True
+    assert rules[1]["code"] == "FLAT5"
+    assert rules[1]["scope"] == "LINE"
+    assert rules[1]["amount_minor"] == 500
+
+
+def test_update_discount_rule(client, sell_ctx):
+    admin = auth_headers(client, "admin@test.com")
+
+    # Create a rule.
+    created = client.post("/v1/pos/discount-rules",
+                          json={"code": "STAFF10", "name": "Staff 10%", "type": "PCT",
+                                "value_bp": 1000, "max_pct_bp": 1000},
+                          headers=admin)
+    rule_id = created.json()["data"]["id"]
+
+    # Partial update — only name and value_bp.
+    resp = client.patch(f"/v1/pos/discount-rules/{rule_id}",
+                        json={"name": "Staff 15%", "value_bp": 1500},
+                        headers=admin)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["name"] == "Staff 15%"
+    assert data["value_bp"] == 1500
+    assert data["code"] == "STAFF10"       # unchanged
+    assert data["max_pct_bp"] == 1000      # unchanged
+    assert data["is_active"] is True       # unchanged
+
+    # Deactivate.
+    resp = client.patch(f"/v1/pos/discount-rules/{rule_id}",
+                        json={"is_active": False}, headers=admin)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["is_active"] is False
+
+    # Not found for non-existent id.
+    resp = client.patch("/v1/pos/discount-rules/999999",
+                        json={"name": "X"}, headers=admin)
+    assert resp.status_code == 404
+
+
+def test_delete_discount_rule(client, sell_ctx):
+    admin = auth_headers(client, "admin@test.com")
+
+    # Create a rule then delete it.
+    created = client.post("/v1/pos/discount-rules",
+                          json={"code": "TMP", "name": "Temporary", "type": "PCT",
+                                "value_bp": 500},
+                          headers=admin)
+    rule_id = created.json()["data"]["id"]
+
+    resp = client.delete(f"/v1/pos/discount-rules/{rule_id}", headers=admin)
+    assert resp.status_code == 200
+
+    # Gone from the list.
+    rules = client.get("/v1/pos/discount-rules", headers=admin).json()["data"]
+    assert all(r["id"] != rule_id for r in rules)
+
+    # Delete again → 404.
+    resp = client.delete(f"/v1/pos/discount-rules/{rule_id}", headers=admin)
+    assert resp.status_code == 404
+
+
+def test_discount_rule_scheduling_fields_roundtrip(client, sell_ctx):
+    admin = auth_headers(client, "admin@test.com")
+
+    resp = client.post("/v1/pos/discount-rules", json={
+        "code": "HAPPY", "name": "Happy Hour", "type": "PCT", "value_bp": 2000,
+        "valid_from": "2026-03-01T00:00:00Z",
+        "valid_to": "2026-03-31T23:59:59Z",
+        "active_days": ["mon", "tue", "wed", "thu", "fri"],
+        "active_hours_start": "14:00:00",
+        "active_hours_end": "17:00:00",
+    }, headers=admin)
+    assert resp.status_code == 200, resp.text
+    rule_id = resp.json()["data"]["id"]
+
+    # GET returns all scheduling fields.
+    resp = client.get("/v1/pos/discount-rules", headers=admin)
+    rule = [r for r in resp.json()["data"] if r["id"] == rule_id][0]
+    assert rule["active_days"] == ["mon", "tue", "wed", "thu", "fri"]
+    assert rule["active_hours_start"] == "14:00:00"
+    assert rule["active_hours_end"] == "17:00:00"
+    assert "2026-03-01" in rule["valid_from"]
+
+    # PATCH scheduling fields.
+    resp = client.patch(f"/v1/pos/discount-rules/{rule_id}",
+                        json={"active_days": ["sat", "sun"],
+                              "active_hours_start": "10:00:00",
+                              "active_hours_end": "22:00:00"},
+                        headers=admin)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["active_days"] == ["sat", "sun"]
+    assert data["active_hours_start"] == "10:00:00"
+
+
+def test_discount_rejected_when_expired(client, sell_ctx, make_user):
+    admin = auth_headers(client, "admin@test.com")
+    client.post("/v1/pos/discount-rules", json={
+        "code": "OLD", "name": "Expired", "type": "PCT", "value_bp": 1000,
+        "valid_from": "2025-01-01T00:00:00Z",
+        "valid_to": "2025-12-31T23:59:59Z",
+    }, headers=admin)
+    headers = _pos_headers(client, sell_ctx, make_user)
+    order = _create(client, headers, sell_ctx["burger"]).json()["data"]
+
+    resp = client.post(f"/v1/pos/orders/{order['id']}/discounts",
+                       json={"code": "OLD"}, headers=headers)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "discount_expired"
+
+
+def test_discount_rejected_when_not_yet_valid(client, sell_ctx, make_user):
+    admin = auth_headers(client, "admin@test.com")
+    client.post("/v1/pos/discount-rules", json={
+        "code": "FUTURE", "name": "Future", "type": "PCT", "value_bp": 1000,
+        "valid_from": "2099-01-01T00:00:00Z",
+    }, headers=admin)
+    headers = _pos_headers(client, sell_ctx, make_user)
+    order = _create(client, headers, sell_ctx["burger"]).json()["data"]
+
+    resp = client.post(f"/v1/pos/orders/{order['id']}/discounts",
+                       json={"code": "FUTURE"}, headers=headers)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "discount_not_valid_yet"
+
+
+def test_discount_rejected_on_wrong_day(client, sell_ctx, make_user):
+    admin = auth_headers(client, "admin@test.com")
+    # Only valid on a day that is NOT today.
+    today_abbr = datetime.now(timezone.utc).strftime("%a").lower()[:3]
+    all_days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    other_days = [d for d in all_days if d != today_abbr]
+
+    client.post("/v1/pos/discount-rules", json={
+        "code": "NOTTODAY", "name": "Not Today", "type": "PCT", "value_bp": 500,
+        "active_days": other_days,
+    }, headers=admin)
+    headers = _pos_headers(client, sell_ctx, make_user)
+    order = _create(client, headers, sell_ctx["burger"]).json()["data"]
+
+    resp = client.post(f"/v1/pos/orders/{order['id']}/discounts",
+                       json={"code": "NOTTODAY"}, headers=headers)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "discount_wrong_day"
+
+
+def test_discount_rejected_outside_active_hours(client, sell_ctx, make_user):
+    admin = auth_headers(client, "admin@test.com")
+    # Window that is definitely not now: 1 hour window 12 hours from now.
+    future_hour = (datetime.now(timezone.utc).hour + 12) % 24
+    end_hour = (future_hour + 1) % 24
+    client.post("/v1/pos/discount-rules", json={
+        "code": "OFFHOURS", "name": "Off Hours", "type": "PCT", "value_bp": 500,
+        "active_hours_start": f"{future_hour:02d}:00:00",
+        "active_hours_end": f"{end_hour:02d}:00:00",
+    }, headers=admin)
+    headers = _pos_headers(client, sell_ctx, make_user)
+    order = _create(client, headers, sell_ctx["burger"]).json()["data"]
+
+    resp = client.post(f"/v1/pos/orders/{order['id']}/discounts",
+                       json={"code": "OFFHOURS"}, headers=headers)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "discount_outside_hours"
 
 
 def test_discount_over_limit_needs_a_manager(client, sell_ctx, make_user):

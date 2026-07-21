@@ -9,7 +9,7 @@ float, a blind close and a variance is a calculator.
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, time
 
 from sqlalchemy import (
     BigInteger,
@@ -19,8 +19,10 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Time,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -190,6 +192,12 @@ class DiscountRule(Base, PKMixin, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_days: Mapped[list[str] | None] = mapped_column(ARRAY(String(3)))
+    active_hours_start: Mapped[time | None] = mapped_column(Time)
+    active_hours_end: Mapped[time | None] = mapped_column(Time)
 
 
 class Shift(Base, PKMixin, TimestampMixin):
