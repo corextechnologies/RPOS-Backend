@@ -1,15 +1,18 @@
-"""Admin read routes — employees and locations."""
+"""Admin read routes — employees, locations, customers."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.auth import require_role
+from app.models.customer import Customer
 from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.admin import EmployeeOut
+from app.schemas.branch import CustomerOut
 from app.services.admin_users import AdminUserService
 from app.services.locations import LocationService
 
@@ -59,3 +62,26 @@ def list_warehouses(
     warehouses = LocationService.list_warehouses(db, current)
     data = [LocationService.to_out(w).model_dump(mode="json") for w in warehouses]
     return ok(data)
+
+
+@router.get("/customers")
+def list_customers(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    base = (
+        select(Customer)
+        .where(Customer.restaurant_id == current.restaurant_id)
+        .where(Customer.deleted_at.is_(None))
+    )
+    total = db.execute(
+        select(func.count()).select_from(base.subquery())
+    ).scalar_one()
+    offset = (page - 1) * page_size
+    rows = db.execute(
+        base.order_by(Customer.id.desc()).offset(offset).limit(page_size)
+    ).scalars().all()
+    data = [CustomerOut.model_validate(c).model_dump(mode="json") for c in rows]
+    return ok(data, meta={"total": total, "page": page, "page_size": page_size})

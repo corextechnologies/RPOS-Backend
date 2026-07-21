@@ -6,6 +6,7 @@ from app.api.v1.admin import (
     inventory,
     locations,
     pricing,
+    production_targets,
     reads,
     requests,
     sales,
@@ -27,3 +28,4 @@ router.include_router(reads.router)
 router.include_router(settings.router)
 router.include_router(sales.router)
 router.include_router(uploads.router)
+router.include_router(production_targets.router)

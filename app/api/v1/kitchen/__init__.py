@@ -6,6 +6,7 @@ from app.api.v1.kitchen import (
     inventory,
     locations,
     production,
+    production_targets,
     requests,
     users,
 )
@@ -18,3 +19,4 @@ router.include_router(requests.router)
 router.include_router(dispatch_notifications.router)
 # The kitchen's own catalogue, its recipes, and making things.
 router.include_router(production.router)
+router.include_router(production_targets.router)
