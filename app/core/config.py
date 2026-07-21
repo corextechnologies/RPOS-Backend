@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
 
+    # File uploads
+    upload_dir: str = "uploads"
+    max_upload_bytes: int = 2 * 1024 * 1024  # 2 MB
+
 
 @lru_cache
 def get_settings() -> Settings:

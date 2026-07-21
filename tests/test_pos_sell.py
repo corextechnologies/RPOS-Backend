@@ -146,6 +146,18 @@ def test_device_reads_menu_with_availability(client, sell_ctx, make_user):
     assert names["Burger"]["modifier_groups"][0]["name"] == "Extras"
 
 
+def test_admin_portal_reads_menu_without_device(client, sell_ctx):
+    """Admin portal token (no device binding) can read GET /v1/pos/menu."""
+    admin = auth_headers(client, "admin@test.com")
+    resp = client.get("/v1/pos/menu", headers=admin)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    names = {i["name"]: i for i in data["items"]}
+    assert "Burger" in names
+    assert names["Burger"]["is_available"] is True
+    assert names["Burger"]["price_minor"] == 50000
+
+
 # ---- selling ---------------------------------------------------------------
 
 def test_order_with_modifier_prices_and_deducts(client, sell_ctx, make_user, db):

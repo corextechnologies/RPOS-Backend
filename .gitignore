@@ -50,6 +50,9 @@ wheels/
 .Python
 *.so
 
+# ---- Uploads (user-generated content) ----
+uploads/
+
 # ---- Logs ----
 *.log
 

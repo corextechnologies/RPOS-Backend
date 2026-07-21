@@ -10,6 +10,7 @@ from app.api.v1.admin import (
     requests,
     sales,
     settings,
+    uploads,
     users,
 )
 
@@ -25,3 +26,4 @@ router.include_router(requests.router)
 router.include_router(reads.router)
 router.include_router(settings.router)
 router.include_router(sales.router)
+router.include_router(uploads.router)

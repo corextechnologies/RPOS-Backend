@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.responses import ok
 from app.db.session import get_db
-from app.deps.auth import require_role
+from app.deps.auth import get_current_user, require_role
 from app.deps.capabilities import Capability, require_capability
 from app.deps.pos import PosSession, get_pos_session
 from app.deps.rbac import require_actor_branch_id
@@ -160,31 +160,34 @@ def get_version_detail(
     return ok(_serialise_menu(menu))
 
 
-# ---- device-bound reads ------------------------------------------------
+# ---- menu reads (admin + device) ----------------------------------------
 
 
 @router.get("/menu")
 def get_menu(
     response: Response,
     version: int | None = None,
-    session: PosSession = Depends(get_pos_session),
+    current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """The device's menu. An immutable snapshot, so it is safely ETag-cacheable.
+    """Published menu — available to both POS devices and Admin portal.
 
-    Availability is folded in here rather than left to the device, because
-    "is this sellable" is a server fact that changes as stock moves.
+    POS devices get branch-level availability folded in. Admin portal
+    tokens get the same shape with everything marked available (no
+    branch context).
     """
-    restaurant_id = session.user.restaurant_id
+    restaurant_id = current.restaurant_id
     menu = (
         MenuService.get_version(db, restaurant_id, version)
         if version is not None
         else MenuService.published(db, restaurant_id)
     )
-    states = AvailabilityService.states(db, restaurant_id, session.branch_id, menu)
 
-    # A published version never changes, so its id is a sound validator. The
-    # availability half is deliberately NOT in the ETag — it moves with stock.
+    states: dict = {}
+    if current.role != UserRole.ADMIN:
+        branch_id = require_actor_branch_id(current)
+        states = AvailabilityService.states(db, restaurant_id, branch_id, menu)
+
     response.headers["ETag"] = f'W/"menu-{menu.id}"'
 
     items = []
