@@ -227,6 +227,18 @@ class MenuService:
     # ---- reads -----------------------------------------------------------
 
     @staticmethod
+    def list_versions(db: Session, restaurant_id: int) -> list[MenuVersion]:
+        return list(
+            db.execute(
+                select(MenuVersion)
+                .where(MenuVersion.restaurant_id == restaurant_id)
+                .order_by(MenuVersion.version_no.desc())
+            )
+            .scalars()
+            .all()
+        )
+
+    @staticmethod
     def published(db: Session, restaurant_id: int) -> MenuVersion:
         version = db.execute(
             MenuService._loaded()

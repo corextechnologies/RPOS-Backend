@@ -80,6 +80,89 @@ def publish_version(
     return ok(MenuVersionOut.model_validate(version).model_dump(mode="json"))
 
 
+def _serialise_menu(menu: object) -> dict:
+    """Turn a loaded MenuVersion into a JSON-safe dict (no availability)."""
+    items = []
+    for item in sorted(menu.items, key=lambda i: (i.sort_order, i.id)):
+        items.append(
+            {
+                "id": item.id,
+                "name": item.name,
+                "category": item.category,
+                "image_url": item.image_url,
+                "price_minor": item.price_minor,
+                "is_combo": item.is_combo,
+                "product_id": item.product_id,
+                "components": [
+                    {"item_id": c.component_item_id, "quantity": c.quantity}
+                    for c in item.components
+                ],
+                "modifier_groups": [
+                    {
+                        "id": link.group.id,
+                        "name": link.group.name,
+                        "min_select": link.group.min_select,
+                        "max_select": link.group.max_select,
+                        "options": [
+                            {
+                                "id": o.id,
+                                "name": o.name,
+                                "price_delta_minor": o.price_delta_minor,
+                            }
+                            for o in sorted(link.group.options, key=lambda o: o.sort_order)
+                        ],
+                    }
+                    for link in item.modifier_groups
+                ],
+            }
+        )
+    return {
+        "menu_version_id": menu.id,
+        "version_no": menu.version_no,
+        "status": menu.status.value,
+        "currency": menu.currency,
+        "published_at": menu.published_at.isoformat() if menu.published_at else None,
+        "note": menu.note,
+        "items": items,
+    }
+
+
+# ---- admin reads (no device binding) -----------------------------------
+
+
+@router.get("/menu/versions")
+def list_versions(
+    current: User = Depends(_ADMIN),
+    db: Session = Depends(get_db),
+):
+    versions = MenuService.list_versions(db, current.restaurant_id)
+    return ok(
+        [MenuVersionOut.model_validate(v).model_dump(mode="json") for v in versions]
+    )
+
+
+@router.get("/menu/versions/published")
+def get_published_menu(
+    current: User = Depends(_ADMIN),
+    db: Session = Depends(get_db),
+):
+    menu = MenuService.published(db, current.restaurant_id)
+    return ok(_serialise_menu(menu))
+
+
+@router.get("/menu/versions/{version_id}")
+def get_version_detail(
+    version_id: int,
+    current: User = Depends(_ADMIN),
+    db: Session = Depends(get_db),
+):
+    menu = MenuService.get_version(db, current.restaurant_id, version_id)
+    return ok(_serialise_menu(menu))
+
+
+# ---- device-bound reads ------------------------------------------------
+
+
 @router.get("/menu")
 def get_menu(
     response: Response,
