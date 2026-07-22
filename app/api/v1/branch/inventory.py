@@ -30,6 +30,7 @@ from app.schemas.admin import ProductPublicOut
 from app.schemas.branch import BranchWasteIn
 from app.schemas.warehouse import InventoryItemOut
 from app.services.inventory import InventoryService
+from app.services.waste import WasteService
 
 # Blanket branch gate; the per-endpoint capability guard narrows by position.
 _BRANCH = require_role(UserRole.BRANCH_MANAGER, UserRole.BRANCH_STAFF)
@@ -110,3 +111,20 @@ def waste_stock(
     db.refresh(item)
     product = db.get(Product, item.product_id)
     return ok(_item_out(item, product))
+
+
+@router.get("/waste")
+def list_waste_events(
+    movement_type: StockMovementType | None = Query(None),
+    current: User = Depends(require_capability(Capability.WASTE_LOG)),
+    db: Session = Depends(get_db),
+):
+    branch_id = require_actor_branch_id(current)
+    data = WasteService.list_events(
+        db,
+        restaurant_id=current.restaurant_id,
+        location_type=LocationType.BRANCH,
+        location_id=branch_id,
+        movement_type=movement_type,
+    )
+    return ok(data)

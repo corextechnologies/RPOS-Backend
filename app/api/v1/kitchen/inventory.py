@@ -26,6 +26,7 @@ from app.schemas.warehouse import InventoryItemOut
 from app.services.inventory import InventoryService
 from app.services.labels import LabelService
 from app.services.stock_counts import StockCountService
+from app.services.waste import WasteService
 
 router = APIRouter(
     dependencies=[Depends(require_role(UserRole.KITCHEN_MANAGER))]
@@ -101,6 +102,23 @@ def waste_stock(
     db.refresh(item)
     product = db.get(Product, item.product_id)
     return ok(_item_out(item, product))
+
+
+@router.get("/stock/waste")
+def list_waste_events(
+    movement_type: StockMovementType | None = Query(None),
+    current: User = Depends(_KITCHEN_MANAGER),
+    db: Session = Depends(get_db),
+):
+    kitchen_id = require_actor_kitchen_id(current)
+    data = WasteService.list_events(
+        db,
+        restaurant_id=current.restaurant_id,
+        location_type=LocationType.KITCHEN,
+        location_id=kitchen_id,
+        movement_type=movement_type,
+    )
+    return ok(data)
 
 
 @router.post("/stock/counts")

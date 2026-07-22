@@ -89,6 +89,69 @@ def test_adjust_and_waste(client, warehouse_ready):
     assert waste.json()["data"]["quantity"] == 21
 
 
+def test_waste_history_list_shape_order_and_filter(client, warehouse_ready):
+    headers = auth_headers(client, "warehouse@test.com")
+    product = warehouse_ready["product"]
+
+    client.post(
+        "/v1/warehouse/stock/receive",
+        json={"product_id": product.id, "quantity": 30, "batch_code": "B1"},
+        headers=headers,
+    )
+    client.post(
+        "/v1/warehouse/stock/waste",
+        json={
+            "product_id": product.id,
+            "quantity": 4,
+            "movement_type": "WASTE",
+            "waste_reason": "SPOILAGE",
+            "batch_code": "B1",
+            "notes": "spoiled",
+        },
+        headers=headers,
+    )
+    client.post(
+        "/v1/warehouse/stock/waste",
+        json={
+            "product_id": product.id,
+            "quantity": 2,
+            "movement_type": "EXPIRY",
+            "batch_code": "B1",
+        },
+        headers=headers,
+    )
+
+    resp = client.get("/v1/warehouse/stock/waste", headers=headers)
+    assert resp.status_code == 200, resp.text
+    events = resp.json()["data"]
+    assert [e["movement_type"] for e in events] == ["EXPIRY", "WASTE"]
+
+    latest = events[0]
+    assert latest["quantity"] == 2
+    assert latest["product"] == {
+        "id": product.id,
+        "name": "Flour",
+        "sku": "FL-1",
+    }
+    assert "cost_price" not in latest["product"]
+    assert latest["batch_code"] == "B1"
+    assert latest["location_type"] == "WAREHOUSE"
+    assert latest["created_by"] == warehouse_ready["manager"].full_name
+
+    spoilage = events[1]
+    assert spoilage["quantity"] == 4
+    assert spoilage["waste_reason"] == "SPOILAGE"
+    assert spoilage["notes"] == "spoiled"
+
+    only_expiry = client.get(
+        "/v1/warehouse/stock/waste?movement_type=EXPIRY", headers=headers
+    )
+    assert only_expiry.status_code == 200
+    filtered = only_expiry.json()["data"]
+    assert len(filtered) == 1
+    assert filtered[0]["movement_type"] == "EXPIRY"
+
+
 def test_waste_rejects_insufficient_stock(client, warehouse_ready):
     headers = auth_headers(client, "warehouse@test.com")
     product_id = warehouse_ready["product"].id
