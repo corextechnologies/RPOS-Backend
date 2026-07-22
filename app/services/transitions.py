@@ -16,8 +16,12 @@ ALLOWED_TRANSITIONS: dict[RequestType, dict[str, set[str]]] = {
     RequestType.KITCHEN_TO_WAREHOUSE: {
         KitchenToWarehouseStatus.PENDING.value: {
             KitchenToWarehouseStatus.APPROVED.value,
+            KitchenToWarehouseStatus.PARTIALLY_APPROVED.value,
         },
         KitchenToWarehouseStatus.APPROVED.value: {
+            KitchenToWarehouseStatus.DISPATCHED.value,
+        },
+        KitchenToWarehouseStatus.PARTIALLY_APPROVED.value: {
             KitchenToWarehouseStatus.DISPATCHED.value,
         },
         KitchenToWarehouseStatus.DISPATCHED.value: {
@@ -127,6 +131,7 @@ CREATE_ROLES: dict[RequestType, set[UserRole]] = {
 TRANSITION_ROLES: dict[RequestType, dict[str, set[UserRole]]] = {
     RequestType.KITCHEN_TO_WAREHOUSE: {
         KitchenToWarehouseStatus.APPROVED.value: {UserRole.WAREHOUSE_MANAGER},
+        KitchenToWarehouseStatus.PARTIALLY_APPROVED.value: {UserRole.WAREHOUSE_MANAGER},
         KitchenToWarehouseStatus.DISPATCHED.value: {UserRole.WAREHOUSE_MANAGER},
         KitchenToWarehouseStatus.RECEIVED.value: {UserRole.KITCHEN_MANAGER},
     },
@@ -163,18 +168,21 @@ TRANSITION_ROLES: dict[RequestType, dict[str, set[UserRole]]] = {
 }
 
 PARTIAL_APPROVAL_TYPES: set[RequestType] = {
+    RequestType.KITCHEN_TO_WAREHOUSE,
     RequestType.WAREHOUSE_TO_ADMIN_PO,
     RequestType.BRANCH_TO_ADMIN,
     RequestType.ADMIN_TO_SUPERADMIN_PLAN,
 }
 
 PARTIAL_APPROVAL_STATUSES: set[str] = {
+    KitchenToWarehouseStatus.PARTIALLY_APPROVED.value,
     WarehouseToAdminStatus.PARTIALLY_APPROVED.value,
     BranchToAdminStatus.PARTIALLY_APPROVED.value,
     AdminToSuperAdminStatus.PARTIALLY_APPROVED.value,
 }
 
 FULL_APPROVAL_STATUSES: set[str] = {
+    KitchenToWarehouseStatus.APPROVED.value,
     WarehouseToAdminStatus.APPROVED.value,
     BranchToAdminStatus.APPROVED.value,
     AdminToSuperAdminStatus.APPROVED.value,

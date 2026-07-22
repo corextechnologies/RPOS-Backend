@@ -18,11 +18,6 @@ WAREHOUSE_CREATABLE_ROLES = {
     UserRole.WAREHOUSE_MANAGER,
 }
 
-# A kitchen manager creates sub-chefs only — never peer managers.
-KITCHEN_CREATABLE_ROLES = {
-    UserRole.SUB_CHEF,
-}
-
 # A branch manager creates branch sub-staff only — never peer managers.
 BRANCH_CREATABLE_ROLES = {
     UserRole.BRANCH_STAFF,
@@ -32,12 +27,11 @@ _LOCATION_MODELS = {
     UserRole.BRANCH_MANAGER: (Branch, "branch_id"),
     UserRole.KITCHEN_MANAGER: (Kitchen, "kitchen_id"),
     UserRole.WAREHOUSE_MANAGER: (Warehouse, "warehouse_id"),
-    UserRole.SUB_CHEF: (Kitchen, "kitchen_id"),
     UserRole.BRANCH_STAFF: (Branch, "branch_id"),
 }
 
 # Roles that live at a kitchen and may read kitchen-scoped data.
-KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF}
+KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER}
 
 # Roles that live at a branch and may read branch-scoped data.
 BRANCH_ROLES = {UserRole.BRANCH_MANAGER, UserRole.BRANCH_STAFF}
@@ -64,7 +58,6 @@ def validate_manager_location(
         UserRole.BRANCH_MANAGER: branch_id,
         UserRole.KITCHEN_MANAGER: kitchen_id,
         UserRole.WAREHOUSE_MANAGER: warehouse_id,
-        UserRole.SUB_CHEF: kitchen_id,
         UserRole.BRANCH_STAFF: branch_id,
     }
     required_id = location_map.get(role)
@@ -86,8 +79,6 @@ def validate_manager_location(
         raise ConflictError("Kitchen manager must only set kitchen_id.")
     if role == UserRole.WAREHOUSE_MANAGER and (branch_id or kitchen_id):
         raise ConflictError("Warehouse manager must only set warehouse_id.")
-    if role == UserRole.SUB_CHEF and (branch_id or warehouse_id):
-        raise ConflictError("Sub-chef must only set kitchen_id.")
     if role == UserRole.BRANCH_STAFF and (kitchen_id or warehouse_id):
         raise ConflictError("Branch staff must only set branch_id.")
 
@@ -140,22 +131,6 @@ def assert_branch_manager_can_create_staff(actor: User) -> None:
 def assert_branch_can_create_role(target_role: UserRole) -> None:
     if target_role not in BRANCH_CREATABLE_ROLES:
         raise ForbiddenError("Branch managers may only create branch staff.")
-
-
-def assert_kitchen_manager_can_create_staff(actor: User) -> None:
-    """Kitchen managers may only create sub-chefs under themselves."""
-    if actor.role != UserRole.KITCHEN_MANAGER:
-        raise ForbiddenError("Only kitchen managers can create sub-chefs.")
-    if actor.kitchen_id is None:
-        raise ConflictError(
-            "Kitchen manager must be assigned to a kitchen.",
-            code="missing_kitchen_assignment",
-        )
-
-
-def assert_kitchen_can_create_role(target_role: UserRole) -> None:
-    if target_role not in KITCHEN_CREATABLE_ROLES:
-        raise ForbiddenError("Kitchen managers may only create sub-chefs.")
 
 
 def require_actor_kitchen_id(actor: User) -> int:

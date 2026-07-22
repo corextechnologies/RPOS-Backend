@@ -23,17 +23,15 @@ from app.services.inventory import InventoryService
 from app.services.locations import LocationService
 
 router = APIRouter(
-    dependencies=[
-        Depends(require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF))
-    ]
+    dependencies=[Depends(require_role(UserRole.KITCHEN_MANAGER))]
 )
 
-_KITCHEN_STAFF = require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF)
+_KITCHEN_MANAGER = require_role(UserRole.KITCHEN_MANAGER)
 
 
 @router.get("/warehouses")
 def list_warehouses(
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     """Every warehouse in the caller's restaurant, for the request-stock picker."""
@@ -45,7 +43,7 @@ def list_warehouses(
 @router.get("/warehouses/{warehouse_id}/inventory")
 def list_warehouse_inventory(
     warehouse_id: int,
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     """What a warehouse holds, so the kitchen can decide what to request.

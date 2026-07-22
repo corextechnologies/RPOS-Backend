@@ -27,14 +27,10 @@ from app.services.inventory import InventoryService
 from app.services.labels import LabelService
 from app.services.stock_counts import StockCountService
 
-# Reads are open to both kitchen roles; each write re-asserts the role it needs.
 router = APIRouter(
-    dependencies=[
-        Depends(require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF))
-    ]
+    dependencies=[Depends(require_role(UserRole.KITCHEN_MANAGER))]
 )
 
-_KITCHEN_STAFF = require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF)
 _KITCHEN_MANAGER = require_role(UserRole.KITCHEN_MANAGER)
 
 
@@ -77,7 +73,7 @@ def _count_out(count) -> dict:
 @router.post("/stock/waste")
 def waste_stock(
     body: KitchenWasteIn,
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     if body.movement_type not in {
@@ -146,7 +142,7 @@ def list_stock_counts(
 
 @router.get("/inventory")
 def list_inventory(
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     kitchen_id = require_actor_kitchen_id(current)
@@ -162,7 +158,7 @@ def list_inventory(
 @router.get("/inventory/near-expiry")
 def list_near_expiry(
     within_days: int = Query(7, ge=0, le=365),
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     kitchen_id = require_actor_kitchen_id(current)
@@ -180,7 +176,7 @@ def list_near_expiry(
 def list_expiry_labels(
     product_id: int | None = Query(None),
     batch_code: str | None = Query(None),
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     kitchen_id = require_actor_kitchen_id(current)

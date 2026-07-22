@@ -8,11 +8,9 @@ from app.api.v1.kitchen import (
     production,
     production_targets,
     requests,
-    users,
 )
 
 router = APIRouter(prefix="/kitchen", tags=["kitchen"])
-router.include_router(users.router)
 router.include_router(locations.router)
 router.include_router(inventory.router)
 router.include_router(requests.router)

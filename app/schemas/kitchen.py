@@ -5,34 +5,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import UserRole
 from app.models.inventory import StockMovementType, WasteReason
 from app.schemas.request import RequestLineCreate
-
-
-class SubChefCreate(BaseModel):
-    email: str = Field(max_length=255)
-    full_name: str | None = Field(default=None, max_length=255)
-
-
-class SubChefCreateResult(BaseModel):
-    user_id: int
-    email: str
-    role: UserRole
-    kitchen_id: int
-    credential_email_sent: bool
-
-
-class SubChefOut(BaseModel):
-    id: int
-    email: str
-    full_name: str | None = None
-    role: UserRole
-    is_active: bool
-    kitchen_id: int | None = None
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class KitchenWasteIn(BaseModel):

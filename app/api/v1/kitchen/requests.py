@@ -23,12 +23,9 @@ from app.services.requests import RequestService
 
 router = APIRouter(
     prefix="/requests",
-    dependencies=[
-        Depends(require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF))
-    ],
+    dependencies=[Depends(require_role(UserRole.KITCHEN_MANAGER))],
 )
 
-_KITCHEN_STAFF = require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF)
 _KITCHEN_MANAGER = require_role(UserRole.KITCHEN_MANAGER)
 
 _KITCHEN_REQUEST_TYPES = {
@@ -77,7 +74,7 @@ def list_warehouse_requests(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     filters = RequestListFilters(
@@ -96,7 +93,7 @@ def list_branch_requests(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     """Branch requests routed to this kitchen.
@@ -118,7 +115,7 @@ def list_branch_requests(
 @router.get("/{request_id}")
 def get_kitchen_request(
     request_id: int,
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     request = RequestService.get_request(db, current, request_id)

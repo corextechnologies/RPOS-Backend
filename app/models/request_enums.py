@@ -26,6 +26,7 @@ class LocationType(str, enum.Enum):
 class KitchenToWarehouseStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
+    PARTIALLY_APPROVED = "PARTIALLY_APPROVED"
     DISPATCHED = "DISPATCHED"
     RECEIVED = "RECEIVED"
 

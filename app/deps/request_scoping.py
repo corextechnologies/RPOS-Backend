@@ -71,12 +71,6 @@ def visible_requests(db: Session, user: User) -> Select:
     if user.role == UserRole.KITCHEN_MANAGER:
         return _kitchen_visible_requests(user, kitchen_id=user.kitchen_id)
 
-    if user.role == UserRole.SUB_CHEF:
-        # A sub-chef sees exactly what their kitchen sees. Read-only is enforced
-        # by transitions.py: SUB_CHEF appears in no CREATE_ROLES/TRANSITION_ROLES
-        # entry, so every write fails closed.
-        return _kitchen_visible_requests(user, kitchen_id=user.kitchen_id)
-
     if user.role == UserRole.BRANCH_MANAGER:
         return select(Request).where(
             Request.restaurant_id == user.restaurant_id,

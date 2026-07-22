@@ -27,12 +27,9 @@ from app.services.requests import RequestService
 
 router = APIRouter(
     prefix="/dispatch-notifications",
-    dependencies=[
-        Depends(require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF))
-    ],
+    dependencies=[Depends(require_role(UserRole.KITCHEN_MANAGER))],
 )
 
-_KITCHEN_STAFF = require_role(UserRole.KITCHEN_MANAGER, UserRole.SUB_CHEF)
 _KITCHEN_MANAGER = require_role(UserRole.KITCHEN_MANAGER)
 
 
@@ -70,7 +67,7 @@ def list_dispatch_notifications(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    current: User = Depends(_KITCHEN_STAFF),
+    current: User = Depends(_KITCHEN_MANAGER),
     db: Session = Depends(get_db),
 ):
     """This kitchen's own dispatch notifications, newest first."""
