@@ -60,6 +60,24 @@ class ProductCreate(BaseModel):
         return v
 
 
+class ProductUpdate(BaseModel):
+    """Partial update for a warehouse product. quantity is never accepted."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    sku: str | None = Field(default=None, max_length=100)
+    kind: ProductKind | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _warehouse_kinds_only(cls, v: ProductKind | None) -> ProductKind | None:
+        if v is ProductKind.FINISHED_GOOD:
+            raise ValueError(
+                "The warehouse cannot set kind to FINISHED_GOOD — the kitchen "
+                "creates what it makes (POST /v1/kitchen/products)."
+            )
+        return v
+
+
 class ReorderLevelUpdate(BaseModel):
     reorder_level: int = Field(ge=0)
 

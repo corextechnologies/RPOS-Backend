@@ -16,7 +16,7 @@ from app.models.enums import UserRole
 from app.models.product import ProductKind
 from app.models.request_enums import LocationType
 from app.models.user import User
-from app.schemas.warehouse import ProductCreate, ReorderLevelOut, ReorderLevelUpdate
+from app.schemas.warehouse import ProductCreate, ProductUpdate, ReorderLevelOut, ReorderLevelUpdate
 from app.services.products import ProductService
 
 #: What the warehouse deals in. A FINISHED_GOOD is the kitchen's to introduce.
@@ -58,6 +58,27 @@ def list_products(
         db, current, kind=kind, kinds=WAREHOUSE_KINDS if kind is None else None
     )
     return ok([ProductService.to_public(p).model_dump(mode="json") for p in products])
+
+
+@router.patch("/{product_id}")
+def update_product(
+    product_id: int,
+    body: ProductUpdate,
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    updates: dict = {}
+    fields = body.model_fields_set
+    if "name" in fields:
+        updates["name"] = body.name
+    if "sku" in fields:
+        updates["sku"] = body.sku
+    if "kind" in fields:
+        updates["kind"] = body.kind
+    product = ProductService.update_product(
+        db, current, product_id, allowed_kinds=WAREHOUSE_KINDS, **updates
+    )
+    return ok(ProductService.to_public(product).model_dump(mode="json"))
 
 
 @router.put("/{product_id}/reorder-level")

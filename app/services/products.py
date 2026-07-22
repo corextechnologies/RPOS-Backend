@@ -79,6 +79,65 @@ class ProductService:
         return product
 
     @staticmethod
+    def update_product(
+        db: Session,
+        actor: User,
+        product_id: int,
+        *,
+        name: str | None = None,
+        sku: str | None = ...,
+        kind: ProductKind | None = None,
+        allowed_kinds: frozenset[ProductKind] | None = None,
+    ) -> Product:
+        product = db.get(Product, product_id)
+        if product is None or product.restaurant_id != actor.restaurant_id:
+            raise NotFoundError("Product not found.")
+
+        if allowed_kinds and product.kind not in allowed_kinds:
+            raise NotFoundError("Product not found.")
+
+        payload: dict = {}
+
+        if name is not None:
+            product.name = name.strip()
+            payload["name"] = product.name
+
+        if sku is not ...:
+            normalized_sku = (sku or "").strip() or None
+            if normalized_sku is not None:
+                existing = db.execute(
+                    select(Product).where(
+                        Product.restaurant_id == actor.restaurant_id,
+                        Product.sku == normalized_sku,
+                        Product.id != product_id,
+                    )
+                ).scalar_one_or_none()
+                if existing is not None:
+                    raise ConflictError(
+                        "A product with this SKU already exists.",
+                        code="duplicate_sku",
+                    )
+            product.sku = normalized_sku
+            payload["sku"] = product.sku
+
+        if kind is not None:
+            product.kind = kind
+            payload["kind"] = kind.value
+
+        AuditService.record(
+            db,
+            actor=actor,
+            action="product.update",
+            entity_type="product",
+            entity_id=product.id,
+            restaurant_id=actor.restaurant_id,
+            payload=payload,
+        )
+        db.commit()
+        db.refresh(product)
+        return product
+
+    @staticmethod
     def list_products(
         db: Session,
         actor: User,
