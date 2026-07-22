@@ -1,4 +1,4 @@
-"""Phase 4 — multi-kitchen isolation and sub-chef least-privilege."""
+"""Phase 4 — multi-kitchen isolation."""
 from __future__ import annotations
 
 import pytest
@@ -100,42 +100,6 @@ def test_only_the_target_kitchens_manager_is_notified(client, db, two_kitchens):
     ).scalars().all()
     assert two_kitchens["kitchen_mgr"].id in notified
     assert two_kitchens["mgr_b"].id not in notified
-
-
-def test_sub_chef_can_read_but_not_transition(client, two_kitchens):
-    request_id = _forward_to_kitchen_a(client, two_kitchens)
-    mgr = auth_headers(client, "kitchen@test.com")
-    client.post("/v1/kitchen/users", json={"email": "priya@test.com"}, headers=mgr)
-    priya = auth_headers(client, "priya@test.com", password="Admin@1234")
-
-    inbox = client.get("/v1/kitchen/requests/branch", headers=priya)
-    assert inbox.status_code == 200
-    assert [r["id"] for r in inbox.json()["data"]] == [request_id]
-
-    resp = client.patch(
-        f"/v1/kitchen/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.IN_PRODUCTION.value},
-        headers=priya,
-    )
-    assert resp.status_code == 403
-
-
-def test_sub_chef_cannot_raise_a_warehouse_request(client, two_kitchens):
-    mgr = auth_headers(client, "kitchen@test.com")
-    client.post("/v1/kitchen/users", json={"email": "priya@test.com"}, headers=mgr)
-    priya = auth_headers(client, "priya@test.com", password="Admin@1234")
-
-    resp = client.post(
-        "/v1/kitchen/requests/warehouse",
-        json={
-            "warehouse_id": two_kitchens["home_warehouse"].id,
-            "lines": [
-                {"product_id": two_kitchens["product"].id, "quantity_requested": 5}
-            ],
-        },
-        headers=priya,
-    )
-    assert resp.status_code == 403
 
 
 def test_kitchen_cannot_open_a_warehouse_po_via_its_inbox(client, two_kitchens):

@@ -103,6 +103,10 @@ class StockMovement(Base, PKMixin, TimestampMixin):
     # every other movement type stay valid.
     waste_reason: Mapped[WasteReason | None] = mapped_column(_waste_reason_enum)
     batch_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # The consumed/received batch's expiry, captured on the movement so a
+    # dispatch→receipt hand-off can propagate the exact expiry to the
+    # destination without re-reading the (possibly depleted) source row.
+    expiry_date: Mapped[date | None] = mapped_column(Date)
     request_id: Mapped[int | None] = mapped_column(
         ForeignKey("requests.id", ondelete="SET NULL"), index=True
     )

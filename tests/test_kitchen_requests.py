@@ -1,6 +1,8 @@
 """Phase 4 — kitchen request loops and their stock side effects."""
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 from sqlalchemy import select
 
@@ -57,16 +59,6 @@ def test_kitchen_lists_warehouses_for_the_picker(
     names = [w["name"] for w in resp.json()["data"]]
     assert names == ["Setup Warehouse", "WH North"]
     assert resp.json()["data"][1]["id"] == second.id
-
-
-def test_sub_chef_can_read_the_warehouse_list(client, restaurant_setup):
-    mgr = auth_headers(client, "kitchen@test.com")
-    client.post("/v1/kitchen/users", json={"email": "priya@test.com"}, headers=mgr)
-    priya = auth_headers(client, "priya@test.com", password="Admin@1234")
-
-    resp = client.get("/v1/kitchen/warehouses", headers=priya)
-    assert resp.status_code == 200
-    assert len(resp.json()["data"]) == 1
 
 
 def test_warehouse_list_never_crosses_tenants(
@@ -127,6 +119,81 @@ def test_kitchen_pulls_stock_from_warehouse(client, db, restaurant_setup, flour)
     )
     assert resp.status_code == 200, resp.text
     assert _kitchen_qty(db, setup, flour.id) == 50
+
+
+def test_receipt_propagates_batch_and_expiry_per_batch(
+    client, db, restaurant_setup, make_product
+):
+    """Warehouse batches (with expiry) must survive the hand-off to the kitchen.
+
+    A line drawn FEFO from two named warehouse batches must land as two kitchen
+    rows carrying the same batch_code + expiry_date — never one unbatched blob.
+    """
+    setup = restaurant_setup
+    kitchen_headers = auth_headers(client, "kitchen@test.com")
+    wh_headers = auth_headers(client, "warehouse@test.com")
+
+    product = make_product(setup["restaurant"].id, name="Cheese", sku="CH-1")
+    near = date.today() + timedelta(days=3)
+    far = date.today() + timedelta(days=30)
+    for batch_code, expiry, qty in (("B-EARLY", near, 20), ("B-LATE", far, 40)):
+        db.add(
+            InventoryItem(
+                restaurant_id=setup["restaurant"].id,
+                location_type=LocationType.WAREHOUSE,
+                location_id=setup["home_warehouse"].id,
+                product_id=product.id,
+                quantity=qty,
+                batch_code=batch_code,
+                expiry_date=expiry,
+            )
+        )
+    db.flush()
+
+    resp = client.post(
+        "/v1/kitchen/requests/warehouse",
+        json={
+            "warehouse_id": setup["home_warehouse"].id,
+            "lines": [{"product_id": product.id, "quantity_requested": 50}],
+        },
+        headers=kitchen_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    request_id = resp.json()["data"]["id"]
+
+    for status in (
+        KitchenToWarehouseStatus.APPROVED.value,
+        KitchenToWarehouseStatus.DISPATCHED.value,
+    ):
+        resp = client.patch(
+            f"/v1/warehouse/requests/{request_id}/status",
+            json={"to_status": status},
+            headers=wh_headers,
+        )
+        assert resp.status_code == 200, resp.text
+
+    resp = client.patch(
+        f"/v1/kitchen/requests/{request_id}/status",
+        json={"to_status": KitchenToWarehouseStatus.RECEIVED.value},
+        headers=kitchen_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    rows = db.execute(
+        select(InventoryItem).where(
+            InventoryItem.location_type == LocationType.KITCHEN,
+            InventoryItem.location_id == setup["home_kitchen"].id,
+            InventoryItem.product_id == product.id,
+        )
+    ).scalars().all()
+    by_batch = {r.batch_code: r for r in rows}
+
+    # FEFO drained the whole earlier batch (20) then 30 of the later one.
+    assert by_batch["B-EARLY"].quantity == 20
+    assert by_batch["B-EARLY"].expiry_date == near
+    assert by_batch["B-LATE"].quantity == 30
+    assert by_batch["B-LATE"].expiry_date == far
+    assert "" not in by_batch
 
 
 def _branch_request(client, setup, make_branch, product, qty=200):

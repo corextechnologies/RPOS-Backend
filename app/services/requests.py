@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.deps.request_scoping import user_can_view_request, visible_requests
+from app.models.inventory import StockMovement, StockMovementType
 from app.models.location import Branch, Kitchen, Warehouse
 from app.models.product import Product
 from app.models.request import Request, RequestAllocation, RequestLineItem
@@ -106,6 +107,44 @@ def _receive_into(
     location_type: LocationType,
     location_id: int,
 ) -> None:
+    """Credit the destination with the exact batches that were dispatched.
+
+    The matching dispatch drew from named source batches FEFO, writing one
+    DISPATCH movement per batch (each carrying its batch_code + expiry_date).
+    Replaying that ledger here means batch and expiry propagate end to end: a
+    line drawn from N source batches lands as N destination rows, never one
+    unbatched blob. Falls back to a plain per-line credit for legacy requests
+    whose dispatch predates the batched ledger.
+    """
+    dispatched = (
+        db.execute(
+            select(StockMovement).where(
+                StockMovement.request_id == request.id,
+                StockMovement.movement_type == StockMovementType.DISPATCH,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if dispatched:
+        for mv in dispatched:
+            qty = -mv.quantity_delta
+            if qty <= 0:
+                continue
+            InventoryService.receive_stock(
+                db,
+                actor=actor,
+                location_type=location_type,
+                location_id=location_id,
+                product_id=mv.product_id,
+                quantity=qty,
+                batch_code=mv.batch_code or None,
+                expiry_date=mv.expiry_date,
+                request_id=request.id,
+                notes=f"Receipt for request #{request.id}",
+            )
+        return
+
     for line in request.line_items:
         qty = _approved_quantity(line)
         if qty <= 0:

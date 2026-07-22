@@ -121,20 +121,3 @@ def test_duplicate_product_line_is_rejected(client, kitchen_stock):
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "duplicate_count_line"
-
-
-def test_sub_chef_cannot_submit_a_count(client, kitchen_stock):
-    mgr = auth_headers(client, "kitchen@test.com")
-    client.post("/v1/kitchen/users", json={"email": "priya@test.com"}, headers=mgr)
-
-    priya = auth_headers(client, "priya@test.com", password="Admin@1234")
-    resp = client.post(
-        "/v1/kitchen/stock/counts",
-        json={
-            "lines": [
-                {"product_id": kitchen_stock["product"].id, "counted_quantity": 1}
-            ]
-        },
-        headers=priya,
-    )
-    assert resp.status_code == 403

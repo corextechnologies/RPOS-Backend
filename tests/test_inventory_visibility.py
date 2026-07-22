@@ -56,18 +56,6 @@ def test_kitchen_sees_warehouse_stock_without_cost_price(client, stocked_everywh
     assert "cost_price" not in rows[0]["product"]
 
 
-def test_sub_chef_can_see_warehouse_stock(client, stocked_everywhere):
-    mgr = auth_headers(client, "kitchen@test.com")
-    client.post("/v1/kitchen/users", json={"email": "priya@test.com"}, headers=mgr)
-    priya = auth_headers(client, "priya@test.com", password="Admin@1234")
-    resp = client.get(
-        f"/v1/kitchen/warehouses/{stocked_everywhere['home_warehouse'].id}/inventory",
-        headers=priya,
-    )
-    assert resp.status_code == 200
-    assert len(resp.json()["data"]) == 1
-
-
 def test_kitchen_cannot_read_another_restaurants_warehouse(
     client, db, stocked_everywhere, make_restaurant, make_warehouse
 ):

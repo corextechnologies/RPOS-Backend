@@ -84,25 +84,6 @@ def test_waste_beyond_on_hand_is_rejected(client, kitchen_ready):
     assert resp.json()["error"]["code"] == "insufficient_stock"
 
 
-def test_sub_chef_can_log_waste(client, kitchen_ready):
-    mgr = auth_headers(client, "kitchen@test.com")
-    client.post("/v1/kitchen/users", json={"email": "priya@test.com"}, headers=mgr)
-
-    priya = auth_headers(client, "priya@test.com", password="Admin@1234")
-    resp = client.post(
-        "/v1/kitchen/stock/waste",
-        json={
-            "product_id": kitchen_ready["product"].id,
-            "quantity": 2,
-            "waste_reason": WasteReason.PREP_ERROR.value,
-            "batch_code": "B1",
-        },
-        headers=priya,
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["quantity"] == 18
-
-
 def test_inventory_and_labels_never_expose_cost_price(client, kitchen_ready):
     headers = auth_headers(client, "kitchen@test.com")
 

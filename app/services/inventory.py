@@ -573,6 +573,7 @@ class InventoryService:
                 quantity_delta=quantity_delta,
                 movement_type=movement_type,
                 batch_code=normalized_batch,
+                expiry_date=item.expiry_date,
                 request_id=request_id,
                 waste_reason=waste_reason,
                 actor_id=actor.id,
