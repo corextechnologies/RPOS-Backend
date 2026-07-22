@@ -133,3 +133,24 @@ class InventoryItemOut(BaseModel):
     location_id: int
 
     model_config = {"from_attributes": True}
+
+
+class WasteProductSnapshot(BaseModel):
+    id: int
+    name: str
+    sku: str | None = None
+
+
+class WasteEventOut(BaseModel):
+    id: int
+    product_id: int
+    product: WasteProductSnapshot
+    quantity: int
+    movement_type: str
+    waste_reason: str | None = None
+    batch_code: str
+    notes: str | None = None
+    location_type: str
+    location_id: int
+    created_at: datetime
+    created_by: str | None = None

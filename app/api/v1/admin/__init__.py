@@ -13,6 +13,7 @@ from app.api.v1.admin import (
     settings,
     uploads,
     users,
+    waste,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -29,3 +30,4 @@ router.include_router(settings.router)
 router.include_router(sales.router)
 router.include_router(uploads.router)
 router.include_router(production_targets.router)
+router.include_router(waste.router)
