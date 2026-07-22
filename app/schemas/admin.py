@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.models.enums import UserRole
 from app.models.product import ProductKind
+from app.models.recipe import StockUnit
 from app.schemas.request import RequestTransition
 
 
@@ -111,6 +112,7 @@ class ProductAdminOut(BaseModel):
     selling_price: Decimal | None = None
     category: str | None = None
     is_available: bool = True
+    stock_unit: StockUnit = StockUnit.EACH
 
     model_config = {"from_attributes": True}
 
@@ -127,6 +129,7 @@ class ProductPublicOut(BaseModel):
     name: str
     sku: str | None = None
     kind: ProductKind = ProductKind.RAW_MATERIAL
+    stock_unit: StockUnit = StockUnit.EACH
 
     model_config = {"from_attributes": True}
 
