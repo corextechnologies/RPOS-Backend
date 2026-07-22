@@ -33,9 +33,28 @@ class StockUnit(str, enum.Enum):
     measure, so a recipe could only ever say "1 sauce".
     """
 
+    # Count
     EACH = "EACH"
+    DOZEN = "DOZEN"
+    PACK = "PACK"
+    PIECE = "PIECE"
+    # Weight
+    KG = "KG"
     GRAM = "GRAM"
+    # Volume
+    LITER = "LITER"
     ML = "ML"
+    # Small measure (baking / liquid)
+    TEASPOON = "TEASPOON"
+    TABLESPOON = "TABLESPOON"
+    CUP = "CUP"
+    # Portioning
+    SLICE = "SLICE"
+    PORTION = "PORTION"
+    SCOOP = "SCOOP"
+    # Produce
+    BUNCH = "BUNCH"
+    HEAD = "HEAD"
 
 
 class Recipe(Base, PKMixin, TimestampMixin):
