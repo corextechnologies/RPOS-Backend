@@ -50,7 +50,12 @@ def list_product_requests(
         page_size=page_size,
     )
     rows, total = RequestService.list_requests(db, current, filters)
-    data = [RequestService.to_out(r).model_dump(mode="json") for r in rows]
+    data = [
+        RequestService.to_out(
+            r, from_label=RequestService.source_label(db, r)
+        ).model_dump(mode="json")
+        for r in rows
+    ]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 
