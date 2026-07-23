@@ -30,7 +30,10 @@ BRANCH_CREATABLE_ROLES = {
 # stays in the Postgres user_role type after the role was retired. A bare
 # `role != ADMIN` filter would try to map that string back to UserRole and
 # raise LookupError, 500-ing the whole list.
-EMPLOYEE_ROSTER_ROLES = ADMIN_CREATABLE_ROLES | {UserRole.BRANCH_STAFF}
+EMPLOYEE_ROSTER_ROLES = ADMIN_CREATABLE_ROLES | {
+    UserRole.BRANCH_STAFF,
+    UserRole.WAREHOUSE_STAFF,
+}
 
 _LOCATION_MODELS = {
     UserRole.BRANCH_MANAGER: (Branch, "branch_id"),
@@ -38,6 +41,10 @@ _LOCATION_MODELS = {
     UserRole.WAREHOUSE_MANAGER: (Warehouse, "warehouse_id"),
     UserRole.BRANCH_STAFF: (Branch, "branch_id"),
 }
+
+# Roles that live at a warehouse and may read/operate warehouse-scoped data.
+# Both roles operate the warehouse; only the manager provisions sub-staff.
+WAREHOUSE_ROLES = {UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF}
 
 # Roles that live at a kitchen and may read kitchen-scoped data.
 KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER}
@@ -104,7 +111,9 @@ def assert_warehouse_manager_can_create_staff(actor: User) -> None:
 
 
 def require_actor_warehouse_id(actor: User) -> int:
-    if actor.role != UserRole.WAREHOUSE_MANAGER:
+    """The caller's warehouse. Both warehouse roles read/operate; staff
+    provisioning is gated separately to the manager."""
+    if actor.role not in WAREHOUSE_ROLES:
         raise ForbiddenError("Warehouse access required.")
     if actor.warehouse_id is None:
         raise ConflictError(

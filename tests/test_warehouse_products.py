@@ -99,3 +99,53 @@ def test_kitchen_cannot_create_products(client, restaurant_setup):
         headers=auth_headers(client, "kitchen@test.com"),
     )
     assert resp.status_code == 403
+
+
+def test_warehouse_create_accepts_stock_unit(client, restaurant_setup):
+    resp = client.post(
+        "/v1/warehouse/products",
+        json={"name": "Flour", "sku": "FL-SM-5KG", "kind": "RAW_MATERIAL", "stock_unit": "KG"},
+        headers=_wh(client),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["stock_unit"] == "KG"
+
+
+def test_warehouse_patch_persists_stock_unit(client, restaurant_setup):
+    # Reproduces the reported bug: PATCH silently dropped stock_unit.
+    created = client.post(
+        "/v1/warehouse/products",
+        json={"name": "Flour", "sku": "FL-SM-5KG"},
+        headers=_wh(client),
+    ).json()["data"]
+    assert created["stock_unit"] == "EACH"
+
+    resp = client.patch(
+        f"/v1/warehouse/products/{created['id']}",
+        json={"name": "Flour", "sku": "FL-SM-5KG", "kind": "RAW_MATERIAL", "stock_unit": "KG"},
+        headers=_wh(client),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["stock_unit"] == "KG"
+
+    # Persisted: the inventory/product read reflects KG afterwards.
+    listed = client.get("/v1/warehouse/products", headers=_wh(client)).json()["data"]
+    assert listed[0]["stock_unit"] == "KG"
+
+
+def test_warehouse_patch_leaves_stock_unit_untouched_when_omitted(client, restaurant_setup):
+    created = client.post(
+        "/v1/warehouse/products",
+        json={"name": "Flour", "sku": "FL-1", "stock_unit": "KG"},
+        headers=_wh(client),
+    ).json()["data"]
+    assert created["stock_unit"] == "KG"
+
+    # A PATCH that doesn't mention stock_unit must not reset it.
+    resp = client.patch(
+        f"/v1/warehouse/products/{created['id']}",
+        json={"name": "Bread Flour"},
+        headers=_wh(client),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["stock_unit"] == "KG"

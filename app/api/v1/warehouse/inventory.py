@@ -24,7 +24,7 @@ from app.services.inventory import InventoryService
 from app.services.products import ProductService
 from app.services.waste import WasteService
 
-router = APIRouter(dependencies=[Depends(require_role(UserRole.WAREHOUSE_MANAGER))])
+router = APIRouter(dependencies=[Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF))])
 
 
 def _item_out(item, product) -> dict:
@@ -49,7 +49,7 @@ def _load_product(db: Session, product_id: int):
 @router.post("/stock/receive")
 def receive_stock(
     body: StockReceiveIn,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     warehouse_id = require_actor_warehouse_id(current)
@@ -83,7 +83,7 @@ def receive_stock(
 @router.post("/stock/adjust")
 def adjust_stock(
     body: StockAdjustIn,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     if body.quantity_delta == 0:
@@ -111,7 +111,7 @@ def adjust_stock(
 @router.post("/stock/waste")
 def waste_stock(
     body: StockWasteIn,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     if body.movement_type not in {
@@ -143,7 +143,7 @@ def waste_stock(
 
 @router.get("/inventory")
 def list_inventory(
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     warehouse_id = require_actor_warehouse_id(current)
@@ -159,7 +159,7 @@ def list_inventory(
 @router.get("/inventory/near-expiry")
 def list_near_expiry(
     within_days: int = Query(7, ge=0, le=365),
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     warehouse_id = require_actor_warehouse_id(current)
@@ -176,7 +176,7 @@ def list_near_expiry(
 @router.get("/stock/waste")
 def list_waste_events(
     movement_type: StockMovementType | None = Query(None),
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     warehouse_id = require_actor_warehouse_id(current)

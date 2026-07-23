@@ -18,6 +18,11 @@ class UserRole(str, enum.Enum):
     BRANCH_MANAGER = "BRANCH_MANAGER"
     # Phase 5: branch sub-staff (salesperson / cashier / order-taker via position).
     BRANCH_STAFF = "BRANCH_STAFF"
+    # Warehouse sub-staff created under a warehouse manager. Distinct from
+    # WAREHOUSE_MANAGER purely so managers and their sub-staff are
+    # distinguishable in the Admin roster and warehouse portal — operationally
+    # they share the manager's warehouse access, minus staff management.
+    WAREHOUSE_STAFF = "WAREHOUSE_STAFF"
 
     @property
     def is_manager(self) -> bool:

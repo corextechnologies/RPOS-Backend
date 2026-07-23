@@ -79,6 +79,17 @@ def test_kitchen_creates_finished_goods(client, restaurant_setup):
     assert {p["name"] for p in listing.json()["data"]} == {"Burger"}
 
 
+def test_kitchen_create_accepts_stock_unit(client, restaurant_setup):
+    kt = auth_headers(client, "kitchen@test.com")
+    resp = client.post(
+        "/v1/kitchen/products",
+        json={"name": "Sauce", "sku": "SCE", "stock_unit": "GRAM"},
+        headers=kt,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["stock_unit"] == "GRAM"
+
+
 def test_branch_cannot_create_products(client, restaurant_setup):
     br = auth_headers(client, "branch@test.com")
     assert client.post("/v1/kitchen/products", json={"name": "X"},

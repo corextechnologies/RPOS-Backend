@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import ConflictError, NotFoundError
 from app.deps.scoping import apply_tenant_scope
 from app.models.product import Product, ProductKind
+from app.models.recipe import StockUnit
 from app.models.reorder_level import ReorderLevel
 from app.models.request_enums import LocationType
 from app.models.user import User
@@ -34,6 +35,7 @@ class ProductService:
         name: str,
         sku: str | None,
         kind: ProductKind = ProductKind.RAW_MATERIAL,
+        stock_unit: StockUnit = StockUnit.EACH,
     ) -> Product:
         if actor.restaurant_id is None:
             raise ConflictError(
@@ -60,6 +62,7 @@ class ProductService:
             name=name.strip(),
             sku=normalized_sku,
             kind=kind,
+            stock_unit=stock_unit,
             # Never set here — Admin prices it later.
             cost_price=None,
         )
@@ -72,7 +75,12 @@ class ProductService:
             entity_type="product",
             entity_id=product.id,
             restaurant_id=actor.restaurant_id,
-            payload={"name": product.name, "sku": product.sku, "kind": kind.value},
+            payload={
+                "name": product.name,
+                "sku": product.sku,
+                "kind": kind.value,
+                "stock_unit": product.stock_unit.value,
+            },
         )
         db.commit()
         db.refresh(product)
@@ -87,6 +95,7 @@ class ProductService:
         name: str | None = None,
         sku: str | None = ...,
         kind: ProductKind | None = None,
+        stock_unit: StockUnit | None = None,
         allowed_kinds: frozenset[ProductKind] | None = None,
     ) -> Product:
         product = db.get(Product, product_id)
@@ -123,6 +132,10 @@ class ProductService:
         if kind is not None:
             product.kind = kind
             payload["kind"] = kind.value
+
+        if stock_unit is not None:
+            product.stock_unit = stock_unit
+            payload["stock_unit"] = stock_unit.value
 
         AuditService.record(
             db,

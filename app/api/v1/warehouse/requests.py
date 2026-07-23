@@ -18,7 +18,7 @@ from app.services.requests import RequestService
 
 router = APIRouter(
     prefix="/requests",
-    dependencies=[Depends(require_role(UserRole.WAREHOUSE_MANAGER))],
+    dependencies=[Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF))],
 )
 
 _WAREHOUSE_REQUEST_TYPES = {
@@ -35,7 +35,7 @@ def _assert_warehouse_request_type(request) -> None:
 @router.post("/po")
 def create_po_request(
     body: WarehousePoCreate,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     warehouse_id = require_actor_warehouse_id(current)
@@ -61,7 +61,7 @@ def list_po_requests(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     filters = RequestListFilters(
@@ -80,7 +80,7 @@ def list_kitchen_requests(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     filters = RequestListFilters(
@@ -97,7 +97,7 @@ def list_kitchen_requests(
 @router.get("/{request_id}")
 def get_warehouse_request(
     request_id: int,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     request = RequestService.get_request(db, current, request_id)
@@ -109,7 +109,7 @@ def get_warehouse_request(
 def transition_warehouse_request(
     request_id: int,
     body: RequestTransition,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     request = RequestService.get_request(db, current, request_id)

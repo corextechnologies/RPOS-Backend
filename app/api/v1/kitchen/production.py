@@ -47,7 +47,8 @@ def create_finished_good(
     materials and resale items are the warehouse's to introduce.
     """
     product = ProductService.create_product(
-        db, current, name=body.name, sku=body.sku, kind=ProductKind.FINISHED_GOOD
+        db, current, name=body.name, sku=body.sku, kind=ProductKind.FINISHED_GOOD,
+        stock_unit=body.stock_unit,
     )
     return ok(ProductService.to_public(product).model_dump(mode="json"))
 

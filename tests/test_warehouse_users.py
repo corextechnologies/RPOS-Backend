@@ -38,7 +38,7 @@ def test_create_warehouse_staff_with_credential_email(
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["email"] == "wh.sub@test.com"
-    assert data["role"] == "WAREHOUSE_MANAGER"
+    assert data["role"] == "WAREHOUSE_STAFF"
     assert data["warehouse_id"] == warehouse_ready["warehouse"].id
     assert data["credential_email_sent"] is True
     assert len(mailer.sent) == 1
@@ -106,6 +106,65 @@ def test_admin_cannot_use_warehouse_users_api(client, warehouse_ready):
         headers=headers,
     )
     assert resp.status_code == 403
+
+
+def test_warehouse_sub_staff_can_read_inventory(
+    client, warehouse_ready, make_user
+):
+    # A sub-staff shares the manager's operational warehouse access.
+    make_user(
+        "wh.reader@test.com",
+        UserRole.WAREHOUSE_STAFF,
+        restaurant_id=warehouse_ready["restaurant"].id,
+        created_by_id=warehouse_ready["manager"].id,
+        warehouse_id=warehouse_ready["warehouse"].id,
+    )
+    headers = auth_headers(client, "wh.reader@test.com")
+    resp = client.get("/v1/warehouse/inventory", headers=headers)
+    assert resp.status_code == 200, resp.text
+
+
+def test_warehouse_sub_staff_cannot_provision_staff(
+    client, warehouse_ready, make_user
+):
+    # Staff provisioning stays manager-only — a sub-staff is forbidden.
+    make_user(
+        "wh.nostaff@test.com",
+        UserRole.WAREHOUSE_STAFF,
+        restaurant_id=warehouse_ready["restaurant"].id,
+        created_by_id=warehouse_ready["manager"].id,
+        warehouse_id=warehouse_ready["warehouse"].id,
+    )
+    headers = auth_headers(client, "wh.nostaff@test.com")
+    resp = client.post(
+        "/v1/warehouse/users",
+        json={"email": "should.fail@test.com"},
+        headers=headers,
+    )
+    assert resp.status_code == 403
+
+
+def test_warehouse_sub_staff_appears_in_admin_roster(
+    client, warehouse_ready, make_user
+):
+    # The Admin employees roster now surfaces warehouse sub-staff, tagged with
+    # the WAREHOUSE_STAFF role (not WAREHOUSE_MANAGER) so the UI buckets them
+    # under sub-staff rather than managers.
+    make_user(
+        "wh.inroster@test.com",
+        UserRole.WAREHOUSE_STAFF,
+        restaurant_id=warehouse_ready["restaurant"].id,
+        created_by_id=warehouse_ready["manager"].id,
+        warehouse_id=warehouse_ready["warehouse"].id,
+    )
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.get("/v1/admin/employees?page=1&page_size=100", headers=headers)
+    assert resp.status_code == 200, resp.text
+    row = next(
+        u for u in resp.json()["data"] if u["email"] == "wh.inroster@test.com"
+    )
+    assert row["role"] == "WAREHOUSE_STAFF"
+    assert row["warehouse_id"] == warehouse_ready["warehouse"].id
 
 
 def test_duplicate_staff_email_conflicts(client, warehouse_ready, mailer):

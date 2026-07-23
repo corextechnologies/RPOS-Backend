@@ -24,14 +24,14 @@ WAREHOUSE_KINDS = frozenset({ProductKind.RAW_MATERIAL, ProductKind.RESALE})
 
 router = APIRouter(
     prefix="/products",
-    dependencies=[Depends(require_role(UserRole.WAREHOUSE_MANAGER))],
+    dependencies=[Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF))],
 )
 
 
 @router.post("")
 def create_product(
     body: ProductCreate,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     """Introduce something the warehouse stocks.
@@ -42,7 +42,8 @@ def create_product(
     introduces what it makes.
     """
     product = ProductService.create_product(
-        db, current, name=body.name, sku=body.sku, kind=body.kind
+        db, current, name=body.name, sku=body.sku, kind=body.kind,
+        stock_unit=body.stock_unit,
     )
     return ok(ProductService.to_public(product).model_dump(mode="json"))
 
@@ -50,7 +51,7 @@ def create_product(
 @router.get("")
 def list_products(
     kind: ProductKind | None = Query(None, description="Filter by product kind"),
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     """The warehouse's catalogue — raw materials and resale items."""
@@ -64,7 +65,7 @@ def list_products(
 def update_product(
     product_id: int,
     body: ProductUpdate,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     updates: dict = {}
@@ -75,6 +76,8 @@ def update_product(
         updates["sku"] = body.sku
     if "kind" in fields:
         updates["kind"] = body.kind
+    if "stock_unit" in fields:
+        updates["stock_unit"] = body.stock_unit
     product = ProductService.update_product(
         db, current, product_id, allowed_kinds=WAREHOUSE_KINDS, **updates
     )
@@ -85,7 +88,7 @@ def update_product(
 def set_reorder_level(
     product_id: int,
     body: ReorderLevelUpdate,
-    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER)),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
     db: Session = Depends(get_db),
 ):
     """Set the low-stock limit for this product at the caller's warehouse."""

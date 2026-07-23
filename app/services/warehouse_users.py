@@ -40,7 +40,7 @@ class WarehouseUserService:
             email=body.email,
             hashed_password=hash_password(password),
             full_name=body.full_name,
-            role=UserRole.WAREHOUSE_MANAGER,
+            role=UserRole.WAREHOUSE_STAFF,
             created_by_id=manager.id,
             warehouse_id=warehouse_id,
         )

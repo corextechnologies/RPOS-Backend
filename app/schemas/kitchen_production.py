@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.models.recipe import StockUnit
+
 
 class KitchenProductCreate(BaseModel):
     """The kitchen introduces something it MAKES.
@@ -15,6 +17,7 @@ class KitchenProductCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     sku: str | None = Field(default=None, max_length=100)
+    stock_unit: StockUnit = StockUnit.EACH
 
 
 class RecipeComponentIn(BaseModel):

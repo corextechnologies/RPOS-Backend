@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.models.enums import UserRole
 from app.models.inventory import StockMovementType, WasteReason
 from app.models.product import ProductKind
+from app.models.recipe import StockUnit
 from app.schemas.admin import ProductPublicOut
 from app.schemas.request import RequestLineCreate
 
@@ -48,6 +49,7 @@ class ProductCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     sku: str | None = Field(default=None, max_length=100)
     kind: ProductKind = ProductKind.RAW_MATERIAL
+    stock_unit: StockUnit = StockUnit.EACH
 
     @field_validator("kind")
     @classmethod
@@ -66,6 +68,7 @@ class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     sku: str | None = Field(default=None, max_length=100)
     kind: ProductKind | None = None
+    stock_unit: StockUnit | None = None
 
     @field_validator("kind")
     @classmethod
