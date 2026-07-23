@@ -23,6 +23,15 @@ BRANCH_CREATABLE_ROLES = {
     UserRole.BRANCH_STAFF,
 }
 
+# The roles that make up an Admin's employee roster: every operational role
+# below the Admin owner (managers + branch sub-staff). Used as an explicit
+# allowlist for the roster read so the query can never hydrate a row whose
+# stored role is no longer in the Python enum — e.g. a legacy SUB_CHEF, which
+# stays in the Postgres user_role type after the role was retired. A bare
+# `role != ADMIN` filter would try to map that string back to UserRole and
+# raise LookupError, 500-ing the whole list.
+EMPLOYEE_ROSTER_ROLES = ADMIN_CREATABLE_ROLES | {UserRole.BRANCH_STAFF}
+
 _LOCATION_MODELS = {
     UserRole.BRANCH_MANAGER: (Branch, "branch_id"),
     UserRole.KITCHEN_MANAGER: (Kitchen, "kitchen_id"),

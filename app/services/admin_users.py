@@ -13,11 +13,11 @@ from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.core.security import hash_password
 from app.deps.rbac import (
     ADMIN_CREATABLE_ROLES,
+    EMPLOYEE_ROSTER_ROLES,
     assert_admin_can_create_role,
     validate_manager_location,
 )
 from app.deps.scoping import visible_users
-from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.admin import (
     EmployeeUpdate,
@@ -93,8 +93,12 @@ class AdminUserService:
     def list_employees(db: Session, admin: User, *, offset: int, limit: int) -> tuple[list[User], int]:
         from sqlalchemy import func
 
-        # Exclude the ADMIN owner(s): the employee roster is managers + sub-staff.
-        base = visible_users(db, admin).where(User.role != UserRole.ADMIN)
+        # The roster is managers + sub-staff. Filter to that explicit allowlist
+        # rather than `!= ADMIN`: a retired role (e.g. legacy SUB_CHEF) still
+        # exists in the Postgres enum and in old rows, and hydrating such a row
+        # raises LookupError against the current UserRole enum — which would
+        # 500 the entire list. The allowlist keeps those rows out of the query.
+        base = visible_users(db, admin).where(User.role.in_(EMPLOYEE_ROSTER_ROLES))
         count_stmt = select(func.count()).select_from(base.subquery())
         total = db.execute(count_stmt).scalar_one()
         rows = db.execute(
