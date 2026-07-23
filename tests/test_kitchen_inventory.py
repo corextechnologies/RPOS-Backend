@@ -33,6 +33,31 @@ def kitchen_ready(db, restaurant_setup, make_product):
     return {"product": product, "item": item, **restaurant_setup}
 
 
+def test_zeroed_batch_disappears_from_kitchen_inventory(client, db, kitchen_ready):
+    headers = auth_headers(client, "kitchen@test.com")
+    pid = kitchen_ready["product"].id
+    # Present while it has stock.
+    listing = client.get("/v1/kitchen/inventory", headers=headers)
+    assert any(r["product_id"] == pid for r in listing.json()["data"])
+
+    # Consume the whole batch to zero.
+    resp = client.post(
+        "/v1/kitchen/stock/waste",
+        json={
+            "product_id": pid,
+            "quantity": 20,
+            "waste_reason": WasteReason.SPOILAGE.value,
+            "batch_code": "B1",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Gone from the inventory list once it hits zero.
+    after = client.get("/v1/kitchen/inventory", headers=headers)
+    assert all(r["product_id"] != pid for r in after.json()["data"])
+
+
 def test_waste_records_reason_and_decrements(client, db, kitchen_ready):
     headers = auth_headers(client, "kitchen@test.com")
     resp = client.post(

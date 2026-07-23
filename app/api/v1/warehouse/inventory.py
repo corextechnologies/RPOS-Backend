@@ -15,6 +15,7 @@ from app.models.request_enums import LocationType
 from app.models.user import User
 from app.schemas.admin import ProductPublicOut
 from app.schemas.warehouse import (
+    InventoryExpiryUpdate,
     InventoryItemOut,
     StockAdjustIn,
     StockReceiveIn,
@@ -154,6 +155,28 @@ def list_inventory(
         location_id=warehouse_id,
     )
     return ok([_item_out(item, product) for item, product in rows])
+
+
+@router.patch("/inventory/{item_id}")
+def update_inventory_expiry(
+    item_id: int,
+    body: InventoryExpiryUpdate,
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
+    db: Session = Depends(get_db),
+):
+    warehouse_id = require_actor_warehouse_id(current)
+    item = InventoryService.update_expiry(
+        db,
+        restaurant_id=current.restaurant_id,
+        location_type=LocationType.WAREHOUSE,
+        location_id=warehouse_id,
+        item_id=item_id,
+        expiry_date=body.expiry_date,
+    )
+    db.commit()
+    db.refresh(item)
+    product = _load_product(db, item.product_id)
+    return ok(_item_out(item, product))
 
 
 @router.get("/inventory/near-expiry")

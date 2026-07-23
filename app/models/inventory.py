@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import enum
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import (
     Date,
     Enum as SAEnum,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -74,7 +76,10 @@ class InventoryItem(Base, PKMixin, TimestampMixin):
     product_id: Mapped[int] = mapped_column(
         ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # NUMERIC(12,3): fractional on-hand (grams / millilitres). See app/services/units.py.
+    quantity: Mapped[Decimal] = mapped_column(
+        Numeric(12, 3), nullable=False, default=0
+    )
     # Empty string = unbatched stock (keeps unique constraint well-defined).
     batch_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     expiry_date: Mapped[date | None] = mapped_column(Date)
@@ -95,7 +100,7 @@ class StockMovement(Base, PKMixin, TimestampMixin):
     product_id: Mapped[int] = mapped_column(
         ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    quantity_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity_delta: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     movement_type: Mapped[StockMovementType] = mapped_column(
         _movement_type_enum, nullable=False
     )

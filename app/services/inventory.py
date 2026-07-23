@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Iterable
 
 from sqlalchemy import func, select
@@ -22,6 +23,7 @@ from app.models.reorder_level import ReorderLevel
 from app.models.request_enums import LocationType
 from app.models.user import User
 from app.services.notifications import NotificationService
+from app.services.units import format_qty as _fmt_qty, round_qty
 
 _LOCATION_MODELS = {
     LocationType.BRANCH: Branch,
@@ -364,6 +366,34 @@ class InventoryService:
         )
 
     @staticmethod
+    def update_expiry(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+        item_id: int,
+        expiry_date: date | None,
+    ) -> InventoryItem:
+        """Set/clear the expiry date on one on-hand row, scoped to the caller's
+        location. A row id belonging to another restaurant/location is treated as
+        not found — the caller can only touch stock at their own location.
+        """
+        item = db.execute(
+            select(InventoryItem).where(
+                InventoryItem.id == item_id,
+                InventoryItem.restaurant_id == restaurant_id,
+                InventoryItem.location_type == location_type,
+                InventoryItem.location_id == location_id,
+            )
+        ).scalar_one_or_none()
+        if item is None:
+            raise NotFoundError("Inventory item not found.")
+        item.expiry_date = expiry_date
+        db.flush()
+        return item
+
+    @staticmethod
     def list_for_location(
         db: Session,
         *,
@@ -470,6 +500,9 @@ class InventoryService:
         )
         InventoryService._validate_product(db, restaurant_id, product_id)
 
+        # Normalize every ledger write to the column scale (3dp, half-up) so the
+        # single write path is the one place rounding policy is applied.
+        quantity_delta = round_qty(quantity_delta)
         normalized_batch = (batch_code or "").strip()
         # Lock the on-hand row for the rest of this transaction so a concurrent
         # order at the same branch can't read the same quantity and oversell. The
@@ -602,7 +635,7 @@ class InventoryService:
         location_type: LocationType,
         location_id: int,
         product_id: int,
-    ) -> int:
+    ) -> Decimal:
         """Total units of a product on hand at a location, summed across batches.
 
         Public read for callers that need to gate on availability before writing
@@ -624,7 +657,7 @@ class InventoryService:
         location_type: LocationType,
         location_id: int,
         product_id: int,
-    ) -> int:
+    ) -> Decimal:
         total = db.execute(
             select(func.coalesce(func.sum(InventoryItem.quantity), 0)).where(
                 InventoryItem.restaurant_id == restaurant_id,
@@ -633,7 +666,7 @@ class InventoryService:
                 InventoryItem.product_id == product_id,
             )
         ).scalar_one()
-        return int(total)
+        return round_qty(total)
 
     @staticmethod
     def _maybe_alert_low_stock(
@@ -687,7 +720,8 @@ class InventoryService:
             title="Low stock",
             body=(
                 f"{product_name} at {location_type.value.lower()} {location_id} "
-                f"is down to {total_after} (limit {level}). Time to request more."
+                f"is down to {_fmt_qty(total_after)} (limit {level}). "
+                "Time to request more."
             ),
             entity_type="product",
             entity_id=product_id,

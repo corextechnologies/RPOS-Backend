@@ -1,9 +1,12 @@
-"""Branch deliveries — the KITCHEN_TO_ADMIN flow's branch side.
+"""Branch deliveries — the branch side of both fan-out flows.
 
-Each row is one allocation the kitchen shipped to this branch. The branch sees
-its in-transit (DISPATCHED) and already-received (RECEIVED) deliveries, and
-confirms receipt of one at a time — crediting its own stock. The allocation id
-is the unit received (`deliveryId`).
+Each row is one allocation the kitchen shipped to this branch, from EITHER the
+KITCHEN_TO_ADMIN dispatch flow (request_allocations) or the Admin → Kitchen
+production-target flow (production_target_allocations). Both are surfaced here
+so the branch confirms receipt on one screen. The branch sees its in-transit
+(DISPATCHED) and already-received (RECEIVED) deliveries, and confirms one at a
+time — crediting its own stock. The allocation id is the unit received
+(`deliveryId`); its `request_id` carries the source request or target id.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from app.models.request import Request, RequestAllocation, RequestLineItem
 from app.models.request_enums import AllocationStatus
 from app.models.user import User
 from app.schemas.branch import DeliveryOut
+from app.services.production_targets import ProductionTargetService
 from app.services.requests import RequestService
 
 router = APIRouter(
@@ -46,7 +50,10 @@ def list_deliveries(
     db: Session = Depends(get_db),
 ):
     branch_id = require_actor_branch_id(current)
-    base = (
+    statuses = [status] if status is not None else _VISIBLE_STATUSES
+
+    # Request-allocation deliveries (the KITCHEN_TO_ADMIN flow).
+    request_rows = db.execute(
         select(RequestAllocation, RequestLineItem, Product, Kitchen)
         .join(Request, Request.id == RequestAllocation.request_id)
         .join(RequestLineItem, RequestLineItem.id == RequestAllocation.line_item_id)
@@ -55,22 +62,11 @@ def list_deliveries(
         .where(
             Request.restaurant_id == current.restaurant_id,
             RequestAllocation.branch_id == branch_id,
-            RequestAllocation.status.in_(
-                [status] if status is not None else _VISIBLE_STATUSES
-            ),
+            RequestAllocation.status.in_(statuses),
         )
-    )
-
-    total = db.execute(
-        select(func.count()).select_from(base.subquery())
-    ).scalar_one()
-
-    offset = (page - 1) * page_size
-    rows = db.execute(
-        base.order_by(RequestAllocation.id.desc()).offset(offset).limit(page_size)
     ).all()
 
-    data = [
+    deliveries = [
         DeliveryOut(
             id=alloc.id,
             request_id=alloc.request_id,
@@ -80,9 +76,36 @@ def list_deliveries(
             quantity=alloc.quantity,
             status=alloc.status,
             created_at=alloc.created_at,
-        ).model_dump(mode="json")
-        for alloc, line, product, kitchen in rows
+        )
+        for alloc, line, product, kitchen in request_rows
     ]
+
+    # Production-target deliveries carry the target id as request_id. They share
+    # this branch's delivery inbox, so the two are merged and paged together.
+    target_rows = ProductionTargetService.branch_delivery_rows(
+        db, restaurant_id=current.restaurant_id, branch_id=branch_id, statuses=statuses
+    )
+    deliveries.extend(
+        DeliveryOut(
+            id=alloc.id,
+            request_id=alloc.target_id,
+            from_label=kitchen.name if kitchen else None,
+            product_id=product.id,
+            product_name=product.name,
+            quantity=alloc.quantity,
+            status=alloc.status,
+            created_at=alloc.created_at,
+        )
+        for alloc, line, product, kitchen in target_rows
+    )
+
+    # Newest first, with a stable id tiebreak. Both id spaces are independent,
+    # so created_at is the meaningful cross-source order.
+    deliveries.sort(key=lambda d: (d.created_at, d.id), reverse=True)
+
+    total = len(deliveries)
+    offset = (page - 1) * page_size
+    data = [d.model_dump(mode="json") for d in deliveries[offset : offset + page_size]]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 
@@ -92,7 +115,24 @@ def receive_delivery(
     current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
     db: Session = Depends(get_db),
 ):
-    """Confirm one delivery: credit branch stock, mark it RECEIVED."""
+    """Confirm one delivery: credit branch stock, mark it RECEIVED.
+
+    The id may belong to either a request allocation (KITCHEN_TO_ADMIN) or a
+    production-target allocation — both surface on this screen. The two tables
+    have independent id spaces, so we resolve by ownership: a production-target
+    allocation owned by this branch takes the target path; otherwise the id is
+    treated as a request allocation, preserving the original behaviour.
+    """
+    branch_id = require_actor_branch_id(current)
+    target_alloc = ProductionTargetService.get_branch_allocation(
+        db, branch_id, allocation_id
+    )
+    if target_alloc is not None:
+        target = ProductionTargetService.receive_allocation(
+            db, current, allocation_id
+        )
+        return ok(ProductionTargetService.out_dict(target))
+
     request = RequestService.receive_allocation(db, current, allocation_id)
     return ok(
         RequestService.to_out(

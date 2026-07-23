@@ -62,9 +62,12 @@ def _error_body(code: str, message: str, details=None) -> dict:
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError):
+        # jsonable_encoder so structured `details` may hold non-JSON-native values
+        # (Decimal stock quantities, dates) without the response render failing with
+        # an unhandled 500 — the error envelope must always serialize.
         return JSONResponse(
             status_code=exc.status_code,
-            content=_error_body(exc.code, exc.message, exc.details),
+            content=jsonable_encoder(_error_body(exc.code, exc.message, exc.details)),
         )
 
     @app.exception_handler(StarletteHTTPException)

@@ -20,8 +20,9 @@ single source of truth.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Enum as SAEnum
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -79,7 +80,7 @@ class ProductionRunLine(Base, PKMixin, TimestampMixin):
         ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     role: Mapped[ProductionLineRole] = mapped_column(_line_role_enum, nullable=False)
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     batch_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
 
     run: Mapped[ProductionRun] = relationship("ProductionRun", back_populates="lines")

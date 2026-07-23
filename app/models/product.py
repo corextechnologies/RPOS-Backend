@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Enum as SAEnum, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Enum as SAEnum, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -88,3 +88,13 @@ class Product(Base, PKMixin, TimestampMixin):
         default=StockUnit.EACH,
         server_default="EACH",
     )
+    # Pack display helper only — inventory truth stays quantity in stock_unit.
+    # Meaning: 1 pack = N × stock_unit. Null = no pack helper in the UI.
+    units_per_pack: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Purchase-pack size for weight/volume raw materials: the amount of
+    # stock_unit in one pack, e.g. stock_unit=KG, pack_size=5 => 1 bag = 5 kg.
+    # Weight/volume stays the single source of truth in inventory; "packs" is a
+    # display + entry layer (weight = packs × pack_size). Only meaningful when
+    # kind=RAW_MATERIAL and stock_unit is a weight/volume unit; validated at the
+    # API. Distinct from the integer units_per_pack (count cartons).
+    pack_size: Mapped[Decimal | None] = mapped_column(Numeric(12, 3), nullable=True)

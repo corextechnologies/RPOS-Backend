@@ -21,6 +21,7 @@ from app.models.user import User
 from app.schemas.kitchen import StockCountCreate
 from app.services.audit import AuditService
 from app.services.inventory import InventoryService
+from app.services.units import format_qty
 from app.services.notifications import NotificationService
 
 
@@ -188,7 +189,8 @@ class StockCountService:
 
         if variances:
             detail = ", ".join(
-                f"{v['product_name']} {v['variance']:+d}" for v in variances
+                f"{v['product_name']} {format_qty(v['variance'], signed=True)}"
+                for v in variances
             )
             body = (
                 f"Stock count #{count.id} at "

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from app.schemas.quantity import Quantity
 
 from pydantic import BaseModel, Field
 
@@ -117,7 +118,7 @@ class BranchOrderOut(BaseModel):
 class ProductionRunLineIn(BaseModel):
     product_id: int
     role: ProductionLineRole
-    quantity: int = Field(gt=0)
+    quantity: Quantity = Field(gt=0)
     batch_code: str | None = Field(default=None, max_length=100)
 
 
@@ -137,7 +138,7 @@ class ProductionRunLineOut(BaseModel):
     product_id: int
     product_name: str | None = None
     role: ProductionLineRole
-    quantity: int
+    quantity: Quantity
     batch_code: str
 
     model_config = {"from_attributes": True}
@@ -195,7 +196,7 @@ class DeliveryOut(BaseModel):
     from_label: str | None = None
     product_id: int
     product_name: str | None = None
-    quantity: int
+    quantity: Quantity
     status: str
     created_at: datetime
 
@@ -204,7 +205,7 @@ class BranchWasteIn(BaseModel):
     """Log wasted/expired branch stock. Mirrors the warehouse/kitchen shape."""
 
     product_id: int
-    quantity: int = Field(gt=0)
+    quantity: Quantity = Field(gt=0)
     movement_type: StockMovementType = StockMovementType.WASTE
     waste_reason: WasteReason | None = None
     batch_code: str | None = Field(default=None, max_length=100)

@@ -1,23 +1,25 @@
 """Recipe / bill of materials (POS-5): what a sold product actually consumes.
 
-Quantities are INTEGERS in the component's stock unit, not Numeric. "1 burger =
-30g sauce" is expressible because sauce is stocked in grams, so 30 is a whole
-number. That is the same trick as money-in-minor-units, and it is the reason
-InventoryItem.quantity can stay Integer: no fractional stock, no rounding drift
-in the ledger, and no migration of inventory_items / stock_movements /
-stock_counts / reorder_levels and every service that touches them.
+Quantities are NUMERIC(12,3) (recipe-by-weight): a component is "0.25 kg flour"
+stated in `RecipeComponent.unit`, converted into the component product's
+stock_unit at production time and drawn down fractionally FEFO. Stock across the
+ledger — inventory_items / stock_movements / stock_counts / request lines /
+production run lines — is likewise NUMERIC(12,3). All conversion and rounding
+(ROUND_HALF_UP to 3dp) lives in app/services/units.py.
 
-wastage_bp is basis points for the same reason — 250 = 2.5% expected loss.
+wastage_bp is basis points — 250 = 2.5% expected loss.
 """
 from __future__ import annotations
 
 import enum
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
     Enum as SAEnum,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
 )
@@ -92,8 +94,16 @@ class RecipeComponent(Base, PKMixin, TimestampMixin):
     component_product_id: Mapped[int] = mapped_column(
         ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    # Whole units of the component's stock_unit, per yield_qty of the parent.
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Quantity per yield_qty of the parent, expressed in `unit` (below).
+    # NUMERIC(12,3): "0.25 kg flour" is now expressible, not just whole grams.
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    # The unit `quantity` is stated in. Converted into the component product's
+    # stock_unit at production time (see app/services/units.py). Must share a
+    # dimension with that stock_unit (weight/volume) or equal it. Nullable for
+    # rows created before recipe-by-weight; treated as the component's stock_unit.
+    unit: Mapped["StockUnit | None"] = mapped_column(
+        SAEnum(StockUnit, name="stock_unit", create_type=False)
+    )
     # Expected loss, basis points. 250 = 2.5%.
     wastage_bp: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

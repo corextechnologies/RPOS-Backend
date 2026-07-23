@@ -27,6 +27,7 @@ from app.models.menu_enums import OrderStatus
 from app.models.order import Order, OrderLine
 from app.models.product import Product
 from app.models.request_enums import LocationType
+from app.services.units import round_qty
 
 MAX_WINDOW_DAYS = 400
 
@@ -111,7 +112,7 @@ class AnalyticsFeedService:
                 "date": day.date().isoformat(),
                 "product_id": product_id,
                 "reason": reason.value if reason else None,
-                "quantity": abs(int(delta or 0)),
+                "quantity": round_qty(abs(delta or 0)),
             }
             for day, product_id, reason, delta in rows
         ]
@@ -134,7 +135,7 @@ class AnalyticsFeedService:
             .order_by(InventoryItem.product_id)
         ).all()
         return [
-            {"product_id": pid, "product_name": name, "on_hand": int(qty or 0)}
+            {"product_id": pid, "product_name": name, "on_hand": round_qty(qty or 0)}
             for pid, name, qty in rows
         ]
 

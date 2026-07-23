@@ -43,7 +43,7 @@ def create_product(
     """
     product = ProductService.create_product(
         db, current, name=body.name, sku=body.sku, kind=body.kind,
-        stock_unit=body.stock_unit,
+        stock_unit=body.stock_unit, units_per_pack=body.units_per_pack,
     )
     return ok(ProductService.to_public(product).model_dump(mode="json"))
 
@@ -78,6 +78,8 @@ def update_product(
         updates["kind"] = body.kind
     if "stock_unit" in fields:
         updates["stock_unit"] = body.stock_unit
+    if "units_per_pack" in fields:
+        updates["units_per_pack"] = body.units_per_pack
     product = ProductService.update_product(
         db, current, product_id, allowed_kinds=WAREHOUSE_KINDS, **updates
     )

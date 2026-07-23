@@ -1,6 +1,9 @@
 """Kitchen product catalogue, recipes and recipe-driven production."""
 from __future__ import annotations
 
+from decimal import Decimal
+from app.schemas.quantity import Quantity
+
 from pydantic import BaseModel, Field
 
 from app.models.recipe import StockUnit
@@ -22,9 +25,13 @@ class KitchenProductCreate(BaseModel):
 
 class RecipeComponentIn(BaseModel):
     component_product_id: int
-    #: Whole units of the component's stock_unit (EACH / GRAM / ML), so
-    #: "30g of sauce" is simply 30.
-    quantity: int = Field(gt=0)
+    #: How much of the component one yield_qty consumes, stated in `unit`.
+    #: Fractional: "0.25 kg flour" is 0.25 with unit=KG.
+    quantity: Quantity = Field(gt=0)
+    #: The unit `quantity` is in. Omit to use the component product's stock_unit.
+    #: Must equal that stock_unit or share its dimension (weight/volume) — a
+    #: cross-dimension unit (grams of an EACH-stocked product) is rejected.
+    unit: StockUnit | None = None
     #: Expected loss, basis points. 250 = 2.5%.
     wastage_bp: int = Field(default=0, ge=0, le=10000)
 
@@ -42,7 +49,14 @@ class KitchenRecipeIn(BaseModel):
 class RecipeComponentOut(BaseModel):
     component_product_id: int
     component_name: str | None = None
-    quantity: int
+    quantity: Quantity
+    #: How the component product is stocked (e.g. KG). Callers convert `unit` →
+    #: this before comparing against on-hand. Always present when the product
+    #: exists; production already loads it from Product, but the recipe read
+    #: path must surface it too or the UI labels kg on-hand as grams.
+    stock_unit: StockUnit
+    #: The unit `quantity` is stated in (e.g. GRAM). Null/legacy = stock_unit.
+    unit: StockUnit | None = None
     wastage_bp: int
 
     model_config = {"from_attributes": True}

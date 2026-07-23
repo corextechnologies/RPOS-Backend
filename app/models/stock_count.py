@@ -7,7 +7,9 @@ Admin notification is built from.
 """
 from __future__ import annotations
 
-from sqlalchemy import Enum as SAEnum, ForeignKey, Integer, String, Text
+from decimal import Decimal
+
+from sqlalchemy import Enum as SAEnum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -50,9 +52,9 @@ class StockCountLine(Base, PKMixin, TimestampMixin):
         ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     batch_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
-    counted_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    system_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    variance: Mapped[int] = mapped_column(Integer, nullable=False)
+    counted_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    system_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    variance: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
 
     stock_count: Mapped[StockCount] = relationship("StockCount", back_populates="lines")
     product: Mapped["Product"] = relationship("Product")

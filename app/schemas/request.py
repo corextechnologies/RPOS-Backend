@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
+from app.schemas.quantity import Quantity
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -11,7 +13,7 @@ from app.models.request_enums import LocationType, RequestType
 
 class RequestLineCreate(BaseModel):
     product_id: int
-    quantity_requested: int = Field(gt=0)
+    quantity_requested: Quantity = Field(gt=0)
 
 
 class RequestCreate(BaseModel):
@@ -32,7 +34,7 @@ class RequestCreate(BaseModel):
 
 class LineApproval(BaseModel):
     line_item_id: int
-    quantity_approved: int = Field(ge=0)
+    quantity_approved: Quantity = Field(ge=0)
 
 
 class LineReceipt(BaseModel):
@@ -45,7 +47,7 @@ class LineReceipt(BaseModel):
     """
 
     line_item_id: int
-    quantity_received: int = Field(ge=0)
+    quantity_received: Quantity = Field(ge=0)
     batch_code: str | None = Field(default=None, max_length=100)
     expiry_date: date | None = None
     issue_note: str | None = None
@@ -70,7 +72,7 @@ class RequestTransition(BaseModel):
 class AllocationCreate(BaseModel):
     line_item_id: int
     branch_id: int
-    quantity: int = Field(gt=0)
+    quantity: Quantity = Field(gt=0)
 
 
 class AllocateRequest(BaseModel):
@@ -88,9 +90,9 @@ class RequestLineOut(BaseModel):
     id: int
     product_id: int
     product_name: str | None = None
-    quantity_requested: int
-    quantity_approved: int | None = None
-    quantity_received: int | None = None
+    quantity_requested: Quantity
+    quantity_approved: Quantity | None = None
+    quantity_received: Quantity | None = None
     issue_note: str | None = None
 
     model_config = {"from_attributes": True}
@@ -103,7 +105,7 @@ class RequestAllocationOut(BaseModel):
     product_name: str | None = None
     branch_id: int
     branch_name: str | None = None
-    quantity: int
+    quantity: Quantity
     status: str
 
     model_config = {"from_attributes": True}

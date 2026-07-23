@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.enums import UserRole
 from tests.conftest import auth_headers
 
 
@@ -223,6 +224,89 @@ def test_cross_restaurant_product_rejected(
     resp = client.post(
         "/v1/warehouse/stock/receive",
         json={"product_id": foreign.id, "quantity": 1},
+        headers=headers,
+    )
+    assert resp.status_code == 404
+
+
+def _receive_row(client, headers, product_id, *, expiry=None):
+    """Receive a batch and return its inventory row dict."""
+    body = {"product_id": product_id, "quantity": 5, "batch_code": "PX"}
+    if expiry is not None:
+        body["expiry_date"] = expiry
+    resp = client.post("/v1/warehouse/stock/receive", json=body, headers=headers)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_patch_inventory_sets_expiry_date(client, warehouse_ready):
+    headers = auth_headers(client, "warehouse@test.com")
+    row = _receive_row(client, headers, warehouse_ready["product"].id)
+    assert row["expiry_date"] is None
+
+    new_expiry = (date.today() + timedelta(days=10)).isoformat()
+    resp = client.patch(
+        f"/v1/warehouse/inventory/{row['id']}",
+        json={"expiry_date": new_expiry},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["expiry_date"] == new_expiry
+
+    # Persisted: it comes back on the next list read.
+    listing = client.get("/v1/warehouse/inventory", headers=headers)
+    updated = next(r for r in listing.json()["data"] if r["id"] == row["id"])
+    assert updated["expiry_date"] == new_expiry
+
+
+def test_patch_inventory_clears_expiry_date(client, warehouse_ready):
+    headers = auth_headers(client, "warehouse@test.com")
+    row = _receive_row(
+        client,
+        headers,
+        warehouse_ready["product"].id,
+        expiry=(date.today() + timedelta(days=3)).isoformat(),
+    )
+    assert row["expiry_date"] is not None
+
+    resp = client.patch(
+        f"/v1/warehouse/inventory/{row['id']}",
+        json={"expiry_date": None},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["expiry_date"] is None
+
+
+def test_patch_inventory_unknown_id_is_404(client, warehouse_ready):
+    headers = auth_headers(client, "warehouse@test.com")
+    resp = client.patch(
+        "/v1/warehouse/inventory/999999",
+        json={"expiry_date": None},
+        headers=headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_patch_inventory_other_warehouse_row_is_404(
+    client, warehouse_ready, make_warehouse, make_user, make_product
+):
+    # A row at another warehouse is not addressable by this manager.
+    headers = auth_headers(client, "warehouse@test.com")
+    other_wh = make_warehouse(warehouse_ready["restaurant"].id, name="Other WH")
+    make_user(
+        "wh2@test.com",
+        UserRole.WAREHOUSE_MANAGER,
+        restaurant_id=warehouse_ready["restaurant"].id,
+        created_by_id=warehouse_ready["admin"].id,
+        warehouse_id=other_wh.id,
+    )
+    other_headers = auth_headers(client, "wh2@test.com")
+    row = _receive_row(client, other_headers, warehouse_ready["product"].id)
+
+    resp = client.patch(
+        f"/v1/warehouse/inventory/{row['id']}",
+        json={"expiry_date": None},
         headers=headers,
     )
     assert resp.status_code == 404

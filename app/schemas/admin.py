@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.models.enums import UserRole
 from app.models.product import ProductKind
 from app.models.recipe import StockUnit
+from app.schemas.quantity import Quantity
 from app.schemas.request import RequestTransition
 
 
@@ -113,6 +114,10 @@ class ProductAdminOut(BaseModel):
     category: str | None = None
     is_available: bool = True
     stock_unit: StockUnit = StockUnit.EACH
+    units_per_pack: int | None = None
+    #: Decimal purchase-pack size in stock_unit ("1 bag = 5 kg"); weight/volume
+    #: raw materials only. Null = no weight-pack helper.
+    pack_size: Quantity | None = None
 
     model_config = {"from_attributes": True}
 
@@ -130,6 +135,8 @@ class ProductPublicOut(BaseModel):
     sku: str | None = None
     kind: ProductKind = ProductKind.RAW_MATERIAL
     stock_unit: StockUnit = StockUnit.EACH
+    units_per_pack: int | None = None
+    pack_size: Quantity | None = None
 
     model_config = {"from_attributes": True}
 

@@ -8,6 +8,7 @@ short, nothing persists.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -26,6 +27,7 @@ from app.schemas.branch import (
 )
 from app.services.audit import AuditService
 from app.services.inventory import InventoryService, insufficient_stock_error
+from app.services.units import convert, round_qty
 
 
 class ProductionService:
@@ -117,13 +119,22 @@ class ProductionService:
 
         # How many recipe batches to run, then what that consumes. Round the
         # batch count UP: you cannot run half a batch, and rounding down would
-        # under-consume and silently inflate on-hand over a day's trading.
+        # under-consume and silently inflate on-hand over a day's trading. The
+        # finished-good count and yield stay whole, so this is still integer
+        # ceil-div; only the component draw-down below is fractional.
         yield_qty = max(recipe.yield_qty, 1)
         batches = -(-body.quantity // yield_qty)  # ceil-div
-        consumed: list[tuple[int, str, int]] = []
+        consumed: list[tuple[int, str, Decimal]] = []
         for component in components:
-            gross = component.quantity * batches
-            gross += gross * component.wastage_bp // 10000
+            cp = db.get(Product, component.component_product_id)
+            # The recipe states the amount in `component.unit`; convert it into
+            # the component product's stock_unit before it comes off stock. A
+            # legacy row with no unit is already in the stock_unit.
+            recipe_unit = component.unit or cp.stock_unit
+            per_yield = convert(component.quantity, recipe_unit, cp.stock_unit)
+            gross = per_yield * batches
+            # Expected-loss uplift, then round to the ledger scale (3dp).
+            gross = round_qty(gross + gross * Decimal(component.wastage_bp) / 10000)
             consumed.append((component.component_product_id, "", gross))
 
         return ProductionService._run(
@@ -186,6 +197,26 @@ class ProductionService:
             # order that sort_lock_order gives orders: a run and a sale can touch
             # the same products concurrently, so both must lock in one order.
             for (pid, batch), qty in sorted(ProductionService._coalesce_raw(inputs).items()):
+                if not batch:
+                    # No explicit batch — the recipe path, and the common
+                    # sub-kitchen case. Kitchen components arrive credited into the
+                    # named batches they were dispatched from (see requests.py
+                    # _receive_batches), so the unbatched bucket is empty. Consume
+                    # ACROSS batches FEFO, exactly as dispatch does: a batch-blind
+                    # apply_dispatch here would probe the empty bucket and cry
+                    # insufficient_stock while the stock sits in named batches.
+                    InventoryService.apply_dispatch_fefo(
+                        db,
+                        actor=actor,
+                        location_type=location_type,
+                        location_id=location_id,
+                        product_id=pid,
+                        quantity=qty,
+                        notes=f"{label} run #{run.id} (input)",
+                    )
+                    continue
+                # Explicit batch (a sub-kitchen run naming its source): consume
+                # that exact batch, and surface a rich shortfall if it's absent.
                 try:
                     InventoryService.apply_dispatch(
                         db,
@@ -194,7 +225,7 @@ class ProductionService:
                         location_id=location_id,
                         product_id=pid,
                         quantity=qty,
-                        batch_code=batch or None,
+                        batch_code=batch,
                         notes=f"{label} run #{run.id} (input)",
                     )
                 except NotFoundError as exc:
@@ -209,7 +240,7 @@ class ProductionService:
                         location_id=location_id,
                         requested=qty,
                         available=0,
-                        batch_code=batch or "",
+                        batch_code=batch,
                     ) from exc
 
             for (pid, batch), qty in sorted(ProductionService._coalesce_raw(outputs).items()):

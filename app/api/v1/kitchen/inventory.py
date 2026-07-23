@@ -170,7 +170,11 @@ def list_inventory(
         location_type=LocationType.KITCHEN,
         location_id=kitchen_id,
     )
-    return ok([_item_out(item, product) for item, product in rows])
+    # Drop fully-consumed batches: a row that hits zero disappears from the
+    # kitchen inventory instead of lingering as an empty line. The row is kept in
+    # the ledger (FEFO/expiry) and reused on the next receipt, but it is not
+    # "stock on hand", so it does not belong in this list.
+    return ok([_item_out(item, product) for item, product in rows if item.quantity > 0])
 
 
 @router.get("/inventory/near-expiry")

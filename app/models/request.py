@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,11 +62,11 @@ class RequestLineItem(Base, PKMixin, TimestampMixin):
     product_id: Mapped[int] = mapped_column(
         ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
-    quantity_requested: Mapped[int] = mapped_column(Integer, nullable=False)
-    quantity_approved: Mapped[int | None] = mapped_column(Integer)
+    quantity_requested: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    quantity_approved: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     # What actually turned up. Set when a PO is received, or when the warehouse
     # reports a short/damaged delivery. This is the quantity RECEIVED credits.
-    quantity_received: Mapped[int | None] = mapped_column(Integer)
+    quantity_received: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     # Free text from the warehouse on a REPORTED line ("3 crates crushed").
     issue_note: Mapped[str | None] = mapped_column(Text)
 
@@ -96,7 +97,7 @@ class RequestAllocation(Base, PKMixin, TimestampMixin):
     branch_id: Mapped[int] = mapped_column(
         ForeignKey("branches.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

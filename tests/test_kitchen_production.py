@@ -244,6 +244,103 @@ def test_kitchen_production_consumes_components_and_credits_the_burger(
     assert _kitchen_stock(db, kitchen_ctx, burger.id) == 10
 
 
+def test_kitchen_production_consumes_components_from_named_batches(
+    client, restaurant_setup, make_product, db
+):
+    """Regression: components dispatched to a kitchen are credited into the NAMED
+    batches they shipped in, so the unbatched bucket is empty. Production must
+    draw them down FEFO across batches — a batch-blind consume probed the empty
+    bucket and returned insufficient_stock while 20 sat in a named batch
+    (the "1 piece / 20 piece" burger that would not make).
+    """
+    r = restaurant_setup["restaurant"]
+    kitchen = restaurant_setup["home_kitchen"]
+    patty = make_product(r.id, name="Chicken Patti", sku="CP",
+                         kind=ProductKind.RAW_MATERIAL)
+    # Stock lives ONLY in a named batch, exactly as a dispatch receipt credits it.
+    InventoryService.receive_stock(
+        db, actor=restaurant_setup["kitchen_mgr"],
+        location_type=LocationType.KITCHEN, location_id=kitchen.id,
+        product_id=patty.id, quantity=20, batch_code="B-CP-01",
+    )
+    db.flush()
+    burger = make_product(r.id, name="Chicken Patti Burger",
+                          kind=ProductKind.FINISHED_GOOD)
+    kt = auth_headers(client, "kitchen@test.com")
+    client.post(
+        "/v1/kitchen/recipes",
+        json={"product_id": burger.id, "yield_qty": 1,
+              "components": [{"component_product_id": patty.id, "quantity": 1}]},
+        headers=kt,
+    )
+    # 1 burger uses 1 patty; 20 are on hand (in the named batch).
+    resp = client.post("/v1/kitchen/production",
+                       json={"product_id": burger.id, "quantity": 1}, headers=kt)
+    assert resp.status_code == 200, resp.text
+    # One patty came off the named batch; one burger credited.
+    assert InventoryService.on_hand(
+        db, restaurant_id=r.id, location_type=LocationType.KITCHEN,
+        location_id=kitchen.id, product_id=patty.id,
+    ) == 19
+
+
+def test_kitchen_production_converts_recipe_grams_into_stock_kilograms(
+    client, restaurant_setup, make_product, db
+):
+    """Recipe-by-weight: 100 g flour per cake, flour stocked in KG. Making 10
+    cakes must consume 1 kg (10 x 100 g), not 100 kg-per-cake. Regression for
+    "15 kg flour but making 10 says need more flour" — the recipe unit (GRAM) was
+    read as the stock unit (KG) without conversion.
+    """
+    from app.models.recipe import StockUnit
+
+    r = restaurant_setup["restaurant"]
+    kitchen = restaurant_setup["home_kitchen"]
+    flour = make_product(r.id, name="Flour", sku="FL", kind=ProductKind.RAW_MATERIAL)
+    flour.stock_unit = StockUnit.KG
+    db.flush()
+    InventoryService.receive_stock(
+        db, actor=restaurant_setup["kitchen_mgr"],
+        location_type=LocationType.KITCHEN, location_id=kitchen.id,
+        product_id=flour.id, quantity=Decimal("15"),  # 15 kg
+    )
+    db.flush()
+    cake = make_product(r.id, name="Chocolate Cake", kind=ProductKind.FINISHED_GOOD)
+    kt = auth_headers(client, "kitchen@test.com")
+    recipe = client.post(
+        "/v1/kitchen/recipes",
+        json={"product_id": cake.id, "yield_qty": 1,
+              "components": [{"component_product_id": flour.id,
+                              "quantity": 100, "unit": "GRAM"}]},
+        headers=kt,
+    )
+    assert recipe.status_code == 200, recipe.text
+    # Recipe read path must surface the product's stock_unit so the kitchen UI
+    # can convert 100 g → 0.1 kg against on-hand. Without it, 15 kg shows as 15 g.
+    component = recipe.json()["data"]["components"][0]
+    assert component["unit"] == "GRAM"
+    assert component["stock_unit"] == "KG"
+
+    listed = client.get("/v1/kitchen/recipes", headers=kt)
+    assert listed.status_code == 200, listed.text
+    listed_comp = next(
+        c for r in listed.json()["data"] if r["product_id"] == cake.id
+        for c in r["components"]
+        if c["component_product_id"] == flour.id
+    )
+    assert listed_comp["stock_unit"] == "KG"
+    assert listed_comp["unit"] == "GRAM"
+
+    resp = client.post("/v1/kitchen/production",
+                       json={"product_id": cake.id, "quantity": 10}, headers=kt)
+    assert resp.status_code == 200, resp.text
+    # 10 x 100 g = 1 kg off 15 kg -> 14 kg left (not 1000 kg demanded).
+    assert InventoryService.on_hand(
+        db, restaurant_id=r.id, location_type=LocationType.KITCHEN,
+        location_id=kitchen.id, product_id=flour.id,
+    ) == Decimal("14.000")
+
+
 def test_kitchen_production_without_a_recipe_is_refused(
     client, kitchen_ctx, make_product
 ):

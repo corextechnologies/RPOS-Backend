@@ -41,6 +41,12 @@ from app.models.menu import (  # noqa: F401
 from app.models.order import Order, OrderLine, OrderLineModifier  # noqa: F401
 from app.models.production_enums import ProductionLineRole  # noqa: F401
 from app.models.production import ProductionRun, ProductionRunLine  # noqa: F401
+from app.models.production_target import (  # noqa: F401
+    ProductionTarget,
+    ProductionTargetAllocation,
+    ProductionTargetLine,
+    ProductionTargetStatus,
+)
 from app.models.pos import (  # noqa: F401
     Device,
     DeviceProfile,

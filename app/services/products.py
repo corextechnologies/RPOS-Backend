@@ -36,6 +36,7 @@ class ProductService:
         sku: str | None,
         kind: ProductKind = ProductKind.RAW_MATERIAL,
         stock_unit: StockUnit = StockUnit.EACH,
+        units_per_pack: int | None = None,
     ) -> Product:
         if actor.restaurant_id is None:
             raise ConflictError(
@@ -63,6 +64,7 @@ class ProductService:
             sku=normalized_sku,
             kind=kind,
             stock_unit=stock_unit,
+            units_per_pack=units_per_pack,
             # Never set here — Admin prices it later.
             cost_price=None,
         )
@@ -80,6 +82,7 @@ class ProductService:
                 "sku": product.sku,
                 "kind": kind.value,
                 "stock_unit": product.stock_unit.value,
+                "units_per_pack": product.units_per_pack,
             },
         )
         db.commit()
@@ -96,6 +99,7 @@ class ProductService:
         sku: str | None = ...,
         kind: ProductKind | None = None,
         stock_unit: StockUnit | None = None,
+        units_per_pack: int | None = ...,
         allowed_kinds: frozenset[ProductKind] | None = None,
     ) -> Product:
         product = db.get(Product, product_id)
@@ -136,6 +140,10 @@ class ProductService:
         if stock_unit is not None:
             product.stock_unit = stock_unit
             payload["stock_unit"] = stock_unit.value
+
+        if units_per_pack is not ...:
+            product.units_per_pack = units_per_pack
+            payload["units_per_pack"] = product.units_per_pack
 
         AuditService.record(
             db,

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
+from app.schemas.quantity import Quantity
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -50,6 +52,8 @@ class ProductCreate(BaseModel):
     sku: str | None = Field(default=None, max_length=100)
     kind: ProductKind = ProductKind.RAW_MATERIAL
     stock_unit: StockUnit = StockUnit.EACH
+    #: Pack display helper: 1 pack = N × stock_unit. Null/omit = no pack UI.
+    units_per_pack: int | None = Field(default=None, ge=1)
 
     @field_validator("kind")
     @classmethod
@@ -69,6 +73,8 @@ class ProductUpdate(BaseModel):
     sku: str | None = Field(default=None, max_length=100)
     kind: ProductKind | None = None
     stock_unit: StockUnit | None = None
+    #: Omit = unchanged; null = clear pack helper; integer ≥ 1 = set.
+    units_per_pack: int | None = Field(default=None, ge=1)
 
     @field_validator("kind")
     @classmethod
@@ -94,7 +100,7 @@ class ReorderLevelOut(BaseModel):
 
 class StockReceiveIn(BaseModel):
     product_id: int
-    quantity: int = Field(gt=0)
+    quantity: Quantity = Field(gt=0)
     batch_code: str | None = Field(default=None, max_length=100)
     expiry_date: date | None = None
     notes: str | None = None
@@ -104,20 +110,31 @@ class StockReceiveIn(BaseModel):
 
 class StockAdjustIn(BaseModel):
     product_id: int
-    quantity_delta: int
+    quantity_delta: Quantity
     batch_code: str | None = Field(default=None, max_length=100)
     notes: str | None = Field(default=None, min_length=1)
 
 
 class StockWasteIn(BaseModel):
     product_id: int
-    quantity: int = Field(gt=0)
+    quantity: Quantity = Field(gt=0)
     movement_type: StockMovementType = StockMovementType.WASTE
     # Optional here (unlike Kitchen) so existing Phase 3 clients keep working.
     # Same shared enum — do not fork a warehouse-specific reason list.
     waste_reason: WasteReason | None = None
     batch_code: str | None = Field(default=None, max_length=100)
     notes: str | None = None
+
+
+class InventoryExpiryUpdate(BaseModel):
+    """Set or clear the expiry date on a single on-hand inventory row.
+
+    `expiry_date` is required-but-nullable: the client must send the key, with a
+    date to set it or `null` to clear it. This edits row metadata only — it never
+    changes quantity, so no stock movement is recorded.
+    """
+
+    expiry_date: date | None
 
 
 class WarehousePoCreate(BaseModel):
@@ -129,7 +146,7 @@ class InventoryItemOut(BaseModel):
     id: int
     product_id: int
     product: ProductPublicOut
-    quantity: int
+    quantity: Quantity
     batch_code: str
     expiry_date: date | None = None
     location_type: str
@@ -148,7 +165,7 @@ class WasteEventOut(BaseModel):
     id: int
     product_id: int
     product: WasteProductSnapshot
-    quantity: int
+    quantity: Quantity
     movement_type: str
     waste_reason: str | None = None
     batch_code: str

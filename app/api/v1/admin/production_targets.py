@@ -22,50 +22,21 @@ from app.models.production_target import (
 from app.models.user import User
 from app.schemas.production_target import (
     ProductionTargetCreate,
-    ProductionTargetOut,
-    ProductionTargetLineOut,
     ProductionTargetUpdate,
+    TargetAllocateRequest,
 )
 from app.services.notifications import NotificationService
+from app.services.production_targets import ProductionTargetService
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.ADMIN))])
 
 
 def _to_out(target: ProductionTarget) -> dict:
-    return ProductionTargetOut(
-        id=target.id,
-        kitchen_id=target.kitchen_id,
-        kitchen_name=target.kitchen.name,
-        target_date=target.target_date,
-        status=target.status,
-        note=target.note,
-        created_at=target.created_at,
-        lines=[
-            ProductionTargetLineOut(
-                id=line.id,
-                product_id=line.product_id,
-                product_name=line.product.name,
-                quantity=line.quantity,
-            )
-            for line in target.lines
-        ],
-    ).model_dump(mode="json")
+    return ProductionTargetService.out_dict(target)
 
 
 def _load_target(db: Session, target_id: int, restaurant_id: int) -> ProductionTarget:
-    target = db.execute(
-        select(ProductionTarget)
-        .where(ProductionTarget.id == target_id,
-               ProductionTarget.restaurant_id == restaurant_id)
-        .options(
-            selectinload(ProductionTarget.lines)
-            .selectinload(ProductionTargetLine.product),
-            selectinload(ProductionTarget.kitchen),
-        )
-    ).scalar_one_or_none()
-    if target is None:
-        raise NotFoundError("Production target not found.")
-    return target
+    return ProductionTargetService.load(db, target_id, restaurant_id)
 
 
 @router.post("/production-targets")
@@ -225,3 +196,14 @@ def delete_production_target(
     db.delete(target)
     db.commit()
     return ok(None)
+
+
+@router.post("/production-targets/{target_id}/allocate")
+def allocate_production_target(
+    target_id: int,
+    body: TargetAllocateRequest,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    target = ProductionTargetService.allocate(db, current, target_id, body)
+    return ok(_to_out(target))

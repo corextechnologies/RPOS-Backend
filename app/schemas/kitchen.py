@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
+from app.schemas.quantity import Quantity
 
 from pydantic import BaseModel, Field
 
@@ -11,7 +13,7 @@ from app.schemas.request import RequestLineCreate
 
 class KitchenWasteIn(BaseModel):
     product_id: int
-    quantity: int = Field(gt=0)
+    quantity: Quantity = Field(gt=0)
     waste_reason: WasteReason
     movement_type: StockMovementType = StockMovementType.WASTE
     batch_code: str | None = Field(default=None, max_length=100)
@@ -30,7 +32,7 @@ class DispatchNotificationLineIn(BaseModel):
     product_id: int
     # How many finished units are ready to hand to Admin. Must be > 0 and, at
     # create time, no more than the kitchen's on-hand finished-goods stock.
-    quantity: int = Field(gt=0)
+    quantity: Quantity = Field(gt=0)
 
 
 class DispatchNotificationCreate(BaseModel):
@@ -42,7 +44,7 @@ class DispatchNotificationCreate(BaseModel):
 
 class StockCountLineIn(BaseModel):
     product_id: int
-    counted_quantity: int = Field(ge=0)
+    counted_quantity: Quantity = Field(ge=0)
     batch_code: str | None = Field(default=None, max_length=100)
 
 
@@ -56,9 +58,9 @@ class StockCountLineOut(BaseModel):
     product_id: int
     product_name: str | None = None
     batch_code: str
-    counted_quantity: int
-    system_quantity: int
-    variance: int
+    counted_quantity: Quantity
+    system_quantity: Quantity
+    variance: Quantity
 
     model_config = {"from_attributes": True}
 
@@ -83,6 +85,6 @@ class ExpiryLabelOut(BaseModel):
     sku: str | None = None
     batch_code: str
     expiry_date: date | None = None
-    quantity: int
+    quantity: Quantity
     location_type: str
     location_id: int
