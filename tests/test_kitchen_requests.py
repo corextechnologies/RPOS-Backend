@@ -273,7 +273,7 @@ def test_kitchen_produces_and_allocates_for_branch(
     # ALLOCATED is the one that moves stock out of the kitchen.
     resp = client.patch(
         f"/v1/kitchen/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.ALLOCATED.value},
+        json={"to_status": BranchToAdminStatus.DISPATCHED.value},
         headers=kitchen_headers,
     )
     assert resp.status_code == 200, resp.text
@@ -315,7 +315,7 @@ def test_allocating_more_than_the_kitchen_holds_is_rejected(
 
     resp = client.patch(
         f"/v1/kitchen/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.ALLOCATED.value},
+        json={"to_status": BranchToAdminStatus.DISPATCHED.value},
         headers=kitchen_headers,
     )
     assert resp.status_code == 409

@@ -112,6 +112,7 @@ def create_production_target(
 def list_production_targets(
     kitchen_id: int | None = Query(None),
     target_date: date | None = Query(None, alias="date"),
+    status: ProductionTargetStatus | None = Query(None),
     current: User = Depends(require_role(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
@@ -129,6 +130,8 @@ def list_production_targets(
         stmt = stmt.where(ProductionTarget.kitchen_id == kitchen_id)
     if target_date is not None:
         stmt = stmt.where(ProductionTarget.target_date == target_date)
+    if status is not None:
+        stmt = stmt.where(ProductionTarget.status == status)
 
     rows = db.execute(stmt).scalars().all()
     return ok([_to_out(t) for t in rows])

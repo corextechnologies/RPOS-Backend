@@ -150,14 +150,13 @@ def test_full_lifecycle_credits_branch_inventory(client, branch_ctx, db):
     # 2. Admin approves + forwards to the branch-named kitchen (no re-selection).
     _transition(admin_headers, "APPROVED", "admin")
     _transition(admin_headers, "FORWARDED_TO_KITCHEN", "admin")
-    # 3. Kitchen produces + allocates (allocation dispatches kitchen stock).
+    # 3. Kitchen produces + dispatches (dispatch debits kitchen stock).
     _transition(kitchen_headers, "IN_PRODUCTION", "kitchen")
     _transition(kitchen_headers, "PRODUCED", "kitchen")
-    _transition(kitchen_headers, "ALLOCATED", "kitchen")
-    # 4. Branch confirms receipt via the branch portal.
-    received = client.patch(
-        f"/v1/branch/requests/{rid}/status",
-        json={"to_status": "RECEIVED"},
+    _transition(kitchen_headers, "DISPATCHED", "kitchen")
+    # 4. Branch confirms receipt via the dedicated receive endpoint.
+    received = client.post(
+        f"/v1/branch/requests/{rid}/receive",
         headers=branch_headers,
     )
     assert received.status_code == 200, received.text

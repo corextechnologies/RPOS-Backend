@@ -74,9 +74,9 @@ ALLOWED_TRANSITIONS: dict[RequestType, dict[str, set[str]]] = {
             BranchToAdminStatus.PRODUCED.value,
         },
         BranchToAdminStatus.PRODUCED.value: {
-            BranchToAdminStatus.ALLOCATED.value,
+            BranchToAdminStatus.DISPATCHED.value,
         },
-        BranchToAdminStatus.ALLOCATED.value: {
+        BranchToAdminStatus.DISPATCHED.value: {
             BranchToAdminStatus.RECEIVED.value,
         },
         BranchToAdminStatus.REJECTED.value: set(),
@@ -150,7 +150,7 @@ TRANSITION_ROLES: dict[RequestType, dict[str, set[UserRole]]] = {
         BranchToAdminStatus.FORWARDED_TO_KITCHEN.value: {UserRole.ADMIN},
         BranchToAdminStatus.IN_PRODUCTION.value: {UserRole.KITCHEN_MANAGER},
         BranchToAdminStatus.PRODUCED.value: {UserRole.KITCHEN_MANAGER},
-        BranchToAdminStatus.ALLOCATED.value: {UserRole.KITCHEN_MANAGER},
+        BranchToAdminStatus.DISPATCHED.value: {UserRole.KITCHEN_MANAGER},
         BranchToAdminStatus.RECEIVED.value: {UserRole.BRANCH_MANAGER},
     },
     RequestType.KITCHEN_TO_ADMIN: {

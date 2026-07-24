@@ -101,7 +101,7 @@ customers. Every caller must have a `branch_id`.
 
 - `POST /v1/branch/users` · `GET /v1/branch/users` — create/list branch sub-staff (position-based, `created_by` subtree) + credential email
 - `POST /v1/branch/requests` — request product from Admin, **naming the target kitchen** (`kitchen_id`)
-- `GET  /v1/branch/requests` · `GET .../{id}` · `PATCH .../{id}/status` — list own / detail / confirm receipt (`ALLOCATED → RECEIVED`)
+- `GET  /v1/branch/requests` · `GET .../{id}` · `POST .../{id}/receive` — list own / detail / confirm receipt (`DISPATCHED → RECEIVED`)
 - `GET  /v1/branch/inventory` · `/inventory/near-expiry` — on-hand + near-expiry (never exposes `cost_price`)
 - `POST /v1/branch/stock/waste` — waste·expiry (`WASTE`/`EXPIRY`, optional `waste_reason`)
 - `POST /v1/branch/orders` · `GET /v1/branch/orders` — take/list customer orders *(also BRANCH_STAFF)*
@@ -301,7 +301,7 @@ Admin:
   Admin, shared expiry-label service (`app/services/labels.py`), and the
   warehouse→kitchen request loop. Completes Phase 6B's stock side effects:
   `KITCHEN_TO_WAREHOUSE → RECEIVED` credits the kitchen and
-  `BRANCH_TO_ADMIN → ALLOCATED` decrements it. Requests are now routed to a
+  `BRANCH_TO_ADMIN → DISPATCHED` decrements it. Requests are now routed to a
   specific kitchen, so multi-kitchen restaurants stay isolated.
 - **Phase 8 — Billing core:** `Invoice` model, billing cycle engine
   (`app/services/billing.py`), CLI job (`python -m app.jobs.billing_cycle`),

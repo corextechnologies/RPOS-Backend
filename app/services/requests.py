@@ -240,12 +240,12 @@ def _warehouse_receives_po(
         )
 
 
-def _kitchen_allocates_to_branch(
+def _kitchen_dispatches_to_branch(
     db: Session, *, actor: User, request: Request, body: RequestTransition
 ) -> None:
-    """BRANCH_TO_ADMIN -> ALLOCATED: the producing kitchen's stock leaves.
+    """BRANCH_TO_ADMIN -> DISPATCHED: the producing kitchen's stock leaves.
 
-    The branch is credited later, on RECEIVED (Phase 5).
+    The branch is credited later, on RECEIVED.
     """
     kitchen_id = _require_location(
         request,
@@ -294,8 +294,8 @@ _INVENTORY_SIDE_EFFECTS = {
     ): _kitchen_receives_from_warehouse,
     (
         RequestType.BRANCH_TO_ADMIN,
-        BranchToAdminStatus.ALLOCATED.value,
-    ): _kitchen_allocates_to_branch,
+        BranchToAdminStatus.DISPATCHED.value,
+    ): _kitchen_dispatches_to_branch,
     (
         RequestType.BRANCH_TO_ADMIN,
         BranchToAdminStatus.RECEIVED.value,

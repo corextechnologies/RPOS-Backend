@@ -75,7 +75,7 @@ def test_branch_request_happy_path(
     for status in (
         BranchToAdminStatus.IN_PRODUCTION.value,
         BranchToAdminStatus.PRODUCED.value,
-        BranchToAdminStatus.ALLOCATED.value,
+        BranchToAdminStatus.DISPATCHED.value,
     ):
         resp = client.patch(
             f"/v1/requests/{request_id}/status",

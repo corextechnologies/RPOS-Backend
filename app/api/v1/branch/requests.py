@@ -1,21 +1,22 @@
 """Branch request portal — thin wrappers over the shared RequestService.
 
 A branch only ever touches the BRANCH_TO_ADMIN workflow: it creates a request
-(naming the target kitchen) and confirms receipt (ALLOCATED -> RECEIVED). Every
-intermediate step is Admin/Kitchen and is enforced by the shared engine.
+(naming the target kitchen), tracks it through all statuses, and confirms
+receipt (DISPATCHED -> RECEIVED) via a dedicated endpoint. Every intermediate
+step is Admin/Kitchen and is enforced by the shared engine.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError
 from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.auth import require_role
 from app.deps.rbac import require_actor_branch_id
 from app.models.enums import UserRole
-from app.models.request_enums import LocationType, RequestType
+from app.models.request_enums import BranchToAdminStatus, LocationType, RequestType
 from app.models.user import User
 from app.schemas.branch import BranchRequestCreate
 from app.schemas.request import (
@@ -102,5 +103,30 @@ def transition_branch_request(
 ):
     request = RequestService.get_request(db, current, request_id)
     _assert_branch_request_type(request)
+    updated = RequestService.transition(db, current, request_id, body)
+    return ok(RequestService.to_out(updated).model_dump(mode="json"))
+
+
+@router.post("/{request_id}/receive")
+def receive_branch_request(
+    request_id: int,
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    """Confirm receipt of a DISPATCHED branch request.
+
+    Only the originating branch may receive it.
+    """
+    branch_id = require_actor_branch_id(current)
+    request = RequestService.get_request(db, current, request_id)
+    _assert_branch_request_type(request)
+    if request.source_location_id != branch_id:
+        raise NotFoundError("Request not found.")
+    if request.status != BranchToAdminStatus.DISPATCHED.value:
+        raise ConflictError(
+            "Only a dispatched request can be received.",
+            code="invalid_transition",
+        )
+    body = RequestTransition(to_status=BranchToAdminStatus.RECEIVED.value)
     updated = RequestService.transition(db, current, request_id, body)
     return ok(RequestService.to_out(updated).model_dump(mode="json"))

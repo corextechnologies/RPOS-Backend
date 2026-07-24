@@ -14,7 +14,7 @@ _FORWARDED_STATUSES = [
     BranchToAdminStatus.FORWARDED_TO_KITCHEN.value,
     BranchToAdminStatus.IN_PRODUCTION.value,
     BranchToAdminStatus.PRODUCED.value,
-    BranchToAdminStatus.ALLOCATED.value,
+    BranchToAdminStatus.DISPATCHED.value,
     BranchToAdminStatus.RECEIVED.value,
 ]
 

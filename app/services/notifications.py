@@ -200,7 +200,7 @@ class NotificationService:
                     )
                 )
             elif to_status in {
-                BranchToAdminStatus.ALLOCATED.value,
+                BranchToAdminStatus.DISPATCHED.value,
                 BranchToAdminStatus.RECEIVED.value,
             }:
                 add_requester()
