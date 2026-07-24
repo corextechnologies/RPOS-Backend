@@ -19,6 +19,7 @@ from app.models.enums import UserRole
 from app.models.request_enums import LocationType
 from app.models.user import User
 from app.schemas.admin import ProductAdminOut
+from app.schemas.quantity import Quantity
 from app.services.inventory import InventoryService
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.ADMIN))])
@@ -28,11 +29,13 @@ class AdminInventoryItemOut(BaseModel):
     id: int
     product_id: int
     product: ProductAdminOut
-    quantity: int
+    quantity: Quantity
     batch_code: str
     expiry_date: date | None = None
     location_type: str
     location_id: int
+
+    model_config = {"from_attributes": True}
 
 
 @router.get("/inventory")
