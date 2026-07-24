@@ -1,12 +1,13 @@
 """Kitchen product catalogue, recipes and recipe-driven production."""
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
-from app.schemas.quantity import Quantity
 
 from pydantic import BaseModel, Field
 
 from app.models.recipe import StockUnit
+from app.schemas.quantity import Quantity
 
 
 class KitchenProductCreate(BaseModel):
@@ -81,4 +82,5 @@ class KitchenProduceIn(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
     batch_code: str | None = Field(default=None, max_length=100)
+    expiry_date: date | None = None
     note: str | None = Field(default=None, max_length=500)

@@ -7,7 +7,7 @@ short, nothing persists.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -68,7 +68,7 @@ class ProductionService:
             occurred_at=occurred_at,
             note=body.note,
             inputs=[(l.product_id, (l.batch_code or "").strip(), l.quantity) for l in inputs],
-            outputs=[(l.product_id, (l.batch_code or "").strip(), l.quantity) for l in outputs],
+            outputs=[(l.product_id, (l.batch_code or "").strip(), l.quantity, l.expiry_date) for l in outputs],
             recipe_id=None,
         )
 
@@ -145,7 +145,7 @@ class ProductionService:
             occurred_at=datetime.now(timezone.utc),
             note=body.note,
             inputs=consumed,
-            outputs=[(product.id, (body.batch_code or "").strip(), batches * yield_qty)],
+            outputs=[(product.id, (body.batch_code or "").strip(), batches * yield_qty, body.expiry_date)],
             recipe_id=recipe.id,
         )
 
@@ -159,7 +159,7 @@ class ProductionService:
         occurred_at: datetime,
         note: str | None,
         inputs: list[tuple[int, str, int]],
-        outputs: list[tuple[int, str, int]],
+        outputs: list[tuple[int, str, int, date | None]],
         recipe_id: int | None,
     ) -> ProductionRun:
         """The shared body: consume inputs, credit outputs, one ledger, one txn."""
@@ -176,20 +176,20 @@ class ProductionService:
         try:
             db.add(run)
             db.flush()
-            for role, lines in (
-                (ProductionLineRole.INPUT, inputs),
-                (ProductionLineRole.OUTPUT, outputs),
-            ):
-                for product_id, batch, qty in lines:
-                    db.add(
-                        ProductionRunLine(
-                            run_id=run.id,
-                            product_id=product_id,
-                            role=role,
-                            quantity=qty,
-                            batch_code=batch,
-                        )
+            for product_id, batch, qty in inputs:
+                db.add(
+                    ProductionRunLine(
+                        run_id=run.id, product_id=product_id,
+                        role=ProductionLineRole.INPUT, quantity=qty, batch_code=batch,
                     )
+                )
+            for product_id, batch, qty, _exp in outputs:
+                db.add(
+                    ProductionRunLine(
+                        run_id=run.id, product_id=product_id,
+                        role=ProductionLineRole.OUTPUT, quantity=qty, batch_code=batch,
+                    )
+                )
 
             # Consume inputs FIRST, so a short input fails before we credit any
             # output — otherwise a failed run could mint stock from nothing.
@@ -243,7 +243,7 @@ class ProductionService:
                         batch_code=batch,
                     ) from exc
 
-            for (pid, batch), qty in sorted(ProductionService._coalesce_raw(outputs).items()):
+            for (pid, batch, exp), qty in sorted(ProductionService._coalesce_outputs(outputs).items()):
                 InventoryService.receive_stock(
                     db,
                     actor=actor,
@@ -252,6 +252,7 @@ class ProductionService:
                     product_id=pid,
                     quantity=qty,
                     batch_code=batch or None,
+                    expiry_date=exp,
                     notes=f"{label} run #{run.id} (output)",
                 )
 
@@ -291,6 +292,17 @@ class ProductionService:
         totals: dict[tuple[int, str], int] = {}
         for product_id, batch, qty in lines:
             key = (product_id, batch)
+            totals[key] = totals.get(key, 0) + qty
+        return totals
+
+    @staticmethod
+    def _coalesce_outputs(
+        lines: list[tuple[int, str, int, date | None]],
+    ) -> dict[tuple[int, str, date | None], int]:
+        """Total quantity per (product_id, batch_code, expiry_date) for outputs."""
+        totals: dict[tuple[int, str, date | None], int] = {}
+        for product_id, batch, qty, expiry in lines:
+            key = (product_id, batch, expiry)
             totals[key] = totals.get(key, 0) + qty
         return totals
 

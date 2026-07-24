@@ -13,7 +13,6 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,16 +54,10 @@ class InventoryItem(Base, PKMixin, TimestampMixin):
     """Current on-hand quantity for a product at a location (optionally batched)."""
 
     __tablename__ = "inventory_items"
-    __table_args__ = (
-        UniqueConstraint(
-            "restaurant_id",
-            "location_type",
-            "location_id",
-            "product_id",
-            "batch_code",
-            name="uq_inventory_item_location_product_batch",
-        ),
-    )
+    # Unique index uq_inventory_item_loc_prod_batch_expiry enforced at the DB
+    # level (migration 0027). Uses COALESCE(expiry_date, '1970-01-01') so that
+    # NULL expiry dates are treated as equal and merge into one row.
+    __table_args__: tuple = ()
 
     restaurant_id: Mapped[int] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True

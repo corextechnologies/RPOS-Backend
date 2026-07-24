@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -86,6 +86,9 @@ _LOCATION_MANAGER = {
     LocationType.KITCHEN: (UserRole.KITCHEN_MANAGER, User.kitchen_id),
     LocationType.WAREHOUSE: (UserRole.WAREHOUSE_MANAGER, User.warehouse_id),
 }
+
+
+_UNSET = object()
 
 
 class InventoryService:
@@ -202,6 +205,7 @@ class InventoryService:
         product_id: int,
         quantity: int,
         batch_code: str | None = None,
+        expiry_date: date | None | object = _UNSET,
         request_id: int | None = None,
         notes: str | None = None,
     ) -> InventoryItem:
@@ -219,6 +223,7 @@ class InventoryService:
             quantity_delta=-quantity,
             movement_type=StockMovementType.DISPATCH,
             batch_code=batch_code,
+            expiry_date=expiry_date,
             notes=notes,
             request_id=request_id,
             allow_create=False,
@@ -319,6 +324,7 @@ class InventoryService:
                 product_id=product_id,
                 quantity=take,
                 batch_code=row.batch_code or None,
+                expiry_date=row.expiry_date,
                 request_id=request_id,
                 notes=notes,
             )
@@ -487,7 +493,7 @@ class InventoryService:
         quantity_delta: int,
         movement_type: StockMovementType,
         batch_code: str | None = None,
-        expiry_date: date | None = None,
+        expiry_date: date | None | object = _UNSET,
         notes: str | None = None,
         request_id: int | None = None,
         waste_reason: WasteReason | None = None,
@@ -504,6 +510,19 @@ class InventoryService:
         # single write path is the one place rounding policy is applied.
         quantity_delta = round_qty(quantity_delta)
         normalized_batch = (batch_code or "").strip()
+
+        # Resolve the expiry_date for lookup and creation:
+        # - _UNSET (default): no expiry filter on lookup, no expiry on create
+        # - None/date: filter by that value; set on create when set_expiry_on_create
+        lookup_expiry = expiry_date  # passed through to _get_item as-is (_UNSET = no filter)
+        create_expiry = (
+            expiry_date if set_expiry_on_create and expiry_date is not _UNSET
+            else None
+        )
+        # When creating, we know the expiry, so look up by it too.
+        if allow_create and set_expiry_on_create:
+            lookup_expiry = create_expiry
+
         # Lock the on-hand row for the rest of this transaction so a concurrent
         # order at the same branch can't read the same quantity and oversell. The
         # lock is held until the caller commits/rolls back — which is exactly the
@@ -515,6 +534,7 @@ class InventoryService:
             location_id=location_id,
             product_id=product_id,
             batch_code=normalized_batch,
+            expiry_date=lookup_expiry,
             for_update=True,
         )
 
@@ -523,24 +543,36 @@ class InventoryService:
                 raise NotFoundError("Inventory item not found.")
             # FOR UPDATE cannot lock a row that doesn't exist yet, so two
             # concurrent receipts could both INSERT and the loser would hit the
-            # unique constraint. Upsert instead: on_conflict_do_nothing is a
-            # no-op for the loser, then we re-select FOR UPDATE and block on the
+            # unique index. Upsert instead: on_conflict_do_nothing is a no-op
+            # for the loser, then we re-select FOR UPDATE and block on the
             # winner's row.
-            db.execute(
-                pg_insert(InventoryItem)
-                .values(
-                    restaurant_id=restaurant_id,
-                    location_type=location_type,
-                    location_id=location_id,
-                    product_id=product_id,
-                    quantity=0,
-                    batch_code=normalized_batch,
-                    expiry_date=expiry_date if set_expiry_on_create else None,
-                )
-                .on_conflict_do_nothing(
-                    constraint="uq_inventory_item_location_product_batch"
-                )
+            #
+            # Two partial unique indexes enforce the constraint (see migration
+            # 0027): one for rows WITH expiry_date, one for rows WITHOUT.
+            _base_cols = [
+                "restaurant_id", "location_type", "location_id",
+                "product_id", "batch_code",
+            ]
+            insert_stmt = pg_insert(InventoryItem).values(
+                restaurant_id=restaurant_id,
+                location_type=location_type,
+                location_id=location_id,
+                product_id=product_id,
+                quantity=0,
+                batch_code=normalized_batch,
+                expiry_date=create_expiry,
             )
+            if create_expiry is None:
+                insert_stmt = insert_stmt.on_conflict_do_nothing(
+                    index_elements=_base_cols,
+                    index_where=text("expiry_date IS NULL"),
+                )
+            else:
+                insert_stmt = insert_stmt.on_conflict_do_nothing(
+                    index_elements=_base_cols + ["expiry_date"],
+                    index_where=text("expiry_date IS NOT NULL"),
+                )
+            db.execute(insert_stmt)
             db.flush()
             item = InventoryService._get_item(
                 db,
@@ -549,6 +581,7 @@ class InventoryService:
                 location_id=location_id,
                 product_id=product_id,
                 batch_code=normalized_batch,
+                expiry_date=create_expiry,
                 for_update=True,
             )
             if item is None:  # pragma: no cover - row exists after the upsert
@@ -556,10 +589,6 @@ class InventoryService:
                     "Failed to create inventory item.",
                     code="inventory_create_failed",
                 )
-            if set_expiry_on_create and expiry_date is not None:
-                item.expiry_date = expiry_date
-        elif set_expiry_on_create and expiry_date is not None:
-            item.expiry_date = expiry_date
 
         new_qty = item.quantity + quantity_delta
         if new_qty < 0:
@@ -785,6 +814,7 @@ class InventoryService:
         location_id: int,
         product_id: int,
         batch_code: str,
+        expiry_date: date | None | object = _UNSET,
         for_update: bool = False,
     ) -> InventoryItem | None:
         stmt = select(InventoryItem).where(
@@ -794,6 +824,11 @@ class InventoryService:
             InventoryItem.product_id == product_id,
             InventoryItem.batch_code == batch_code,
         )
+        if expiry_date is not _UNSET:
+            if expiry_date is None:
+                stmt = stmt.where(InventoryItem.expiry_date.is_(None))
+            else:
+                stmt = stmt.where(InventoryItem.expiry_date == expiry_date)
         if for_update:
             stmt = stmt.with_for_update()
         return db.execute(stmt).scalar_one_or_none()

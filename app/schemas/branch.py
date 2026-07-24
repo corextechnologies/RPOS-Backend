@@ -1,7 +1,7 @@
 """Pydantic schemas for the Phase 5 Branch portal."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from app.schemas.quantity import Quantity
 
@@ -120,6 +120,7 @@ class ProductionRunLineIn(BaseModel):
     role: ProductionLineRole
     quantity: Quantity = Field(gt=0)
     batch_code: str | None = Field(default=None, max_length=100)
+    expiry_date: date | None = None
 
 
 class ProductionRunCreate(BaseModel):
