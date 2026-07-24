@@ -1,9 +1,9 @@
 """Lifecycle + stock movement for Admin → Kitchen → Branch production targets.
 
 The routers stay thin: this service owns the state machine, the inventory moves
-(credit finished goods on complete, debit the kitchen on dispatch, credit the
-branch on receive) and the branch-deliveries integration. Stock is moved with
-the same InventoryService primitives the KITCHEN_TO_ADMIN dispatch flow uses.
+(debit the kitchen on dispatch, credit the branch on receive) and the
+branch-deliveries integration. Finished-goods stock is credited once, at the
+point of production (POST /kitchen/production), not at target completion.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.enums import UserRole
 from app.models.location import Branch, Kitchen
-from app.models.product import Product, ProductKind
+from app.models.product import Product
 from app.models.production_target import (
     ProductionTarget,
     ProductionTargetAllocation,
@@ -155,11 +155,11 @@ class ProductionTargetService:
     def complete(
         db: Session, actor: User, target_id: int, kitchen_id: int
     ) -> ProductionTarget:
-        """IN_PRODUCTION -> COMPLETED: credit finished goods, notify Admin.
+        """IN_PRODUCTION -> COMPLETED: flip status, notify Admin.
 
-        Every line must be produced first. Made lines (FINISHED_GOOD) are credited
-        to the kitchen's stock; resale lines are already held there and raw
-        materials aren't produced, so neither is credited.
+        Every line must be produced first. Stock was already credited when the
+        kitchen ran POST /kitchen/production (the "Make" step) — crediting here
+        too would double-count the finished goods.
         """
         target = ProductionTargetService.load(
             db, target_id, actor.restaurant_id, kitchen_id
@@ -174,18 +174,6 @@ class ProductionTargetService:
                 "Every line must be marked produced before completing.",
                 code="target_lines_not_produced",
             )
-
-        for line in target.lines:
-            if line.product.kind is ProductKind.FINISHED_GOOD:
-                InventoryService.receive_stock(
-                    db,
-                    actor=actor,
-                    location_type=LocationType.KITCHEN,
-                    location_id=target.kitchen_id,
-                    product_id=line.product_id,
-                    quantity=line.quantity,
-                    notes=f"Produced for target #{target.id}",
-                )
 
         target.status = ProductionTargetStatus.COMPLETED
 
