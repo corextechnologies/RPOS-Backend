@@ -1,11 +1,12 @@
-"""Kitchen product catalogue, recipes and recipe-driven production."""
+"""Kitchen product catalogue, recipes, recipe-driven production, and staff."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from app.models.enums import UserRole
 from app.models.recipe import StockUnit
 from app.schemas.quantity import Quantity
 
@@ -84,3 +85,31 @@ class KitchenProduceIn(BaseModel):
     batch_code: str | None = Field(default=None, max_length=100)
     expiry_date: date | None = None
     note: str | None = Field(default=None, max_length=500)
+
+
+# --- Kitchen sub-staff schemas ---
+
+
+class KitchenStaffCreate(BaseModel):
+    email: str = Field(max_length=255)
+    full_name: str | None = Field(default=None, max_length=255)
+
+
+class KitchenStaffCreateResult(BaseModel):
+    user_id: int
+    email: str
+    role: UserRole
+    kitchen_id: int
+    credential_email_sent: bool
+
+
+class KitchenStaffOut(BaseModel):
+    id: int
+    email: str
+    full_name: str | None = None
+    role: UserRole
+    is_active: bool
+    kitchen_id: int | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

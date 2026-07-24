@@ -30,9 +30,14 @@ BRANCH_CREATABLE_ROLES = {
 # stays in the Postgres user_role type after the role was retired. A bare
 # `role != ADMIN` filter would try to map that string back to UserRole and
 # raise LookupError, 500-ing the whole list.
+KITCHEN_CREATABLE_ROLES = {
+    UserRole.KITCHEN_STAFF,
+}
+
 EMPLOYEE_ROSTER_ROLES = ADMIN_CREATABLE_ROLES | {
     UserRole.BRANCH_STAFF,
     UserRole.WAREHOUSE_STAFF,
+    UserRole.KITCHEN_STAFF,
 }
 
 _LOCATION_MODELS = {
@@ -40,6 +45,7 @@ _LOCATION_MODELS = {
     UserRole.KITCHEN_MANAGER: (Kitchen, "kitchen_id"),
     UserRole.WAREHOUSE_MANAGER: (Warehouse, "warehouse_id"),
     UserRole.BRANCH_STAFF: (Branch, "branch_id"),
+    UserRole.KITCHEN_STAFF: (Kitchen, "kitchen_id"),
 }
 
 # Roles that live at a warehouse and may read/operate warehouse-scoped data.
@@ -47,7 +53,7 @@ _LOCATION_MODELS = {
 WAREHOUSE_ROLES = {UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF}
 
 # Roles that live at a kitchen and may read kitchen-scoped data.
-KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER}
+KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER, UserRole.KITCHEN_STAFF}
 
 # Roles that live at a branch and may read branch-scoped data.
 BRANCH_ROLES = {UserRole.BRANCH_MANAGER, UserRole.BRANCH_STAFF}
@@ -97,6 +103,8 @@ def validate_manager_location(
         raise ConflictError("Warehouse manager must only set warehouse_id.")
     if role == UserRole.BRANCH_STAFF and (kitchen_id or warehouse_id):
         raise ConflictError("Branch staff must only set branch_id.")
+    if role == UserRole.KITCHEN_STAFF and (branch_id or warehouse_id):
+        raise ConflictError("Kitchen staff must only set kitchen_id.")
 
 
 def assert_warehouse_manager_can_create_staff(actor: User) -> None:
@@ -149,6 +157,17 @@ def assert_branch_manager_can_create_staff(actor: User) -> None:
 def assert_branch_can_create_role(target_role: UserRole) -> None:
     if target_role not in BRANCH_CREATABLE_ROLES:
         raise ForbiddenError("Branch managers may only create branch staff.")
+
+
+def assert_kitchen_manager_can_create_staff(actor: User) -> None:
+    """Kitchen managers may only create kitchen sub-staff under themselves."""
+    if actor.role != UserRole.KITCHEN_MANAGER:
+        raise ForbiddenError("Only kitchen managers can create kitchen staff.")
+    if actor.kitchen_id is None:
+        raise ConflictError(
+            "Kitchen manager must be assigned to a kitchen.",
+            code="missing_kitchen_assignment",
+        )
 
 
 def require_actor_kitchen_id(actor: User) -> int:

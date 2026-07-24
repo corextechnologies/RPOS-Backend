@@ -23,6 +23,7 @@ class UserRole(str, enum.Enum):
     # distinguishable in the Admin roster and warehouse portal — operationally
     # they share the manager's warehouse access, minus staff management.
     WAREHOUSE_STAFF = "WAREHOUSE_STAFF"
+    KITCHEN_STAFF = "KITCHEN_STAFF"
 
     @property
     def is_manager(self) -> bool:
