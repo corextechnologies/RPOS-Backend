@@ -9,10 +9,12 @@ from sqlalchemy import (
     Date,
     Enum as SAEnum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -54,10 +56,36 @@ class InventoryItem(Base, PKMixin, TimestampMixin):
     """Current on-hand quantity for a product at a location (optionally batched)."""
 
     __tablename__ = "inventory_items"
-    # Unique index uq_inventory_item_loc_prod_batch_expiry enforced at the DB
-    # level (migration 0027). Uses COALESCE(expiry_date, '1970-01-01') so that
-    # NULL expiry dates are treated as equal and merge into one row.
-    __table_args__: tuple = ()
+    # Two partial unique indexes (also created by migration 0027) treat NULL
+    # expiry_date values as equal: one keyed WITH expiry_date for dated rows,
+    # one WITHOUT for undated rows. Postgres' default treats every NULL as
+    # distinct, so a single constraint over expiry_date would let duplicate
+    # undated rows pile up. Declared here (not just in the migration) so a
+    # schema built straight from the models — e.g. the test suite's
+    # create_all — carries the same ON CONFLICT targets the service upserts on.
+    __table_args__ = (
+        Index(
+            "uq_inv_batch_expiry_notnull",
+            "restaurant_id",
+            "location_type",
+            "location_id",
+            "product_id",
+            "batch_code",
+            "expiry_date",
+            unique=True,
+            postgresql_where=text("expiry_date IS NOT NULL"),
+        ),
+        Index(
+            "uq_inv_batch_expiry_null",
+            "restaurant_id",
+            "location_type",
+            "location_id",
+            "product_id",
+            "batch_code",
+            unique=True,
+            postgresql_where=text("expiry_date IS NULL"),
+        ),
+    )
 
     restaurant_id: Mapped[int] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
