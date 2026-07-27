@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Iterable
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,35 @@ def sort_lock_order(product_ids: Iterable[int]) -> list[int]:
     deduction extends the key to (product_id, batch_code).
     """
     return sorted(set(product_ids))
+
+def _dispatchable_conditions(
+    *,
+    restaurant_id: int,
+    location_type: LocationType,
+    location_id: int,
+    product_id: int,
+    today: date,
+):
+    """WHERE clauses selecting the rows a dispatch may draw from.
+
+    The single definition of "dispatchable stock": on hand at this
+    product/location, and not past its expiry as of `today`. Both the FEFO
+    dispatch that actually debits and the read-only availability check below are
+    built on this, so an early gate (e.g. the kitchen's PRODUCED step) can never
+    disagree with the debit that follows it.
+    """
+    return (
+        InventoryItem.restaurant_id == restaurant_id,
+        InventoryItem.location_type == location_type,
+        InventoryItem.location_id == location_id,
+        InventoryItem.product_id == product_id,
+        InventoryItem.quantity > 0,
+        or_(
+            InventoryItem.expiry_date.is_(None),
+            InventoryItem.expiry_date >= today,
+        ),
+    )
+
 
 def insufficient_stock_error(
     *,
@@ -269,18 +298,22 @@ class InventoryService:
         InventoryService._validate_product(db, restaurant_id, product_id)
 
         today = as_of or date.today()
-        # Lock every on-hand batch row for this product/location up front, in the
-        # same FEFO order we consume them, so a concurrent dispatch of the same
+        # Lock every dispatchable batch row for this product/location up front, in
+        # the same FEFO order we consume them, so a concurrent dispatch of the same
         # product serializes behind us instead of reading the same on-hand twice.
-        rows = (
+        # The row filter is _dispatchable_conditions — shared with
+        # available_for_dispatch, so a pre-flight gate and this debit always agree.
+        usable = (
             db.execute(
                 select(InventoryItem)
                 .where(
-                    InventoryItem.restaurant_id == restaurant_id,
-                    InventoryItem.location_type == location_type,
-                    InventoryItem.location_id == location_id,
-                    InventoryItem.product_id == product_id,
-                    InventoryItem.quantity > 0,
+                    *_dispatchable_conditions(
+                        restaurant_id=restaurant_id,
+                        location_type=location_type,
+                        location_id=location_id,
+                        product_id=product_id,
+                        today=today,
+                    )
                 )
                 .order_by(
                     # Dated batches (expiry NOT NULL) before undated ones, then
@@ -295,7 +328,6 @@ class InventoryService:
             .all()
         )
 
-        usable = [r for r in rows if r.expiry_date is None or r.expiry_date >= today]
         available = sum(r.quantity for r in usable)
         if available < quantity:
             product = db.get(Product, product_id)
@@ -657,6 +689,41 @@ class InventoryService:
         return item
 
     @staticmethod
+    def available_for_dispatch(
+        db: Session,
+        *,
+        restaurant_id: int,
+        location_type: LocationType,
+        location_id: int,
+        product_id: int,
+        as_of: date | None = None,
+    ) -> Decimal:
+        """How much of a product `apply_dispatch_fefo` could ship right now.
+
+        Read-only and unlocked — for pre-flight gates that must agree with the
+        dispatch without moving stock or holding row locks through an unrelated
+        transition (e.g. the kitchen marking a branch refill PRODUCED).
+
+        Use this, NOT `on_hand`, whenever the number is compared against a
+        quantity that will later be dispatched: `on_hand` reports everything
+        physically present including expired batches, so it over-reports what is
+        shippable and a gate built on it would pass requests that dispatch then
+        rejects.
+        """
+        total = db.execute(
+            select(func.coalesce(func.sum(InventoryItem.quantity), 0)).where(
+                *_dispatchable_conditions(
+                    restaurant_id=restaurant_id,
+                    location_type=location_type,
+                    location_id=location_id,
+                    product_id=product_id,
+                    today=as_of or date.today(),
+                )
+            )
+        ).scalar_one()
+        return round_qty(total)
+
+    @staticmethod
     def on_hand(
         db: Session,
         *,
@@ -667,8 +734,8 @@ class InventoryService:
     ) -> Decimal:
         """Total units of a product on hand at a location, summed across batches.
 
-        Public read for callers that need to gate on availability before writing
-        (e.g. a kitchen can only notify Admin of stock it actually holds).
+        Everything physically present, expired batches included. For "can this be
+        dispatched?" use `available_for_dispatch` instead.
         """
         return InventoryService._total_on_hand(
             db,

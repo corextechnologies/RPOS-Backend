@@ -223,7 +223,11 @@ class ProductionTargetService:
             product_id = lines_by_id[alloc.line_id].product_id
             wanted[product_id] = wanted.get(product_id, 0) + alloc.quantity
         for product_id, quantity in wanted.items():
-            available = InventoryService.on_hand(
+            # available_for_dispatch, not on_hand: this figure is compared against
+            # what apply_dispatch_fefo below will actually ship, and that excludes
+            # expired batches. on_hand counts them, so it would pass a dispatch
+            # that then fails on the real debit.
+            available = InventoryService.available_for_dispatch(
                 db,
                 restaurant_id=actor.restaurant_id,
                 location_type=LocationType.KITCHEN,

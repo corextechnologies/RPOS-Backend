@@ -280,15 +280,10 @@ def test_kitchen_produces_and_allocates_for_branch(
     assert _kitchen_qty(db, setup, buns_in_kitchen.id) == 0
 
 
-def test_allocating_more_than_the_kitchen_holds_is_rejected(
-    client, db, restaurant_setup, make_branch, make_product
-):
-    setup = restaurant_setup
-    product = make_product(setup["restaurant"].id, name="Buns", sku="BN-1")
-    request_id = _branch_request(client, setup, make_branch, product, qty=200)
+def _forward_to_kitchen(client, setup, request_id):
+    """Drive a branch request up to IN_PRODUCTION at the seeded kitchen."""
     admin_headers = auth_headers(client, "admin@test.com")
     kitchen_headers = auth_headers(client, "kitchen@test.com")
-
     client.patch(
         f"/v1/requests/{request_id}/status",
         json={"to_status": BranchToAdminStatus.APPROVED.value},
@@ -303,23 +298,190 @@ def test_allocating_more_than_the_kitchen_holds_is_rejected(
         },
         headers=admin_headers,
     )
-    for status in (
-        BranchToAdminStatus.IN_PRODUCTION.value,
-        BranchToAdminStatus.PRODUCED.value,
-    ):
-        client.patch(
-            f"/v1/kitchen/requests/{request_id}/status",
-            json={"to_status": status},
-            headers=kitchen_headers,
-        )
-
     resp = client.patch(
         f"/v1/kitchen/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.DISPATCHED.value},
+        json={"to_status": BranchToAdminStatus.IN_PRODUCTION.value},
         headers=kitchen_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    return kitchen_headers
+
+
+def _set_status(client, headers, request_id, status):
+    return client.patch(
+        f"/v1/kitchen/requests/{request_id}/status",
+        json={"to_status": status},
+        headers=headers,
+    )
+
+
+def test_produced_is_rejected_when_the_kitchen_cannot_cover_it(
+    client, db, restaurant_setup, make_branch, make_product
+):
+    """PRODUCED is an early gate: a shortfall is caught here, not at dispatch."""
+    setup = restaurant_setup
+    product = make_product(setup["restaurant"].id, name="Buns", sku="BN-1")
+    request_id = _branch_request(client, setup, make_branch, product, qty=200)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    )
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "insufficient_stock"
+    assert error["details"]["product_id"] == product.id
+    assert error["details"]["requested"] == 200
+    assert error["details"]["available"] == 0
+
+    # The transition was refused, so the request is still IN_PRODUCTION.
+    current = client.get(
+        f"/v1/kitchen/requests/{request_id}", headers=kitchen_headers
+    )
+    assert (
+        current.json()["data"]["status"]
+        == BranchToAdminStatus.IN_PRODUCTION.value
+    )
+
+
+def test_produced_validates_without_moving_stock(
+    client, db, restaurant_setup, make_branch, buns_in_kitchen
+):
+    """The produced gate is a check, not a second debit — stock must not move."""
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=200)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    )
+    assert resp.status_code == 200, resp.text
+    assert _kitchen_qty(db, setup, buns_in_kitchen.id) == 200
+
+    # DISPATCHED is still the step that debits.
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.DISPATCHED.value
+    )
+    assert resp.status_code == 200, resp.text
+    assert _kitchen_qty(db, setup, buns_in_kitchen.id) == 0
+
+
+def test_dispatch_still_guards_when_stock_drops_after_produced(
+    client, db, restaurant_setup, make_branch, buns_in_kitchen
+):
+    """PRODUCED is an early warning; DISPATCHED stays authoritative.
+
+    Stock can be consumed between the two steps, so passing produced must not
+    grant a free pass at dispatch.
+    """
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=200)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Something else drains the kitchen after produced succeeded.
+    item = db.execute(
+        select(InventoryItem).where(
+            InventoryItem.location_type == LocationType.KITCHEN,
+            InventoryItem.location_id == setup["home_kitchen"].id,
+            InventoryItem.product_id == buns_in_kitchen.id,
+        )
+    ).scalar_one()
+    item.quantity = 5
+    db.flush()
+
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.DISPATCHED.value
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "insufficient_stock"
+
+
+def test_produced_ignores_expired_stock_exactly_as_dispatch_does(
+    client, db, restaurant_setup, make_branch, make_product
+):
+    """Both gates share one availability rule, so they can never disagree.
+
+    Expired batches are not dispatchable, so they must not let produced pass —
+    otherwise produce succeeds and dispatch fails on the same stock.
+    """
+    setup = restaurant_setup
+    product = make_product(setup["restaurant"].id, name="Buns", sku="BN-1")
+    db.add(
+        InventoryItem(
+            restaurant_id=setup["restaurant"].id,
+            location_type=LocationType.KITCHEN,
+            location_id=setup["home_kitchen"].id,
+            product_id=product.id,
+            quantity=200,
+            batch_code="B-OLD",
+            expiry_date=date.today() - timedelta(days=1),
+        )
+    )
+    db.flush()
+
+    request_id = _branch_request(client, setup, make_branch, product, qty=200)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    )
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "insufficient_stock"
+    # 200 are physically present but none are shippable.
+    assert error["details"]["available"] == 0
+
+
+def test_produced_sums_repeated_products_across_lines(
+    client, db, restaurant_setup, make_branch, make_product
+):
+    """Two lines of one product draw cumulatively, as dispatch does line by line."""
+    setup = restaurant_setup
+    product = make_product(setup["restaurant"].id, name="Buns", sku="BN-1")
+    db.add(
+        InventoryItem(
+            restaurant_id=setup["restaurant"].id,
+            location_type=LocationType.KITCHEN,
+            location_id=setup["home_kitchen"].id,
+            product_id=product.id,
+            quantity=15,
+            batch_code="",
+        )
+    )
+    db.flush()
+
+    branch = make_branch(setup["restaurant"].id, name="Two Line Branch")
+    created = client.post(
+        "/v1/requests",
+        json={
+            "request_type": "BRANCH_TO_ADMIN",
+            "source_location_type": "BRANCH",
+            "source_location_id": branch.id,
+            "lines": [
+                {"product_id": product.id, "quantity_requested": 10},
+                {"product_id": product.id, "quantity_requested": 10},
+            ],
+        },
+        headers=auth_headers(client, "branch@test.com"),
+    )
+    assert created.status_code == 200, created.text
+    request_id = created.json()["data"]["id"]
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    # Each line alone fits in 15; together they need 20 and must be rejected.
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    )
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "insufficient_stock"
+    assert error["details"]["requested"] == 20
+    assert error["details"]["available"] == 15
 
 
 def test_forwarding_without_a_kitchen_is_rejected(

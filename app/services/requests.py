@@ -1,6 +1,8 @@
 """Shared request workflow service."""
 from __future__ import annotations
 
+from decimal import Decimal
+
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
@@ -29,7 +31,7 @@ from app.schemas.request import (
     RequestTransition,
 )
 from app.services.audit import AuditService
-from app.services.inventory import InventoryService
+from app.services.inventory import InventoryService, insufficient_stock_error
 from app.services.notifications import NotificationService
 from app.services.transitions import (
     FULL_APPROVAL_STATUSES,
@@ -281,6 +283,85 @@ def _branch_receives_stock(
     )
 
 
+def _kitchen_can_cover_produced(
+    db: Session, *, actor: User, request: Request, body: RequestTransition
+) -> None:
+    """BRANCH_TO_ADMIN -> PRODUCED: early stock gate. VALIDATES ONLY.
+
+    Without this, a kitchen can mark a refill "produced" it cannot actually ship
+    and only discovers the shortfall one step later at DISPATCHED. This is the
+    early warning; DISPATCHED stays the authoritative gate, because stock can
+    still drop in between (a concurrent dispatch consuming it).
+
+    Deliberately moves NO stock — it is registered as a validator, not in
+    _INVENTORY_SIDE_EFFECTS, so it can never become a second debit. It also takes
+    no row locks: the reservation happens at dispatch, not here.
+    """
+    kitchen_id = _require_location(
+        request,
+        which="target",
+        expected=LocationType.KITCHEN,
+        code="missing_kitchen_target",
+    )
+    # Total per product, not per line. _dispatch_from debits line by line against
+    # live stock, so two lines of the same product draw cumulatively — checking
+    # each line against the full on-hand would pass a request whose lines only
+    # fail once summed.
+    wanted: dict[int, Decimal] = {}
+    for line in request.line_items:
+        qty = _approved_quantity(line)
+        if qty <= 0:
+            continue
+        wanted[line.product_id] = wanted.get(line.product_id, 0) + qty
+
+    # sorted() so a multi-product shortfall always reports the same product first.
+    for product_id, qty in sorted(wanted.items()):
+        available = InventoryService.available_for_dispatch(
+            db,
+            restaurant_id=request.restaurant_id,
+            location_type=LocationType.KITCHEN,
+            location_id=kitchen_id,
+            product_id=product_id,
+        )
+        if qty > available:
+            product = db.get(Product, product_id)
+            # Same shape dispatch raises: product-wide total across batches, so no
+            # batch_code — the shortfall is not scoped to one batch.
+            raise insufficient_stock_error(
+                product_id=product_id,
+                product_name=product.name if product else None,
+                location_type=LocationType.KITCHEN,
+                location_id=kitchen_id,
+                requested=qty,
+                available=available,
+            )
+
+
+# (request_type, to_status) -> validator. Gates that inspect stock but must NOT
+# move it. Kept separate from _INVENTORY_SIDE_EFFECTS so a read-only check can
+# never be mistaken for — or turn into — a second debit.
+_TRANSITION_VALIDATORS = {
+    (
+        RequestType.BRANCH_TO_ADMIN,
+        BranchToAdminStatus.PRODUCED.value,
+    ): _kitchen_can_cover_produced,
+}
+
+
+def _apply_transition_validators(
+    db: Session,
+    *,
+    actor: User,
+    request: Request,
+    to_status: str,
+    body: RequestTransition,
+) -> None:
+    validator = _TRANSITION_VALIDATORS.get((request.request_type, to_status))
+    if validator is None:
+        return
+    validator(db, actor=actor, request=request, body=body)
+
+
 # (request_type, to_status) -> handler. Every stock-moving transition lives here
 # so a status change can never silently skip its StockMovement.
 _INVENTORY_SIDE_EFFECTS = {
@@ -433,6 +514,17 @@ class RequestService:
         RequestService._apply_line_approvals(request, body, to_status)
         RequestService._apply_line_receipts(request, body, to_status)
         RequestService._apply_routing_target(db, request, body, to_status)
+
+        # Read-only gates, before the status is written: a rejection here leaves
+        # the request on its current status without needing a rollback. Runs after
+        # the line-approval pass so it sees this request's approved quantities.
+        _apply_transition_validators(
+            db,
+            actor=actor,
+            request=request,
+            to_status=to_status,
+            body=body,
+        )
 
         if body.notes:
             request.notes = body.notes
