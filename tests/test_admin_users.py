@@ -209,3 +209,85 @@ def test_cannot_manage_employee_in_other_restaurant(
         headers=headers,
     )
     assert resp.status_code == 404
+
+
+def test_create_manager_with_phone_and_image(
+    client, restaurant_setup, make_branch, mailer
+):
+    branch = make_branch(restaurant_setup["restaurant"].id, name="PB")
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.post(
+        "/v1/admin/users",
+        json={
+            "email": "with.profile@test.com",
+            "full_name": "Full Profile",
+            "phone_number": "+92 300 1234567",
+            "image_url": "http://testserver/uploads/employee-images/abc.png",
+            "role": "BRANCH_MANAGER",
+            "branch_id": branch.id,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["phone_number"] == "+92 300 1234567"
+    assert data["image_url"].endswith("abc.png")
+
+
+def test_update_employee_phone_image_email(client, restaurant_setup):
+    branch_mgr = restaurant_setup["branch_mgr"]
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.patch(
+        f"/v1/admin/users/{branch_mgr.id}",
+        json={
+            "phone_number": "0311 9998887",
+            "image_url": "http://testserver/uploads/employee-images/x.webp",
+            "email": "renamed.branch@test.com",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["phone_number"] == "0311 9998887"
+    assert data["image_url"].endswith("x.webp")
+    assert data["email"] == "renamed.branch@test.com"
+
+
+def test_update_employee_duplicate_email_conflicts(client, restaurant_setup):
+    # Renaming one manager's email to another existing user's email is rejected.
+    branch_mgr = restaurant_setup["branch_mgr"]
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.patch(
+        f"/v1/admin/users/{branch_mgr.id}",
+        json={"email": "warehouse@test.com"},  # already taken
+        headers=headers,
+    )
+    assert resp.status_code == 409
+
+
+def test_update_employee_same_email_is_noop(client, restaurant_setup):
+    # Editing while keeping the same email must not trip the uniqueness guard.
+    branch_mgr = restaurant_setup["branch_mgr"]
+    headers = auth_headers(client, "admin@test.com")
+    resp = client.patch(
+        f"/v1/admin/users/{branch_mgr.id}",
+        json={"email": "branch@test.com", "full_name": "Same Email"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_upload_employee_image(client, restaurant_setup):
+    headers = auth_headers(client, "admin@test.com")
+    files = {"file": ("pic.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, "image/png")}
+    resp = client.post("/v1/admin/upload/employee-image", files=files, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert "/uploads/employee-images/" in resp.json()["data"]["url"]
+
+
+def test_upload_employee_image_rejects_bad_type(client, restaurant_setup):
+    headers = auth_headers(client, "admin@test.com")
+    files = {"file": ("bad.txt", b"hello", "text/plain")}
+    resp = client.post("/v1/admin/upload/employee-image", files=files, headers=headers)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "invalid_file_type"

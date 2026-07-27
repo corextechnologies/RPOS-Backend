@@ -36,6 +36,10 @@ class LocationOut(BaseModel):
 class ManagerUserCreate(BaseModel):
     email: str = Field(max_length=255)
     full_name: str | None = Field(default=None, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=30)
+    #: Public URL from POST /admin/upload/employee-image. The frontend uploads
+    #: the file there first, then passes the returned URL here.
+    image_url: str | None = Field(default=None, max_length=1024)
     role: UserRole
     branch_id: int | None = None
     kitchen_id: int | None = None
@@ -45,14 +49,25 @@ class ManagerUserCreate(BaseModel):
 class ManagerUserCreateResult(BaseModel):
     user_id: int
     email: str
+    full_name: str | None = None
+    phone_number: str | None = None
+    image_url: str | None = None
     role: UserRole
     credential_email_sent: bool
 
 
 class EmployeeUpdate(BaseModel):
-    """Editable employee fields. Location FK must match the employee's role."""
+    """Editable employee fields.
+
+    Role is intentionally NOT editable — an employee stays in the portal they
+    were created for. Location FK must match the employee's existing role.
+    Email must stay unique across all users.
+    """
 
     full_name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=30)
+    image_url: str | None = Field(default=None, max_length=1024)
     is_active: bool | None = None
     branch_id: int | None = None
     kitchen_id: int | None = None
@@ -63,6 +78,8 @@ class EmployeeOut(BaseModel):
     id: int
     email: str
     full_name: str | None = None
+    phone_number: str | None = None
+    image_url: str | None = None
     role: UserRole
     is_active: bool
     branch_id: int | None = None

@@ -22,14 +22,15 @@ _ALLOWED_TYPES = {
 }
 
 _MENU_IMAGE_DIR = "menu-images"
+_EMPLOYEE_IMAGE_DIR = "employee-images"
 
 
-@router.post("/upload/menu-image")
-async def upload_menu_image(
-    file: UploadFile,
-    request: Request,
-    current: User = Depends(require_role(UserRole.ADMIN)),
-):
+async def _store_upload(file: UploadFile, request: Request, subdir: str) -> str:
+    """Validate, persist one image under `subdir`, and return its public URL.
+
+    Shared by every admin image upload so type/size limits and the on-disk
+    layout stay identical across menu, employee, and any future uploads.
+    """
     if file.content_type not in _ALLOWED_TYPES:
         raise ConflictError(
             f"Unsupported file type: {file.content_type}. "
@@ -47,9 +48,30 @@ async def upload_menu_image(
     ext = _ALLOWED_TYPES[file.content_type]
     filename = f"{uuid.uuid4().hex}{ext}"
 
-    dest_dir = Path(settings.upload_dir) / _MENU_IMAGE_DIR
+    dest_dir = Path(settings.upload_dir) / subdir
     dest_dir.mkdir(parents=True, exist_ok=True)
     (dest_dir / filename).write_bytes(data)
 
-    url = str(request.base_url).rstrip("/") + f"/uploads/{_MENU_IMAGE_DIR}/{filename}"
+    return str(request.base_url).rstrip("/") + f"/uploads/{subdir}/{filename}"
+
+
+@router.post("/upload/menu-image")
+async def upload_menu_image(
+    file: UploadFile,
+    request: Request,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+):
+    url = await _store_upload(file, request, _MENU_IMAGE_DIR)
+    return ok({"url": url})
+
+
+@router.post("/upload/employee-image")
+async def upload_employee_image(
+    file: UploadFile,
+    request: Request,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Upload an employee profile picture. Returns a URL to pass as image_url
+    on POST/PATCH /admin/users."""
+    url = await _store_upload(file, request, _EMPLOYEE_IMAGE_DIR)
     return ok({"url": url})

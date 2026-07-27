@@ -54,6 +54,8 @@ class AdminUserService:
             email=body.email,
             hashed_password=hash_password(password),
             full_name=body.full_name,
+            phone_number=body.phone_number,
+            image_url=body.image_url,
             role=body.role,
             created_by_id=admin.id,
             branch_id=body.branch_id,
@@ -85,6 +87,9 @@ class AdminUserService:
         return ManagerUserCreateResult(
             user_id=user.id,
             email=user.email,
+            full_name=user.full_name,
+            phone_number=user.phone_number,
+            image_url=user.image_url,
             role=user.role,
             credential_email_sent=sent,
         )
@@ -139,6 +144,16 @@ class AdminUserService:
                 kitchen_id=changes.get("kitchen_id", target.kitchen_id),
                 warehouse_id=changes.get("warehouse_id", target.warehouse_id),
             )
+
+        # Email is the login identity and unique across all users. Only check
+        # when it actually changes, so a no-op edit of the same email passes.
+        new_email = changes.get("email")
+        if new_email is not None and new_email != target.email:
+            clash = db.execute(
+                select(User).where(User.email == new_email, User.id != target.id)
+            ).scalar_one_or_none()
+            if clash is not None:
+                raise ConflictError("A user with this email already exists.")
 
         for field, value in changes.items():
             setattr(target, field, value)

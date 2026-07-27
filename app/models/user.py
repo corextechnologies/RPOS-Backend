@@ -23,6 +23,7 @@ class User(Base, PKMixin, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(255))
+    phone_number: Mapped[str | None] = mapped_column(String(30))
     image_url: Mapped[str | None] = mapped_column(String(1024))
     role: Mapped[UserRole] = mapped_column(
         SAEnum(UserRole, name="user_role"), nullable=False
