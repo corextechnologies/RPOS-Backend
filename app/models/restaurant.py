@@ -34,3 +34,11 @@ class Restaurant(Base, PKMixin, TimestampMixin):
     plan_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     branch_limit: Mapped[int | None] = mapped_column(Integer)
     next_billing_date: Mapped[date | None] = mapped_column(Date)
+
+    # Phase 2: Admin-editable profile + public QR menu.
+    # address/logo_url are free-form profile fields the Admin manages.
+    # public_slug is generated at creation and never changes — printed QR
+    # codes point at /m/{public_slug}, so regenerating it would break them.
+    address: Mapped[str | None] = mapped_column(String(500))
+    logo_url: Mapped[str | None] = mapped_column(String(1024))
+    public_slug: Mapped[str | None] = mapped_column(String(255), unique=True)

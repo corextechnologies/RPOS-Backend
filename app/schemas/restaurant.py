@@ -57,6 +57,25 @@ class RestaurantUpdate(BaseModel):
     next_billing_date: date | None = None
 
 
+class AdminRestaurantUpdate(BaseModel):
+    """Admin self-service edit — profile fields only.
+
+    `extra="forbid"` is the security boundary: commercial fields (plan_tier,
+    plan_amount, branch_limit, next_billing_date) are only editable via the
+    super-admin routes. Sending any of them here is a 422, so an Admin can
+    never bump their own plan or branch limit and bypass billing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    admin_full_name: str | None = None
+    owner_contact_email: EmailStr | None = None
+    owner_contact_number: str | None = None
+    address: str | None = None
+    logo_url: str | None = None
+
+
 class RestaurantOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,6 +89,9 @@ class RestaurantOut(BaseModel):
     plan_amount: Decimal | None = None
     branch_limit: int | None = None
     next_billing_date: date | None = None
+    address: str | None = None
+    logo_url: str | None = None
+    public_slug: str | None = None
 
 
 class RestaurantCreateResult(BaseModel):

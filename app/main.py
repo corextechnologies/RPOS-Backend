@@ -38,8 +38,15 @@ register_exception_handlers(app)
 app.include_router(api_router)
 
 _upload_path = Path(settings.upload_dir)
-_upload_path.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=str(_upload_path)), name="uploads")
+try:
+    _upload_path.mkdir(parents=True, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=str(_upload_path)), name="uploads")
+except OSError:
+    # Read-only filesystem (e.g. Vercel serverless — only /tmp is writable).
+    # Don't crash the whole app at import time just because local-disk uploads
+    # aren't available here. NOTE: local-disk uploads don't persist on such
+    # platforms — object storage is the real fix. See UPLOADS note below.
+    pass
 
 
 @app.get("/health", tags=["health"])

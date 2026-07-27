@@ -9,6 +9,7 @@ from app.api.v1.admin import (
     production_targets,
     reads,
     requests,
+    restaurant,
     sales,
     settings,
     uploads,
@@ -26,6 +27,7 @@ router.include_router(pricing.router)
 router.include_router(inventory.router)
 router.include_router(requests.router)
 router.include_router(reads.router)
+router.include_router(restaurant.router)
 router.include_router(settings.router)
 router.include_router(sales.router)
 router.include_router(uploads.router)
