@@ -95,6 +95,12 @@ class KitchenStaffCreate(BaseModel):
     full_name: str | None = Field(default=None, max_length=255)
 
 
+class KitchenStaffUpdate(BaseModel):
+    """Editable kitchen sub-staff fields."""
+
+    full_name: str | None = Field(default=None, max_length=255)
+
+
 class KitchenStaffCreateResult(BaseModel):
     user_id: int
     email: str

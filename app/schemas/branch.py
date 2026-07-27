@@ -21,6 +21,13 @@ class BranchStaffCreate(BaseModel):
     position: BranchPosition
 
 
+class BranchStaffUpdate(BaseModel):
+    """Editable branch sub-staff fields."""
+
+    full_name: str | None = Field(default=None, max_length=255)
+    position: BranchPosition | None = None
+
+
 class BranchStaffCreateResult(BaseModel):
     user_id: int
     email: str

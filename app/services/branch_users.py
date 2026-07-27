@@ -9,7 +9,7 @@ from app.core.credentials import (
     get_mailer,
     send_credentials_email,
 )
-from app.core.exceptions import ConflictError
+from app.core.exceptions import ConflictError, NotFoundError
 from app.core.security import hash_password
 from app.deps.rbac import (
     assert_branch_can_create_role,
@@ -18,7 +18,11 @@ from app.deps.rbac import (
 from app.deps.scoping import visible_users
 from app.models.enums import UserRole
 from app.models.user import User
-from app.schemas.branch import BranchStaffCreate, BranchStaffCreateResult
+from app.schemas.branch import (
+    BranchStaffCreate,
+    BranchStaffCreateResult,
+    BranchStaffUpdate,
+)
 from app.services.audit import AuditService
 
 
@@ -97,3 +101,76 @@ class BranchUserService:
             .all()
         )
         return list(rows), total
+
+    @staticmethod
+    def _get_own_staff(db: Session, manager: User, user_id: int) -> User:
+        """Fetch a sub-staff member this manager provisioned, or raise.
+
+        Scoped three ways so a manager can only touch their own staff: same
+        restaurant, role is BRANCH_STAFF, and created by this manager. A peer
+        manager or another branch's staff is reported as not found.
+        """
+        assert_branch_manager_can_create_staff(manager)
+        target = db.get(User, user_id)
+        if (
+            target is None
+            or target.restaurant_id != manager.restaurant_id
+            or target.role != UserRole.BRANCH_STAFF
+            or target.created_by_id != manager.id
+        ):
+            raise NotFoundError("Staff member not found.")
+        return target
+
+    @staticmethod
+    def update_staff(
+        db: Session, manager: User, user_id: int, body: BranchStaffUpdate
+    ) -> User:
+        target = BranchUserService._get_own_staff(db, manager, user_id)
+        changes = body.model_dump(exclude_unset=True)
+        for field, value in changes.items():
+            setattr(target, field, value)
+        AuditService.record(
+            db,
+            actor=manager,
+            action="user.update",
+            entity_type="user",
+            entity_id=target.id,
+            restaurant_id=manager.restaurant_id,
+            payload=changes or None,
+        )
+        db.commit()
+        db.refresh(target)
+        return target
+
+    @staticmethod
+    def set_active(
+        db: Session, manager: User, user_id: int, *, is_active: bool
+    ) -> User:
+        target = BranchUserService._get_own_staff(db, manager, user_id)
+        target.is_active = is_active
+        AuditService.record(
+            db,
+            actor=manager,
+            action="user.restore" if is_active else "user.revoke",
+            entity_type="user",
+            entity_id=target.id,
+            restaurant_id=manager.restaurant_id,
+        )
+        db.commit()
+        db.refresh(target)
+        return target
+
+    @staticmethod
+    def delete_staff(db: Session, manager: User, user_id: int) -> None:
+        target = BranchUserService._get_own_staff(db, manager, user_id)
+        AuditService.record(
+            db,
+            actor=manager,
+            action="user.delete",
+            entity_type="user",
+            entity_id=target.id,
+            restaurant_id=manager.restaurant_id,
+            payload={"role": target.role.value},
+        )
+        db.delete(target)
+        db.commit()

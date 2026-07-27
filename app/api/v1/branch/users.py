@@ -9,7 +9,7 @@ from app.db.session import get_db
 from app.deps.auth import require_role
 from app.models.enums import UserRole
 from app.models.user import User
-from app.schemas.branch import BranchStaffCreate, BranchStaffOut
+from app.schemas.branch import BranchStaffCreate, BranchStaffOut, BranchStaffUpdate
 from app.services.branch_users import BranchUserService
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.BRANCH_MANAGER))])
@@ -38,3 +38,44 @@ def list_branch_staff(
     )
     data = [BranchStaffOut.model_validate(u).model_dump(mode="json") for u in rows]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
+
+
+@router.patch("/users/{user_id}")
+def update_branch_staff(
+    user_id: int,
+    body: BranchStaffUpdate,
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    user = BranchUserService.update_staff(db, current, user_id, body)
+    return ok(BranchStaffOut.model_validate(user).model_dump(mode="json"))
+
+
+@router.post("/users/{user_id}/revoke")
+def revoke_branch_staff(
+    user_id: int,
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    user = BranchUserService.set_active(db, current, user_id, is_active=False)
+    return ok(BranchStaffOut.model_validate(user).model_dump(mode="json"))
+
+
+@router.post("/users/{user_id}/restore")
+def restore_branch_staff(
+    user_id: int,
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    user = BranchUserService.set_active(db, current, user_id, is_active=True)
+    return ok(BranchStaffOut.model_validate(user).model_dump(mode="json"))
+
+
+@router.delete("/users/{user_id}")
+def delete_branch_staff(
+    user_id: int,
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    BranchUserService.delete_staff(db, current, user_id)
+    return ok({"detail": "Staff member deleted."})

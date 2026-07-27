@@ -9,7 +9,11 @@ from app.db.session import get_db
 from app.deps.auth import require_role
 from app.models.enums import UserRole
 from app.models.user import User
-from app.schemas.kitchen_production import KitchenStaffCreate, KitchenStaffOut
+from app.schemas.kitchen_production import (
+    KitchenStaffCreate,
+    KitchenStaffOut,
+    KitchenStaffUpdate,
+)
 from app.services.kitchen_users import KitchenUserService
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.KITCHEN_MANAGER))])
@@ -38,3 +42,24 @@ def list_kitchen_staff(
     )
     data = [KitchenStaffOut.model_validate(u).model_dump(mode="json") for u in rows]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
+
+
+@router.patch("/users/{user_id}")
+def update_kitchen_staff(
+    user_id: int,
+    body: KitchenStaffUpdate,
+    current: User = Depends(require_role(UserRole.KITCHEN_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    user = KitchenUserService.update_staff(db, current, user_id, body)
+    return ok(KitchenStaffOut.model_validate(user).model_dump(mode="json"))
+
+
+@router.delete("/users/{user_id}")
+def delete_kitchen_staff(
+    user_id: int,
+    current: User = Depends(require_role(UserRole.KITCHEN_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    KitchenUserService.delete_staff(db, current, user_id)
+    return ok({"detail": "Staff member deleted."})

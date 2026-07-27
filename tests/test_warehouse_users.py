@@ -173,3 +173,62 @@ def test_duplicate_staff_email_conflicts(client, warehouse_ready, mailer):
     assert client.post("/v1/warehouse/users", json=body, headers=headers).status_code == 200
     resp = client.post("/v1/warehouse/users", json=body, headers=headers)
     assert resp.status_code == 409
+
+
+def test_update_and_delete_warehouse_staff(client, warehouse_ready, mailer):
+    headers = auth_headers(client, "warehouse@test.com")
+    created = client.post(
+        "/v1/warehouse/users",
+        json={"email": "wh.edit@test.com", "full_name": "Old"},
+        headers=headers,
+    )
+    uid = created.json()["data"]["user_id"]
+
+    updated = client.patch(
+        f"/v1/warehouse/users/{uid}", json={"full_name": "New"}, headers=headers
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["data"]["full_name"] == "New"
+
+    deleted = client.delete(f"/v1/warehouse/users/{uid}", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+    listing = client.get("/v1/warehouse/users", headers=headers).json()["data"]
+    assert "wh.edit@test.com" not in {u["email"] for u in listing}
+
+
+def test_warehouse_has_no_revoke_route(client, warehouse_ready, mailer):
+    # Revoke/restore is branch-only. The route must not exist for warehouse.
+    headers = auth_headers(client, "warehouse@test.com")
+    created = client.post(
+        "/v1/warehouse/users",
+        json={"email": "wh.norevoke@test.com"},
+        headers=headers,
+    )
+    uid = created.json()["data"]["user_id"]
+    resp = client.post(f"/v1/warehouse/users/{uid}/revoke", headers=headers)
+    assert resp.status_code == 404
+
+
+def test_warehouse_cannot_manage_another_managers_staff(
+    client, warehouse_ready, make_user, db
+):
+    headers = auth_headers(client, "warehouse@test.com")
+    created = client.post(
+        "/v1/warehouse/users",
+        json={"email": "wh.owned@test.com"},
+        headers=headers,
+    )
+    uid = created.json()["data"]["user_id"]
+
+    other_mgr = make_user(
+        "wh.other2@test.com", UserRole.WAREHOUSE_MANAGER,
+        restaurant_id=warehouse_ready["restaurant"].id,
+        created_by_id=warehouse_ready["admin"].id,
+        warehouse_id=warehouse_ready["warehouse"].id,
+    )
+    db.flush()
+    other = auth_headers(client, "wh.other2@test.com")
+    assert client.patch(
+        f"/v1/warehouse/users/{uid}", json={"full_name": "X"}, headers=other
+    ).status_code == 404
+    assert client.delete(f"/v1/warehouse/users/{uid}", headers=other).status_code == 404

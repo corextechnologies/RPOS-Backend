@@ -20,6 +20,12 @@ class WarehouseStaffCreate(BaseModel):
     full_name: str | None = Field(default=None, max_length=255)
 
 
+class WarehouseStaffUpdate(BaseModel):
+    """Editable warehouse sub-staff fields."""
+
+    full_name: str | None = Field(default=None, max_length=255)
+
+
 class WarehouseStaffCreateResult(BaseModel):
     user_id: int
     email: str
