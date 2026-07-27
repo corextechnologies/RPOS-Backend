@@ -48,6 +48,21 @@ _LOCATION_MODELS = {
     UserRole.KITCHEN_STAFF: (Kitchen, "kitchen_id"),
 }
 
+# Sub-staff are scoped to their LOCATION, not the manager who created them: any
+# manager of a branch/kitchen/warehouse manages all sub-staff there. These maps
+# turn a manager's role into the staff role they own and the location FK they
+# share with that staff (mirrors the fk names in _LOCATION_MODELS).
+MANAGER_STAFF_ROLE = {
+    UserRole.BRANCH_MANAGER: UserRole.BRANCH_STAFF,
+    UserRole.KITCHEN_MANAGER: UserRole.KITCHEN_STAFF,
+    UserRole.WAREHOUSE_MANAGER: UserRole.WAREHOUSE_STAFF,
+}
+MANAGER_LOCATION_ATTR = {
+    UserRole.BRANCH_MANAGER: "branch_id",
+    UserRole.KITCHEN_MANAGER: "kitchen_id",
+    UserRole.WAREHOUSE_MANAGER: "warehouse_id",
+}
+
 # Roles that live at a warehouse and may read/operate warehouse-scoped data.
 # Both roles operate the warehouse; only the manager provisions sub-staff.
 WAREHOUSE_ROLES = {UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF}

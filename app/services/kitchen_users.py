@@ -12,7 +12,7 @@ from app.core.credentials import (
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.security import hash_password
 from app.deps.rbac import assert_kitchen_manager_can_create_staff
-from app.deps.scoping import visible_users
+from app.deps.scoping import staff_at_location
 from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.kitchen_production import (
@@ -86,7 +86,7 @@ class KitchenUserService:
         db: Session, manager: User, *, offset: int, limit: int
     ) -> tuple[list[User], int]:
         assert_kitchen_manager_can_create_staff(manager)
-        base = visible_users(db, manager)
+        base = staff_at_location(manager)
         count_stmt = select(func.count()).select_from(base.subquery())
         total = db.execute(count_stmt).scalar_one()
         rows = (
@@ -98,11 +98,12 @@ class KitchenUserService:
 
     @staticmethod
     def _get_own_staff(db: Session, manager: User, user_id: int) -> User:
-        """Fetch a sub-staff member this manager provisioned, or raise.
+        """Fetch a sub-staff member at this manager's kitchen, or raise.
 
-        Scoped three ways so a manager can only touch their own staff: same
-        restaurant, role is KITCHEN_STAFF, and created by this manager. A peer
-        manager or another kitchen's staff is reported as not found.
+        Scoped by LOCATION, not creator: same restaurant, role is KITCHEN_STAFF,
+        and same kitchen as the manager. Any manager of the kitchen may manage
+        its staff regardless of who created them. A peer manager or another
+        kitchen's staff is reported as not found.
         """
         assert_kitchen_manager_can_create_staff(manager)
         target = db.get(User, user_id)
@@ -110,7 +111,7 @@ class KitchenUserService:
             target is None
             or target.restaurant_id != manager.restaurant_id
             or target.role != UserRole.KITCHEN_STAFF
-            or target.created_by_id != manager.id
+            or target.kitchen_id != manager.kitchen_id
         ):
             raise NotFoundError("Staff member not found.")
         return target

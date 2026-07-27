@@ -199,7 +199,7 @@ def test_cannot_manage_another_managers_staff(
     headers = auth_headers(client, "branch@test.com")
     uid = _create_staff(client, headers, "owned@test.com")
 
-    # A second branch manager cannot edit, revoke, or delete it.
+    # A branch manager at a DIFFERENT branch cannot edit, revoke, or delete it.
     other_branch = make_branch(restaurant_setup["restaurant"].id, name="B2")
     make_user(
         "branch2@test.com", UserRole.BRANCH_MANAGER,
@@ -212,6 +212,30 @@ def test_cannot_manage_another_managers_staff(
     ).status_code == 404
     assert client.post(f"/v1/branch/users/{uid}/revoke", headers=other).status_code == 404
     assert client.delete(f"/v1/branch/users/{uid}", headers=other).status_code == 404
+
+
+def test_second_manager_at_same_branch_manages_staff(
+    client, restaurant_setup, make_user, db, mailer
+):
+    # Location scoping: a second manager assigned to the SAME branch sees and
+    # manages staff created by the first manager — no handover needed.
+    headers = auth_headers(client, "branch@test.com")
+    uid = _create_staff(client, headers, "shared@test.com")
+
+    make_user(
+        "branch_b@test.com", UserRole.BRANCH_MANAGER,
+        restaurant_id=restaurant_setup["restaurant"].id,
+        branch_id=restaurant_setup["home_branch"].id,  # SAME branch
+        created_by_id=restaurant_setup["admin"].id,
+    )
+    other = auth_headers(client, "branch_b@test.com")
+    listing = client.get("/v1/branch/users", headers=other)
+    assert "shared@test.com" in {u["email"] for u in listing.json()["data"]}
+    assert client.patch(
+        f"/v1/branch/users/{uid}", json={"full_name": "Renamed"}, headers=other
+    ).status_code == 200
+    assert client.post(f"/v1/branch/users/{uid}/revoke", headers=other).status_code == 200
+    assert client.delete(f"/v1/branch/users/{uid}", headers=other).status_code == 200
 
 
 def test_cannot_manage_a_peer_manager(client, restaurant_setup, mailer):

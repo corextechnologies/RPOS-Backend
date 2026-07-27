@@ -124,3 +124,30 @@ def test_kitchen_cannot_manage_another_managers_staff(
         f"/v1/kitchen/users/{uid}", json={"full_name": "X"}, headers=other
     ).status_code == 404
     assert client.delete(f"/v1/kitchen/users/{uid}", headers=other).status_code == 404
+
+
+def test_second_manager_at_same_kitchen_manages_staff(
+    client, restaurant_setup, make_user, db, mailer
+):
+    # Location scoping: a second manager assigned to the SAME kitchen sees and
+    # manages staff created by the first manager — no handover needed.
+    headers = auth_headers(client, "kitchen@test.com")
+    created = client.post(
+        "/v1/kitchen/users", json={"email": "kit.shared@test.com"}, headers=headers
+    )
+    uid = created.json()["data"]["user_id"]
+
+    make_user(
+        "kitchen_b@test.com", UserRole.KITCHEN_MANAGER,
+        restaurant_id=restaurant_setup["restaurant"].id,
+        created_by_id=restaurant_setup["admin"].id,
+        kitchen_id=restaurant_setup["home_kitchen"].id,  # SAME kitchen
+    )
+    db.flush()
+    other = auth_headers(client, "kitchen_b@test.com")
+    listing = client.get("/v1/kitchen/users", headers=other)
+    assert "kit.shared@test.com" in {u["email"] for u in listing.json()["data"]}
+    assert client.patch(
+        f"/v1/kitchen/users/{uid}", json={"full_name": "Renamed"}, headers=other
+    ).status_code == 200
+    assert client.delete(f"/v1/kitchen/users/{uid}", headers=other).status_code == 200

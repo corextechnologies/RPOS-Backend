@@ -45,41 +45,71 @@ def test_create_warehouse_staff_with_credential_email(
     assert mailer.sent[0]["to"] == "wh.sub@test.com"
 
 
-def test_list_staff_is_created_by_subtree_only(
-    client, warehouse_ready, make_user, db
+def test_list_staff_is_scoped_to_warehouse(
+    client, warehouse_ready, make_warehouse, make_user, db
 ):
-    manager = warehouse_ready["manager"]
+    # Staff are scoped to the WAREHOUSE, not to who created them. A staff member
+    # at this warehouse shows up even if another manager (or the admin) created
+    # them; staff at a different warehouse never do.
     warehouse = warehouse_ready["warehouse"]
-    sub = make_user(
-        "wh.mine@test.com",
-        UserRole.WAREHOUSE_MANAGER,
+    make_user(
+        "wh.here@test.com",
+        UserRole.WAREHOUSE_STAFF,
         restaurant_id=warehouse_ready["restaurant"].id,
-        created_by_id=manager.id,
+        created_by_id=warehouse_ready["admin"].id,  # created by someone else
+        warehouse_id=warehouse.id,
     )
-    sub.warehouse_id = warehouse.id
-    other_mgr = make_user(
-        "wh.other.mgr@test.com",
-        UserRole.WAREHOUSE_MANAGER,
+    other_warehouse = make_warehouse(warehouse_ready["restaurant"].id, name="WH2")
+    make_user(
+        "wh.elsewhere@test.com",
+        UserRole.WAREHOUSE_STAFF,
         restaurant_id=warehouse_ready["restaurant"].id,
-        created_by_id=warehouse_ready["admin"].id,
+        created_by_id=warehouse_ready["manager"].id,
+        warehouse_id=other_warehouse.id,
     )
-    other_mgr.warehouse_id = warehouse.id
-    other_sub = make_user(
-        "wh.other.sub@test.com",
-        UserRole.WAREHOUSE_MANAGER,
-        restaurant_id=warehouse_ready["restaurant"].id,
-        created_by_id=other_mgr.id,
-    )
-    other_sub.warehouse_id = warehouse.id
     db.flush()
 
     headers = auth_headers(client, "warehouse@test.com")
     resp = client.get("/v1/warehouse/users", headers=headers)
     assert resp.status_code == 200, resp.text
     emails = {u["email"] for u in resp.json()["data"]}
-    assert "wh.mine@test.com" in emails
-    assert "wh.other.sub@test.com" not in emails
-    assert "warehouse@test.com" not in emails
+    assert "wh.here@test.com" in emails            # same warehouse, other creator
+    assert "wh.elsewhere@test.com" not in emails   # different warehouse
+    assert "warehouse@test.com" not in emails       # the manager is not staff
+
+
+def test_second_manager_at_same_warehouse_manages_staff(
+    client, warehouse_ready, make_user, db
+):
+    # The whole point of location scoping: a newly assigned manager at the same
+    # warehouse sees and manages staff created by the previous manager.
+    warehouse = warehouse_ready["warehouse"]
+    staff = make_user(
+        "wh.inherited@test.com",
+        UserRole.WAREHOUSE_STAFF,
+        restaurant_id=warehouse_ready["restaurant"].id,
+        created_by_id=warehouse_ready["manager"].id,
+        warehouse_id=warehouse.id,
+    )
+    make_user(
+        "wh.newmgr@test.com",
+        UserRole.WAREHOUSE_MANAGER,
+        restaurant_id=warehouse_ready["restaurant"].id,
+        created_by_id=warehouse_ready["admin"].id,
+        warehouse_id=warehouse.id,
+    )
+    db.flush()
+
+    headers = auth_headers(client, "wh.newmgr@test.com")
+    listing = client.get("/v1/warehouse/users", headers=headers)
+    assert "wh.inherited@test.com" in {u["email"] for u in listing.json()["data"]}
+    # ...and can edit + delete it.
+    assert client.patch(
+        f"/v1/warehouse/users/{staff.id}", json={"full_name": "New"}, headers=headers
+    ).status_code == 200
+    assert client.delete(
+        f"/v1/warehouse/users/{staff.id}", headers=headers
+    ).status_code == 200
 
 
 def test_create_staff_requires_warehouse_assignment(
@@ -209,9 +239,10 @@ def test_warehouse_has_no_revoke_route(client, warehouse_ready, mailer):
     assert resp.status_code == 404
 
 
-def test_warehouse_cannot_manage_another_managers_staff(
-    client, warehouse_ready, make_user, db
+def test_warehouse_manager_cannot_manage_another_warehouses_staff(
+    client, warehouse_ready, make_warehouse, make_user, db
 ):
+    # A manager at a DIFFERENT warehouse cannot touch this warehouse's staff.
     headers = auth_headers(client, "warehouse@test.com")
     created = client.post(
         "/v1/warehouse/users",
@@ -220,11 +251,12 @@ def test_warehouse_cannot_manage_another_managers_staff(
     )
     uid = created.json()["data"]["user_id"]
 
-    other_mgr = make_user(
+    other_warehouse = make_warehouse(warehouse_ready["restaurant"].id, name="WH-Other")
+    make_user(
         "wh.other2@test.com", UserRole.WAREHOUSE_MANAGER,
         restaurant_id=warehouse_ready["restaurant"].id,
         created_by_id=warehouse_ready["admin"].id,
-        warehouse_id=warehouse_ready["warehouse"].id,
+        warehouse_id=other_warehouse.id,
     )
     db.flush()
     other = auth_headers(client, "wh.other2@test.com")

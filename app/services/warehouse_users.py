@@ -12,7 +12,7 @@ from app.core.credentials import (
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.security import hash_password
 from app.deps.rbac import assert_warehouse_manager_can_create_staff
-from app.deps.scoping import visible_users
+from app.deps.scoping import staff_at_location
 from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.warehouse import (
@@ -86,7 +86,7 @@ class WarehouseUserService:
         db: Session, manager: User, *, offset: int, limit: int
     ) -> tuple[list[User], int]:
         assert_warehouse_manager_can_create_staff(manager)
-        base = visible_users(db, manager)
+        base = staff_at_location(manager)
         count_stmt = select(func.count()).select_from(base.subquery())
         total = db.execute(count_stmt).scalar_one()
         rows = (
@@ -98,10 +98,11 @@ class WarehouseUserService:
 
     @staticmethod
     def _get_own_staff(db: Session, manager: User, user_id: int) -> User:
-        """Fetch a sub-staff member this manager provisioned, or raise.
+        """Fetch a sub-staff member at this manager's warehouse, or raise.
 
-        Scoped three ways so a manager can only touch their own staff: same
-        restaurant, role is WAREHOUSE_STAFF, and created by this manager. A peer
+        Scoped by LOCATION, not creator: same restaurant, role is
+        WAREHOUSE_STAFF, and same warehouse as the manager. Any manager of the
+        warehouse may manage its staff regardless of who created them. A peer
         manager or another warehouse's staff is reported as not found.
         """
         assert_warehouse_manager_can_create_staff(manager)
@@ -110,7 +111,7 @@ class WarehouseUserService:
             target is None
             or target.restaurant_id != manager.restaurant_id
             or target.role != UserRole.WAREHOUSE_STAFF
-            or target.created_by_id != manager.id
+            or target.warehouse_id != manager.warehouse_id
         ):
             raise NotFoundError("Staff member not found.")
         return target

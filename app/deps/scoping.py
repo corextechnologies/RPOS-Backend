@@ -36,6 +36,26 @@ def _descendant_user_ids(db: Session, root_id: int) -> list[int]:
     return list(db.execute(select(tree.c.id)).scalars().all())
 
 
+def staff_at_location(manager: User) -> Select:
+    """Sub-staff of the manager's own portal, scoped to the manager's LOCATION.
+
+    A sub-staff member belongs to a branch/kitchen/warehouse, not to the person
+    who created them — so whoever is the current manager of that location manages
+    all of its staff, regardless of `created_by_id`. This is the access anchor
+    for the three portal staff-management APIs; `visible_users` (below) still
+    serves the Admin roster and the generic /v1/users endpoint.
+    """
+    from app.deps.rbac import MANAGER_LOCATION_ATTR, MANAGER_STAFF_ROLE
+
+    staff_role = MANAGER_STAFF_ROLE[manager.role]
+    loc_attr = MANAGER_LOCATION_ATTR[manager.role]
+    return select(User).where(
+        User.restaurant_id == manager.restaurant_id,
+        User.role == staff_role,
+        getattr(User, loc_attr) == getattr(manager, loc_attr),
+    )
+
+
 def visible_users(db: Session, user: User) -> Select:
     """Return a Select of the User rows this user is allowed to see.
 
