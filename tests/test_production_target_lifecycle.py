@@ -33,6 +33,17 @@ def pt_ctx(restaurant_setup, make_product, make_branch, make_user, db):
         product_id=coke.id,
         quantity=50,
     )
+    # Finished goods are credited when the kitchen actually MAKES them
+    # (POST /kitchen/production), not by completing a target — completing only
+    # flips the status. Seed them here the way a real production run would.
+    InventoryService.receive_stock(
+        db,
+        actor=restaurant_setup["kitchen_mgr"],
+        location_type=LocationType.KITCHEN,
+        location_id=restaurant_setup["home_kitchen"].id,
+        product_id=burger.id,
+        quantity=30,
+    )
     db.flush()
     return {
         **restaurant_setup,
@@ -115,7 +126,8 @@ def test_full_lifecycle_moves_stock_and_rolls_up(client, pt_ctx, db):
     marked = client.get(f"/v1/kitchen/production-targets/{tid}", headers=kh).json()["data"]
     assert all(ln["produced"] is True for ln in marked["lines"])
 
-    # 5. Complete — credits the kitchen's finished goods (burgers), not resale.
+    # 5. Complete — status only. Stock was already credited by the production
+    # run that made the burgers; crediting again here would double-count them.
     completed = client.post(
         f"/v1/kitchen/production-targets/{tid}/complete", headers=kh
     )
@@ -279,14 +291,18 @@ def test_dispatch_insufficient_stock_leaves_status_untouched(client, pt_ctx, db)
         headers=ah,
     )
 
-    # Drain the kitchen's produced burgers so dispatch can't cover the batch.
+    # Drain ALL the kitchen's burgers so dispatch can't cover the batch. Drain
+    # whatever is on hand rather than a fixed amount, so this stays correct if
+    # the seeded quantity changes.
     InventoryService.apply_dispatch_fefo(
         db,
         actor=pt_ctx["kitchen_mgr"],
         location_type=LocationType.KITCHEN,
         location_id=pt_ctx["kitchen"].id,
         product_id=burger.id,
-        quantity=10,
+        quantity=_on_hand(
+            db, pt_ctx, LocationType.KITCHEN, pt_ctx["kitchen"].id, burger.id
+        ),
     )
     db.flush()
 
