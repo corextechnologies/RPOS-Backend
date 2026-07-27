@@ -45,6 +45,7 @@ from app.services.income import (
     build_income_forecast,
     build_income_summary,
 )
+from app.services.slug import generate_unique_slug
 from datetime import date
 
 router = APIRouter(
@@ -102,6 +103,8 @@ def create_restaurant(
                 plan_tier=body.plan_tier,
             ),
             status=RestaurantStatus.ACTIVE,
+            # Generated once, at creation — stable for the life of the QR code.
+            public_slug=generate_unique_slug(db, body.name),
         )
         db.add(restaurant)
         db.flush()

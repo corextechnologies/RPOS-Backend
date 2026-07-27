@@ -19,10 +19,12 @@ _ALLOWED_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
+    "image/svg+xml": ".svg",
 }
 
 _MENU_IMAGE_DIR = "menu-images"
 _EMPLOYEE_IMAGE_DIR = "employee-images"
+_LOGO_IMAGE_DIR = "logos"
 
 
 async def _store_upload(file: UploadFile, request: Request, subdir: str) -> str:
@@ -34,7 +36,7 @@ async def _store_upload(file: UploadFile, request: Request, subdir: str) -> str:
     if file.content_type not in _ALLOWED_TYPES:
         raise ConflictError(
             f"Unsupported file type: {file.content_type}. "
-            f"Accepted: JPEG, PNG, WebP.",
+            f"Accepted: JPEG, PNG, WebP, SVG.",
             code="invalid_file_type",
         )
 
@@ -62,6 +64,21 @@ async def upload_menu_image(
     current: User = Depends(require_role(UserRole.ADMIN)),
 ):
     url = await _store_upload(file, request, _MENU_IMAGE_DIR)
+    return ok({"url": url})
+
+
+@router.post("/upload/image")
+async def upload_image(
+    file: UploadFile,
+    request: Request,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """General image upload (restaurant logo, etc.). Returns { url }.
+
+    Same storage/limits as menu-image; the caller persists the returned URL
+    (e.g. as logo_url via PATCH /admin/restaurant).
+    """
+    url = await _store_upload(file, request, _LOGO_IMAGE_DIR)
     return ok({"url": url})
 
 

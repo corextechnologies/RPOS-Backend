@@ -8,6 +8,7 @@ from app.api.v1 import (
     kitchen,
     notifications,
     pos,
+    public,
     requests,
     super_admin,
     users,
@@ -25,3 +26,4 @@ api_router.include_router(branch.router)
 api_router.include_router(pos.router)
 api_router.include_router(requests.router)
 api_router.include_router(notifications.router)
+api_router.include_router(public.router)
