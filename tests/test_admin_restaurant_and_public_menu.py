@@ -167,9 +167,72 @@ def test_public_menu_no_auth(client, published_menu):
     assert item["price_minor"] == 89900
     assert item["is_available"] is True
     assert "image_url" in item
+    # Detail fields are present (null here — this item set none).
+    assert item["description"] is None
+    assert item["calories"] is None
+    assert item["prep_time_minutes"] is None
     # Public-safe projection: no cost prices / modifier internals leak.
     assert "modifier_groups" not in item
     assert "components" not in item
+
+
+def test_menu_item_detail_fields_round_trip(client, restaurant_setup, make_product, db):
+    """description/calories/prep_time_minutes are stored on create and returned
+    by both the public menu and the POS/admin menu read."""
+    r = restaurant_setup["restaurant"]
+    r.public_slug = "detail-slug"
+    db.flush()
+
+    admin = auth_headers(client, "admin@test.com")
+    vid = client.post(
+        "/v1/pos/menu/versions", json={"note": "v1"}, headers=admin
+    ).json()["data"]["id"]
+    product_id = make_product(r.id, name="Royal", sku="RB").id
+    client.post(
+        f"/v1/pos/menu/versions/{vid}/items",
+        json={
+            "name": "Royal Burger",
+            "price": "18.00",
+            "product_id": product_id,
+            "category": "Burgers",
+            "description": "A wonderful burger dish.",
+            "calories": 580,
+            "prep_time_minutes": 25,
+        },
+        headers=admin,
+    )
+    client.post(f"/v1/pos/menu/versions/{vid}/publish", headers=admin)
+
+    # Public projection.
+    pub = client.get("/v1/public/menu/detail-slug").json()["data"]["items"][0]
+    assert pub["description"] == "A wonderful burger dish."
+    assert pub["calories"] == 580
+    assert pub["prep_time_minutes"] == 25
+
+    # POS/admin read.
+    adm = client.get("/v1/pos/menu", headers=admin).json()["data"]["items"][0]
+    assert adm["description"] == "A wonderful burger dish."
+    assert adm["calories"] == 580
+    assert adm["prep_time_minutes"] == 25
+
+
+def test_menu_item_rejects_negative_calories(client, restaurant_setup, make_product, db):
+    admin = auth_headers(client, "admin@test.com")
+    vid = client.post(
+        "/v1/pos/menu/versions", json={"note": "v1"}, headers=admin
+    ).json()["data"]["id"]
+    product_id = make_product(
+        restaurant_setup["restaurant"].id, name="Neg", sku="NG"
+    ).id
+    resp = client.post(
+        f"/v1/pos/menu/versions/{vid}/items",
+        json={
+            "name": "Bad", "price": "1.00", "product_id": product_id,
+            "calories": -5,
+        },
+        headers=admin,
+    )
+    assert resp.status_code == 422, resp.text
 
 
 def test_public_menu_unknown_slug_404(client, restaurant_setup):

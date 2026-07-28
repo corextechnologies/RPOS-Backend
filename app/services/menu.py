@@ -111,6 +111,9 @@ class MenuService:
             category=body.category,
             # Store the KEY, never a URL — see app/services/storage.py.
             image_url=storage.to_key(body.image_url),
+            description=body.description,
+            calories=body.calories,
+            prep_time_minutes=body.prep_time_minutes,
             price_minor=to_minor(body.price, version.currency),
             is_combo=body.is_combo,
             sort_order=body.sort_order,

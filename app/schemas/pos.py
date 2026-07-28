@@ -176,6 +176,9 @@ class MenuItemIn(BaseModel):
     product_id: int | None = None
     category: str | None = Field(default=None, max_length=100)
     image_url: str | None = Field(default=None, max_length=1024)
+    description: str | None = Field(default=None, max_length=2000)
+    calories: int | None = Field(default=None, ge=0)
+    prep_time_minutes: int | None = Field(default=None, ge=0)
     is_combo: bool = False
     sort_order: int = 0
     component_item_ids: list[int] = Field(default_factory=list)

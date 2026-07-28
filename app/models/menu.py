@@ -77,6 +77,11 @@ class MenuItem(Base, PKMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str | None] = mapped_column(String(100), index=True)
     image_url: Mapped[str | None] = mapped_column(String(1024))
+    # Customer-facing detail fields (QR menu item modal). All optional — an item
+    # without them renders exactly as before, the UI hides any empty section.
+    description: Mapped[str | None] = mapped_column(String(2000))
+    calories: Mapped[int | None] = mapped_column(Integer)
+    prep_time_minutes: Mapped[int | None] = mapped_column(Integer)
     price_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_combo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

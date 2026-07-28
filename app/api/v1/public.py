@@ -43,6 +43,9 @@ def public_menu(slug: str, db: Session = Depends(get_db)):
             "name": item.name,
             "category": item.category,
             "price_minor": item.price_minor,
+            "description": item.description,
+            "calories": item.calories,
+            "prep_time_minutes": item.prep_time_minutes,
             # No branch context on the public menu — a published item is
             # listed as available; branch-level 86'ing is a POS concern.
             "is_available": True,
