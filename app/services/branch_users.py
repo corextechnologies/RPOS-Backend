@@ -21,8 +21,10 @@ from app.models.user import User
 from app.schemas.branch import (
     BranchStaffCreate,
     BranchStaffCreateResult,
+    BranchStaffOut,
     BranchStaffUpdate,
 )
+from app.services import storage
 from app.services.audit import AuditService
 
 
@@ -42,14 +44,22 @@ class BranchUserService:
         if existing is not None:
             raise ConflictError("A user with this email already exists.")
 
+        # Branch staff keep a real password: unlike kitchen/warehouse roster
+        # records, they sign in to the POS to run tills.
         password = generate_password()
         user = User(
             restaurant_id=manager.restaurant_id,
             email=body.email,
             hashed_password=hash_password(password),
             full_name=body.full_name,
+            phone_number=body.phone_number,
+            address=body.address,
             role=UserRole.BRANCH_STAFF,
             position=body.position,
+            # Store the KEY, never a URL — see app/services/storage.py.
+            image_url=storage.to_key(body.image_url),
+            cnic_front_url=storage.to_key(body.cnic_front_url),
+            cnic_back_url=storage.to_key(body.cnic_back_url),
             created_by_id=manager.id,
             branch_id=branch_id,
         )
@@ -80,9 +90,15 @@ class BranchUserService:
 
         return BranchStaffCreateResult(
             user_id=user.id,
+            full_name=user.full_name,
+            image_url=storage.resolve(user.image_url, public=False),
             email=user.email,
-            role=user.role,
+            phone_number=user.phone_number,
+            address=user.address,
             position=user.position,
+            cnic_front_url=storage.resolve(user.cnic_front_url, public=False),
+            cnic_back_url=storage.resolve(user.cnic_back_url, public=False),
+            role=user.role,
             branch_id=branch_id,
             credential_email_sent=sent,
         )
@@ -128,6 +144,20 @@ class BranchUserService:
     ) -> User:
         target = BranchUserService._get_own_staff(db, manager, user_id)
         changes = body.model_dump(exclude_unset=True)
+
+        # Email stays unique across all users. Only check when it actually
+        # changes, so re-saving the same address is a no-op rather than a clash.
+        new_email = changes.get("email")
+        if new_email is not None and new_email != target.email:
+            clash = db.execute(
+                select(User).where(User.email == new_email, User.id != target.id)
+            ).scalar_one_or_none()
+            if clash is not None:
+                raise ConflictError("A user with this email already exists.")
+
+        # The client posts back the URLs it got from the uploads; persist keys.
+        storage.normalize_image_changes(changes)
+
         for field, value in changes.items():
             setattr(target, field, value)
         AuditService.record(
@@ -142,6 +172,18 @@ class BranchUserService:
         db.commit()
         db.refresh(target)
         return target
+
+    @staticmethod
+    def to_out(user: User) -> BranchStaffOut:
+        """Serialize for the API, turning stored keys into signed URLs.
+
+        Routes must use this rather than BranchStaffOut.model_validate(user): that
+        reads the image columns straight off the row, which are storage keys and
+        useless to a browser.
+        """
+        out = BranchStaffOut.model_validate(user)
+        storage.apply_user_image_urls(out, user)
+        return out
 
     @staticmethod
     def set_active(

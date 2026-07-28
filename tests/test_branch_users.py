@@ -3,7 +3,7 @@ import pytest
 
 from app.core.credentials import get_mailer
 from app.models.enums import UserRole
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, staff_payload
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def test_branch_manager_creates_staff(client, restaurant_setup, mailer):
     headers = auth_headers(client, "branch@test.com")
     resp = client.post(
         "/v1/branch/users",
-        json={"email": "cashier1@test.com", "full_name": "Sara", "position": "CASHIER"},
+        json=staff_payload(email="cashier1@test.com", role_field="position", full_name="Sara", position="CASHIER"),
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
@@ -33,19 +33,31 @@ def test_branch_manager_creates_staff(client, restaurant_setup, mailer):
 
 def test_position_is_required(client, restaurant_setup):
     headers = auth_headers(client, "branch@test.com")
-    resp = client.post(
-        "/v1/branch/users",
-        json={"email": "nopos@test.com"},
-        headers=headers,
-    )
+    body = staff_payload(email="nopos@test.com", role_field="position")
+    del body["position"]
+    resp = client.post("/v1/branch/users", json=body, headers=headers)
     assert resp.status_code == 422  # missing required position
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["full_name", "image_url", "phone_number", "address", "cnic_front_url",
+     "cnic_back_url"],
+)
+def test_every_staff_field_is_required(client, restaurant_setup, missing):
+    """All eight fields are mandatory on create — a partial body is rejected."""
+    headers = auth_headers(client, "branch@test.com")
+    body = staff_payload(email=f"partial.{missing}@test.com", role_field="position")
+    del body[missing]
+    resp = client.post("/v1/branch/users", json=body, headers=headers)
+    assert resp.status_code == 422, resp.text
 
 
 def test_invalid_position_rejected(client, restaurant_setup):
     headers = auth_headers(client, "branch@test.com")
     resp = client.post(
         "/v1/branch/users",
-        json={"email": "bad@test.com", "position": "MANAGER"},
+        json=staff_payload(email="bad@test.com", role_field="position", position="MANAGER"),
         headers=headers,
     )
     assert resp.status_code == 422
@@ -53,7 +65,8 @@ def test_invalid_position_rejected(client, restaurant_setup):
 
 def test_duplicate_email_conflicts(client, restaurant_setup):
     headers = auth_headers(client, "branch@test.com")
-    body = {"email": "branch@test.com", "position": "SALESPERSON"}
+    # The branch manager's own address is already taken.
+    body = staff_payload(email="branch@test.com", role_field="position")
     resp = client.post("/v1/branch/users", json=body, headers=headers)
     assert resp.status_code == 409
 
@@ -62,7 +75,7 @@ def test_created_staff_can_log_in(client, restaurant_setup, mailer):
     headers = auth_headers(client, "branch@test.com")
     client.post(
         "/v1/branch/users",
-        json={"email": "taker@test.com", "position": "ORDER_TAKER"},
+        json=staff_payload(email="taker@test.com", role_field="position", position="ORDER_TAKER"),
         headers=headers,
     )
     # Password was emailed (dev ConsoleMailer captures it).
@@ -81,7 +94,7 @@ def test_list_branch_staff_scoped_to_creator(
     headers = auth_headers(client, "branch@test.com")
     client.post(
         "/v1/branch/users",
-        json={"email": "s1@test.com", "position": "SALESPERSON"},
+        json=staff_payload(email="s1@test.com", role_field="position", position="SALESPERSON"),
         headers=headers,
     )
     listing = client.get("/v1/branch/users", headers=headers)
@@ -104,7 +117,7 @@ def test_staff_routes_forbidden_for_non_branch_manager(client, restaurant_setup)
     headers = auth_headers(client, "warehouse@test.com")
     assert client.post(
         "/v1/branch/users",
-        json={"email": "x@test.com", "position": "CASHIER"},
+        json=staff_payload(email="x@test.com", role_field="position", position="CASHIER"),
         headers=headers,
     ).status_code == 403
     assert client.get("/v1/branch/users", headers=headers).status_code == 403
@@ -122,7 +135,7 @@ def test_branch_staff_cannot_create_staff(client, restaurant_setup, make_user, m
     headers = auth_headers(client, "staffx@test.com")
     resp = client.post(
         "/v1/branch/users",
-        json={"email": "y@test.com", "position": "CASHIER"},
+        json=staff_payload(email="y@test.com", role_field="position", position="CASHIER"),
         headers=headers,
     )
     assert resp.status_code == 403
@@ -131,7 +144,7 @@ def test_branch_staff_cannot_create_staff(client, restaurant_setup, make_user, m
 def _create_staff(client, headers, email, position="CASHIER"):
     resp = client.post(
         "/v1/branch/users",
-        json={"email": email, "position": position},
+        json=staff_payload(email=email, role_field="position", position=position),
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
@@ -169,7 +182,7 @@ def test_revoked_staff_cannot_log_in(client, restaurant_setup, mailer):
     headers = auth_headers(client, "branch@test.com")
     client.post(
         "/v1/branch/users",
-        json={"email": "revoked2@test.com", "position": "ORDER_TAKER"},
+        json=staff_payload(email="revoked2@test.com", role_field="position", position="ORDER_TAKER"),
         headers=headers,
     )
     body = mailer.sent[-1]["body"]

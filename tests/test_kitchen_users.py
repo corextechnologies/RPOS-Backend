@@ -5,7 +5,7 @@ import pytest
 
 from app.core.credentials import get_mailer
 from app.models.enums import UserRole
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, staff_payload
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def test_create_kitchen_staff_sends_no_credentials(client, restaurant_setup, mai
     headers = auth_headers(client, "kitchen@test.com")
     resp = client.post(
         "/v1/kitchen/users",
-        json={"email": "kit.sub@test.com", "full_name": "Kit Sub"},
+        json=staff_payload(email="kit.sub@test.com", role_field="job_title", full_name="Kit Sub"),
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
@@ -38,21 +38,29 @@ def test_create_kitchen_staff_with_all_fields(client, restaurant_setup, mailer):
     headers = auth_headers(client, "kitchen@test.com")
     resp = client.post(
         "/v1/kitchen/users",
-        json={
-            "email": "chef@test.com",
-            "full_name": "Ali Chef",
-            "phone_number": "+92 300 1234567",
-            "image_url": "http://testserver/uploads/staff-images/a.png",
-            "job_title": "Head Chef",
-        },
+        json=staff_payload(
+            email="chef@test.com",
+            role_field="job_title",
+            full_name="Ali Chef",
+            phone_number="+92 300 1234567",
+            address="5 Mall Road, Lahore",
+            job_title="Head Chef",
+            image_url="staff-photos/a.webp",
+            cnic_front_url="staff-cnic/front.webp",
+            cnic_back_url="staff-cnic/back.webp",
+        ),
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["full_name"] == "Ali Chef"
     assert data["phone_number"] == "+92 300 1234567"
-    assert data["image_url"].endswith("a.png")
+    assert data["address"] == "5 Mall Road, Lahore"
     assert data["job_title"] == "Head Chef"
+    # All three images are private, so each comes back as an expiring signed link.
+    for field in ("image_url", "cnic_front_url", "cnic_back_url"):
+        assert "X-Amz-Signature" in data[field], field
+        assert "test-private" in data[field], field
 
     # ...and they come back on the listing too.
     row = next(
@@ -61,6 +69,8 @@ def test_create_kitchen_staff_with_all_fields(client, restaurant_setup, mailer):
     )
     assert row["job_title"] == "Head Chef"
     assert row["phone_number"] == "+92 300 1234567"
+    assert row["address"] == "5 Mall Road, Lahore"
+    assert "X-Amz-Signature" in row["cnic_front_url"]
 
 
 def test_kitchen_staff_cannot_log_in(client, restaurant_setup, mailer):
@@ -68,7 +78,7 @@ def test_kitchen_staff_cannot_log_in(client, restaurant_setup, mailer):
     headers = auth_headers(client, "kitchen@test.com")
     client.post(
         "/v1/kitchen/users",
-        json={"email": "nologin@test.com", "full_name": "No Login"},
+        json=staff_payload(email="nologin@test.com", role_field="job_title", full_name="No Login"),
         headers=headers,
     )
     # No password was ever issued, so nothing a caller can present will work.
@@ -91,7 +101,7 @@ def test_kitchen_staff_role_is_blocked_even_with_a_password(
     headers = auth_headers(client, "kitchen@test.com")
     created = client.post(
         "/v1/kitchen/users",
-        json={"email": "haspw@test.com", "full_name": "Has Password"},
+        json=staff_payload(email="haspw@test.com", role_field="job_title", full_name="Has Password"),
         headers=headers,
     )
     uid = created.json()["data"]["user_id"]
@@ -110,7 +120,7 @@ def test_update_kitchen_staff_all_fields(client, restaurant_setup, mailer):
     headers = auth_headers(client, "kitchen@test.com")
     created = client.post(
         "/v1/kitchen/users",
-        json={"email": "edit.all@test.com", "full_name": "Before"},
+        json=staff_payload(email="edit.all@test.com", role_field="job_title", full_name="Before"),
         headers=headers,
     )
     uid = created.json()["data"]["user_id"]
@@ -141,14 +151,14 @@ def test_update_kitchen_staff_duplicate_email_conflicts(
     headers = auth_headers(client, "kitchen@test.com")
     uid = client.post(
         "/v1/kitchen/users",
-        json={"email": "first@test.com"},
+        json=staff_payload(email="first@test.com", role_field="job_title"),
         headers=headers,
     ).json()["data"]["user_id"]
-    client.post("/v1/kitchen/users", json={"email": "second@test.com"}, headers=headers)
+    client.post("/v1/kitchen/users", json=staff_payload(email="second@test.com", role_field="job_title"), headers=headers)
 
     clash = client.patch(
         f"/v1/kitchen/users/{uid}",
-        json={"email": "second@test.com"},
+        json=staff_payload(email="second@test.com", role_field="job_title"),
         headers=headers,
     )
     assert clash.status_code == 409
@@ -156,7 +166,7 @@ def test_update_kitchen_staff_duplicate_email_conflicts(
     # Re-saving the same address is a no-op, not a clash.
     same = client.patch(
         f"/v1/kitchen/users/{uid}",
-        json={"email": "first@test.com", "job_title": "Prep"},
+        json=staff_payload(email="first@test.com", role_field="job_title", job_title="Prep"),
         headers=headers,
     )
     assert same.status_code == 200, same.text
@@ -192,7 +202,7 @@ def test_list_kitchen_staff_scoped_to_creator(
     headers = auth_headers(client, "kitchen@test.com")
     client.post(
         "/v1/kitchen/users",
-        json={"email": "k1@test.com"},
+        json=staff_payload(email="k1@test.com", role_field="job_title"),
         headers=headers,
     )
     listing = client.get("/v1/kitchen/users", headers=headers)
@@ -212,14 +222,14 @@ def test_list_kitchen_staff_scoped_to_creator(
 def test_kitchen_users_forbidden_for_non_kitchen_manager(client, restaurant_setup):
     headers = auth_headers(client, "warehouse@test.com")
     assert client.post(
-        "/v1/kitchen/users", json={"email": "x@test.com"}, headers=headers
+        "/v1/kitchen/users", json=staff_payload(email="x@test.com", role_field="job_title"), headers=headers
     ).status_code == 403
     assert client.get("/v1/kitchen/users", headers=headers).status_code == 403
 
 
 def test_duplicate_kitchen_staff_email_conflicts(client, restaurant_setup, mailer):
     headers = auth_headers(client, "kitchen@test.com")
-    body = {"email": "dup.kit@test.com"}
+    body = staff_payload(email="dup.kit@test.com", role_field="job_title")
     assert client.post("/v1/kitchen/users", json=body, headers=headers).status_code == 200
     resp = client.post("/v1/kitchen/users", json=body, headers=headers)
     assert resp.status_code == 409
@@ -229,7 +239,7 @@ def test_update_and_delete_kitchen_staff(client, restaurant_setup, mailer):
     headers = auth_headers(client, "kitchen@test.com")
     created = client.post(
         "/v1/kitchen/users",
-        json={"email": "kit.edit@test.com", "full_name": "Old"},
+        json=staff_payload(email="kit.edit@test.com", role_field="job_title", full_name="Old"),
         headers=headers,
     )
     uid = created.json()["data"]["user_id"]
@@ -250,7 +260,7 @@ def test_kitchen_has_no_revoke_route(client, restaurant_setup, mailer):
     # Revoke/restore is branch-only. The route must not exist for kitchen.
     headers = auth_headers(client, "kitchen@test.com")
     created = client.post(
-        "/v1/kitchen/users", json={"email": "kit.norevoke@test.com"}, headers=headers
+        "/v1/kitchen/users", json=staff_payload(email="kit.norevoke@test.com", role_field="job_title"), headers=headers
     )
     uid = created.json()["data"]["user_id"]
     resp = client.post(f"/v1/kitchen/users/{uid}/revoke", headers=headers)
@@ -262,7 +272,7 @@ def test_kitchen_cannot_manage_another_managers_staff(
 ):
     headers = auth_headers(client, "kitchen@test.com")
     created = client.post(
-        "/v1/kitchen/users", json={"email": "kit.owned@test.com"}, headers=headers
+        "/v1/kitchen/users", json=staff_payload(email="kit.owned@test.com", role_field="job_title"), headers=headers
     )
     uid = created.json()["data"]["user_id"]
 
@@ -287,7 +297,7 @@ def test_second_manager_at_same_kitchen_manages_staff(
     # manages staff created by the first manager — no handover needed.
     headers = auth_headers(client, "kitchen@test.com")
     created = client.post(
-        "/v1/kitchen/users", json={"email": "kit.shared@test.com"}, headers=headers
+        "/v1/kitchen/users", json=staff_payload(email="kit.shared@test.com", role_field="job_title"), headers=headers
     )
     uid = created.json()["data"]["user_id"]
 

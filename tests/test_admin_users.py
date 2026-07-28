@@ -3,7 +3,7 @@ import pytest
 
 from app.core.credentials import get_mailer
 from app.models.enums import UserRole
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, manager_payload
 
 
 @pytest.fixture
@@ -22,12 +22,10 @@ def test_create_branch_manager_with_location(
 
     resp = client.post(
         "/v1/admin/users",
-        json={
-            "email": "new.branch.mgr@test.com",
-            "full_name": "Branch Mgr",
-            "role": "BRANCH_MANAGER",
-            "branch_id": branch.id,
-        },
+        json=manager_payload(
+            "new.branch.mgr@test.com", "BRANCH_MANAGER",
+            full_name="Branch Mgr", branch_id=branch.id,
+        ),
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
@@ -43,11 +41,9 @@ def test_create_kitchen_manager(client, restaurant_setup, make_kitchen, mailer):
     headers = auth_headers(client, "admin@test.com")
     resp = client.post(
         "/v1/admin/users",
-        json={
-            "email": "new.kitchen.mgr@test.com",
-            "role": "KITCHEN_MANAGER",
-            "kitchen_id": kitchen.id,
-        },
+        json=manager_payload(
+            "new.kitchen.mgr@test.com", "KITCHEN_MANAGER", kitchen_id=kitchen.id,
+        ),
         headers=headers,
     )
     assert resp.status_code == 200
@@ -58,11 +54,9 @@ def test_create_warehouse_manager(client, restaurant_setup, make_warehouse, mail
     headers = auth_headers(client, "admin@test.com")
     resp = client.post(
         "/v1/admin/users",
-        json={
-            "email": "new.wh.mgr@test.com",
-            "role": "WAREHOUSE_MANAGER",
-            "warehouse_id": warehouse.id,
-        },
+        json=manager_payload(
+            "new.wh.mgr@test.com", "WAREHOUSE_MANAGER", warehouse_id=warehouse.id,
+        ),
         headers=headers,
     )
     assert resp.status_code == 200
@@ -72,10 +66,9 @@ def test_admin_cannot_create_admin_role(client, restaurant_setup):
     headers = auth_headers(client, "admin@test.com")
     resp = client.post(
         "/v1/admin/users",
-        json={
-            "email": "fake.admin@test.com",
-            "role": "ADMIN",
-        },
+        # Complete body on purpose: an incomplete one would 422 before the
+        # role check we are actually asserting.
+        json=manager_payload("fake.admin@test.com", "ADMIN"),
         headers=headers,
     )
     assert resp.status_code == 403
@@ -84,11 +77,7 @@ def test_admin_cannot_create_admin_role(client, restaurant_setup):
 def test_duplicate_email_conflicts(client, restaurant_setup, make_branch):
     branch = make_branch(restaurant_setup["restaurant"].id)
     headers = auth_headers(client, "admin@test.com")
-    body = {
-        "email": "branch@test.com",
-        "role": "BRANCH_MANAGER",
-        "branch_id": branch.id,
-    }
+    body = manager_payload("branch@test.com", "BRANCH_MANAGER", branch_id=branch.id)
     resp = client.post("/v1/admin/users", json=body, headers=headers)
     assert resp.status_code == 409
 
@@ -97,7 +86,8 @@ def test_branch_manager_requires_branch_id(client, restaurant_setup):
     headers = auth_headers(client, "admin@test.com")
     resp = client.post(
         "/v1/admin/users",
-        json={"email": "no.branch@test.com", "role": "BRANCH_MANAGER"},
+        # Complete apart from branch_id, so we reach the location check.
+        json=manager_payload("no.branch@test.com", "BRANCH_MANAGER"),
         headers=headers,
     )
     assert resp.status_code == 409
@@ -218,20 +208,25 @@ def test_create_manager_with_phone_and_image(
     headers = auth_headers(client, "admin@test.com")
     resp = client.post(
         "/v1/admin/users",
-        json={
-            "email": "with.profile@test.com",
-            "full_name": "Full Profile",
-            "phone_number": "+92 300 1234567",
-            "image_url": "http://testserver/uploads/employee-images/abc.png",
-            "role": "BRANCH_MANAGER",
-            "branch_id": branch.id,
-        },
+        json=manager_payload(
+            "with.profile@test.com", "BRANCH_MANAGER",
+            full_name="Full Profile",
+            phone_number="+92 300 1234567",
+            address="9 Profile Lane, Karachi",
+            image_url="staff-photos/abc.webp",
+            cnic_front_url="staff-cnic/f.webp",
+            cnic_back_url="staff-cnic/b.webp",
+            branch_id=branch.id,
+        ),
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["phone_number"] == "+92 300 1234567"
-    assert data["image_url"].endswith("abc.png")
+    assert data["address"] == "9 Profile Lane, Karachi"
+    # All three images are private, so each returns an expiring signed link.
+    for field in ("image_url", "cnic_front_url", "cnic_back_url"):
+        assert "X-Amz-Signature" in data[field], field
 
 
 def test_update_employee_phone_image_email(client, restaurant_setup):

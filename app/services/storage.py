@@ -205,6 +205,36 @@ def to_key(value: str | None) -> str | None:
     return value  # foreign/legacy URL — keep verbatim
 
 
+#: Every private image column on a user profile. Kept in one place so a new
+#: document type is added once rather than in four portal services.
+USER_IMAGE_FIELDS = ("image_url", "cnic_front_url", "cnic_back_url")
+
+
+def normalize_image_changes(changes: dict) -> dict:
+    """Convert any image field present in an update payload into a storage key.
+
+    The client posts back the URL it received from the upload; only the key is
+    persisted. Fields that were not sent are left absent, so "omitted" still means
+    "unchanged".
+    """
+    for field in USER_IMAGE_FIELDS:
+        if field in changes:
+            changes[field] = to_key(changes[field])
+    return changes
+
+
+def apply_user_image_urls(out, user) -> None:
+    """Replace the stored keys on a response schema with signed URLs, in place.
+
+    Photos of people and ID documents are private, so each is a short-lived signed
+    link. Call this on anything serialized straight off a User row — otherwise the
+    raw storage key is handed to the browser, which cannot fetch it.
+    """
+    for field in USER_IMAGE_FIELDS:
+        if hasattr(out, field):
+            setattr(out, field, resolve(getattr(user, field, None), public=False))
+
+
 def resolve(stored: str | None, *, public: bool) -> str | None:
     """Turn a stored value into a URL the browser can use.
 

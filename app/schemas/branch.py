@@ -13,36 +13,76 @@ from app.models.production_enums import ProductionLineRole
 from app.schemas.request import RequestLineCreate
 
 
-class BranchStaffCreate(BaseModel):
-    """Branch manager adds a salesperson / cashier / order-taker."""
+# Field order matches the form: name, personal image, email, phone, address,
+# position, CNIC front, CNIC back.
 
-    email: str = Field(max_length=255)
-    full_name: str | None = Field(default=None, max_length=255)
+
+class BranchStaffCreate(BaseModel):
+    """Branch manager adds a salesperson / cashier / order-taker.
+
+    Unlike kitchen and warehouse staff, branch staff DO sign in — they operate the
+    POS. `position` is therefore a fixed list, not free text: the POS derives a
+    cashier's capabilities from it, so an arbitrary label would grant nothing.
+
+    Every field is required.
+    """
+
+    full_name: str = Field(min_length=1, max_length=255)
+    #: Key or URL from POST /v1/uploads/staff-document (kind=personal).
+    image_url: str = Field(min_length=1, max_length=1024)
+    email: str = Field(min_length=1, max_length=255)
+    phone_number: str = Field(min_length=1, max_length=30)
+    address: str = Field(min_length=1, max_length=500)
     position: BranchPosition
+    #: Keys or URLs from POST /v1/uploads/staff-document (kind=cnic).
+    cnic_front_url: str = Field(min_length=1, max_length=1024)
+    cnic_back_url: str = Field(min_length=1, max_length=1024)
 
 
 class BranchStaffUpdate(BaseModel):
-    """Editable branch sub-staff fields."""
+    """Editable branch sub-staff fields.
 
-    full_name: str | None = Field(default=None, max_length=255)
+    Optional here even though the form requires them all: an omitted field means
+    "unchanged", so a partial save can never blank an address or wipe a CNIC scan,
+    and staff created before these fields existed remain editable.
+    """
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=255)
+    image_url: str | None = Field(default=None, max_length=1024)
+    email: str | None = Field(default=None, min_length=1, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=30)
+    address: str | None = Field(default=None, max_length=500)
     position: BranchPosition | None = None
+    cnic_front_url: str | None = Field(default=None, max_length=1024)
+    cnic_back_url: str | None = Field(default=None, max_length=1024)
 
 
 class BranchStaffCreateResult(BaseModel):
     user_id: int
+    full_name: str | None = None
+    image_url: str | None = None
     email: str
-    role: UserRole
+    phone_number: str | None = None
+    address: str | None = None
     position: BranchPosition
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
+    role: UserRole
     branch_id: int
     credential_email_sent: bool
 
 
 class BranchStaffOut(BaseModel):
     id: int
-    email: str
     full_name: str | None = None
-    role: UserRole
+    image_url: str | None = None
+    email: str
+    phone_number: str | None = None
+    address: str | None = None
     position: BranchPosition | None = None
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
+    role: UserRole
     is_active: bool
     branch_id: int | None = None
     created_at: datetime

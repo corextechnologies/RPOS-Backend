@@ -11,6 +11,7 @@ from app.api.v1 import (
     public,
     requests,
     super_admin,
+    uploads,
     users,
     warehouse,
 )
@@ -27,3 +28,4 @@ api_router.include_router(pos.router)
 api_router.include_router(requests.router)
 api_router.include_router(notifications.router)
 api_router.include_router(public.router)
+api_router.include_router(uploads.router)

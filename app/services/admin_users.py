@@ -57,8 +57,11 @@ class AdminUserService:
             hashed_password=hash_password(password),
             full_name=body.full_name,
             phone_number=body.phone_number,
+            address=body.address,
             # Store the KEY, never a URL — see app/services/storage.py.
             image_url=storage.to_key(body.image_url),
+            cnic_front_url=storage.to_key(body.cnic_front_url),
+            cnic_back_url=storage.to_key(body.cnic_back_url),
             role=body.role,
             created_by_id=admin.id,
             branch_id=body.branch_id,
@@ -89,10 +92,13 @@ class AdminUserService:
 
         return ManagerUserCreateResult(
             user_id=user.id,
-            email=user.email,
             full_name=user.full_name,
-            phone_number=user.phone_number,
             image_url=storage.resolve(user.image_url, public=False),
+            email=user.email,
+            phone_number=user.phone_number,
+            address=user.address,
+            cnic_front_url=storage.resolve(user.cnic_front_url, public=False),
+            cnic_back_url=storage.resolve(user.cnic_back_url, public=False),
             role=user.role,
             credential_email_sent=sent,
         )
@@ -123,7 +129,7 @@ class AdminUserService:
         to a browser.
         """
         out = EmployeeOut.model_validate(user)
-        out.image_url = storage.resolve(user.image_url, public=False)
+        storage.apply_user_image_urls(out, user)
         return out
 
     @staticmethod
@@ -170,9 +176,8 @@ class AdminUserService:
             if clash is not None:
                 raise ConflictError("A user with this email already exists.")
 
-        # The client posts back the URL it got from the upload; persist the key.
-        if "image_url" in changes:
-            changes["image_url"] = storage.to_key(changes["image_url"])
+        # The client posts back the URLs it got from the uploads; persist keys.
+        storage.normalize_image_changes(changes)
 
         for field, value in changes.items():
             setattr(target, field, value)

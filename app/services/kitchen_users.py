@@ -41,9 +41,12 @@ class KitchenUserService:
             hashed_password=unusable_password(),
             full_name=body.full_name,
             phone_number=body.phone_number,
+            address=body.address,
+            job_title=body.job_title,
             # Store the KEY, never a URL — see app/services/storage.py.
             image_url=storage.to_key(body.image_url),
-            job_title=body.job_title,
+            cnic_front_url=storage.to_key(body.cnic_front_url),
+            cnic_back_url=storage.to_key(body.cnic_back_url),
             role=UserRole.KITCHEN_STAFF,
             created_by_id=manager.id,
             kitchen_id=kitchen_id,
@@ -66,11 +69,14 @@ class KitchenUserService:
         # are roster records, not accounts — see unusable_password().
         return KitchenStaffCreateResult(
             user_id=user.id,
-            email=user.email,
             full_name=user.full_name,
-            phone_number=user.phone_number,
             image_url=storage.resolve(user.image_url, public=False),
+            email=user.email,
+            phone_number=user.phone_number,
+            address=user.address,
             job_title=user.job_title,
+            cnic_front_url=storage.resolve(user.cnic_front_url, public=False),
+            cnic_back_url=storage.resolve(user.cnic_back_url, public=False),
             role=user.role,
             kitchen_id=kitchen_id,
         )
@@ -127,9 +133,8 @@ class KitchenUserService:
             if clash is not None:
                 raise ConflictError("A user with this email already exists.")
 
-        # The client posts back the URL it got from the upload; persist the key.
-        if "image_url" in changes:
-            changes["image_url"] = storage.to_key(changes["image_url"])
+        # The client posts back the URLs it got from the uploads; persist keys.
+        storage.normalize_image_changes(changes)
 
         for field, value in changes.items():
             setattr(target, field, value)
@@ -155,7 +160,7 @@ class KitchenUserService:
         useless to a browser.
         """
         out = KitchenStaffOut.model_validate(user)
-        out.image_url = storage.resolve(user.image_url, public=False)
+        storage.apply_user_image_urls(out, user)
         return out
 
     @staticmethod

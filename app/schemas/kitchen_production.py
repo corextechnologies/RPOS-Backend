@@ -90,6 +90,10 @@ class KitchenProduceIn(BaseModel):
 # --- Kitchen sub-staff schemas ---
 
 
+# Field order across the staff schemas is the order the form asks for them:
+# name, personal image, email, phone, address, role, CNIC front, CNIC back.
+
+
 class KitchenStaffCreate(BaseModel):
     """A kitchen manager adds someone to the kitchen roster.
 
@@ -97,44 +101,64 @@ class KitchenStaffCreate(BaseModel):
     in, so no password is set and no credentials are emailed. `job_title` is the
     manager's own free-text label ("Head Chef") — the UI calls it Role, but it is
     NOT the system `role` and grants no access.
+
+    Every field is required: a roster entry is only useful complete.
     """
 
-    email: str = Field(max_length=255)
-    full_name: str | None = Field(default=None, max_length=255)
-    phone_number: str | None = Field(default=None, max_length=30)
-    #: Public URL from POST /kitchen/upload/staff-image.
-    image_url: str | None = Field(default=None, max_length=1024)
-    job_title: str | None = Field(default=None, max_length=100)
+    full_name: str = Field(min_length=1, max_length=255)
+    #: Key or URL from POST /v1/uploads/staff-document (kind=personal).
+    image_url: str = Field(min_length=1, max_length=1024)
+    email: str = Field(min_length=1, max_length=255)
+    phone_number: str = Field(min_length=1, max_length=30)
+    address: str = Field(min_length=1, max_length=500)
+    job_title: str = Field(min_length=1, max_length=100)
+    #: Keys or URLs from POST /v1/uploads/staff-document (kind=cnic).
+    cnic_front_url: str = Field(min_length=1, max_length=1024)
+    cnic_back_url: str = Field(min_length=1, max_length=1024)
 
 
 class KitchenStaffUpdate(BaseModel):
-    """Editable kitchen sub-staff fields. Every field is optional (partial)."""
+    """Editable kitchen sub-staff fields.
 
-    full_name: str | None = Field(default=None, max_length=255)
-    email: str | None = Field(default=None, max_length=255)
-    phone_number: str | None = Field(default=None, max_length=30)
+    Optional here even though the form requires them all: an omitted field means
+    "unchanged", so a partial save can never blank an address or wipe a CNIC scan,
+    and staff created before these fields existed remain editable.
+    """
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=255)
     image_url: str | None = Field(default=None, max_length=1024)
+    email: str | None = Field(default=None, min_length=1, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=30)
+    address: str | None = Field(default=None, max_length=500)
     job_title: str | None = Field(default=None, max_length=100)
+    cnic_front_url: str | None = Field(default=None, max_length=1024)
+    cnic_back_url: str | None = Field(default=None, max_length=1024)
 
 
 class KitchenStaffCreateResult(BaseModel):
     user_id: int
-    email: str
     full_name: str | None = None
-    phone_number: str | None = None
     image_url: str | None = None
+    email: str
+    phone_number: str | None = None
+    address: str | None = None
     job_title: str | None = None
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
     role: UserRole
     kitchen_id: int
 
 
 class KitchenStaffOut(BaseModel):
     id: int
-    email: str
     full_name: str | None = None
-    phone_number: str | None = None
     image_url: str | None = None
+    email: str
+    phone_number: str | None = None
+    address: str | None = None
     job_title: str | None = None
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
     role: UserRole
     is_active: bool
     kitchen_id: int | None = None

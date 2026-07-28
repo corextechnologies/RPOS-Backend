@@ -40,7 +40,7 @@ def list_warehouse_staff(
     rows, total = WarehouseUserService.list_staff(
         db, current, offset=offset, limit=page_size
     )
-    data = [WarehouseStaffOut.model_validate(u).model_dump(mode="json") for u in rows]
+    data = [WarehouseUserService.to_out(u).model_dump(mode="json") for u in rows]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 
@@ -52,7 +52,7 @@ def update_warehouse_staff(
     db: Session = Depends(get_db),
 ):
     user = WarehouseUserService.update_staff(db, current, user_id, body)
-    return ok(WarehouseStaffOut.model_validate(user).model_dump(mode="json"))
+    return ok(WarehouseUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.delete("/users/{user_id}")

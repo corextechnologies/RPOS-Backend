@@ -15,29 +15,75 @@ from app.schemas.admin import ProductPublicOut
 from app.schemas.request import RequestLineCreate
 
 
+# Field order matches the form: name, personal image, email, phone, address,
+# role, CNIC front, CNIC back.
+
+
 class WarehouseStaffCreate(BaseModel):
-    email: str = Field(max_length=255)
-    full_name: str | None = Field(default=None, max_length=255)
+    """A warehouse manager adds someone to the warehouse roster.
+
+    Personnel records, not system users: warehouse sub-staff cannot sign in, so no
+    password is set and no credentials are emailed. All warehouse operations are
+    the manager's. `job_title` is the manager's own free-text label ("Loader") —
+    the UI calls it Role, but it is NOT the system `role` and grants no access.
+
+    Every field is required.
+    """
+
+    full_name: str = Field(min_length=1, max_length=255)
+    #: Key or URL from POST /v1/uploads/staff-document (kind=personal).
+    image_url: str = Field(min_length=1, max_length=1024)
+    email: str = Field(min_length=1, max_length=255)
+    phone_number: str = Field(min_length=1, max_length=30)
+    address: str = Field(min_length=1, max_length=500)
+    job_title: str = Field(min_length=1, max_length=100)
+    #: Keys or URLs from POST /v1/uploads/staff-document (kind=cnic).
+    cnic_front_url: str = Field(min_length=1, max_length=1024)
+    cnic_back_url: str = Field(min_length=1, max_length=1024)
 
 
 class WarehouseStaffUpdate(BaseModel):
-    """Editable warehouse sub-staff fields."""
+    """Editable warehouse sub-staff fields.
 
-    full_name: str | None = Field(default=None, max_length=255)
+    Optional here even though the form requires them all: an omitted field means
+    "unchanged", so a partial save can never blank an address or wipe a CNIC scan,
+    and staff created before these fields existed remain editable.
+    """
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=255)
+    image_url: str | None = Field(default=None, max_length=1024)
+    email: str | None = Field(default=None, min_length=1, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=30)
+    address: str | None = Field(default=None, max_length=500)
+    job_title: str | None = Field(default=None, max_length=100)
+    cnic_front_url: str | None = Field(default=None, max_length=1024)
+    cnic_back_url: str | None = Field(default=None, max_length=1024)
 
 
 class WarehouseStaffCreateResult(BaseModel):
     user_id: int
+    full_name: str | None = None
+    image_url: str | None = None
     email: str
+    phone_number: str | None = None
+    address: str | None = None
+    job_title: str | None = None
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
     role: UserRole
     warehouse_id: int
-    credential_email_sent: bool
 
 
 class WarehouseStaffOut(BaseModel):
     id: int
-    email: str
     full_name: str | None = None
+    image_url: str | None = None
+    email: str
+    phone_number: str | None = None
+    address: str | None = None
+    job_title: str | None = None
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
     role: UserRole
     is_active: bool
     warehouse_id: int | None = None

@@ -36,7 +36,7 @@ def list_branch_staff(
     rows, total = BranchUserService.list_staff(
         db, current, offset=offset, limit=page_size
     )
-    data = [BranchStaffOut.model_validate(u).model_dump(mode="json") for u in rows]
+    data = [BranchUserService.to_out(u).model_dump(mode="json") for u in rows]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 
@@ -48,7 +48,7 @@ def update_branch_staff(
     db: Session = Depends(get_db),
 ):
     user = BranchUserService.update_staff(db, current, user_id, body)
-    return ok(BranchStaffOut.model_validate(user).model_dump(mode="json"))
+    return ok(BranchUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.post("/users/{user_id}/revoke")
@@ -58,7 +58,7 @@ def revoke_branch_staff(
     db: Session = Depends(get_db),
 ):
     user = BranchUserService.set_active(db, current, user_id, is_active=False)
-    return ok(BranchStaffOut.model_validate(user).model_dump(mode="json"))
+    return ok(BranchUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.post("/users/{user_id}/restore")
@@ -68,7 +68,7 @@ def restore_branch_staff(
     db: Session = Depends(get_db),
 ):
     user = BranchUserService.set_active(db, current, user_id, is_active=True)
-    return ok(BranchStaffOut.model_validate(user).model_dump(mode="json"))
+    return ok(BranchUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.delete("/users/{user_id}")

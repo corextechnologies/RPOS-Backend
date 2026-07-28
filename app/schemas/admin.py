@@ -34,13 +34,27 @@ class LocationOut(BaseModel):
 
 
 class ManagerUserCreate(BaseModel):
-    email: str = Field(max_length=255)
-    full_name: str | None = Field(default=None, max_length=255)
-    phone_number: str | None = Field(default=None, max_length=30)
-    #: Public URL from POST /admin/upload/employee-image. The frontend uploads
-    #: the file there first, then passes the returned URL here.
-    image_url: str | None = Field(default=None, max_length=1024)
+    """Admin adds a warehouse / kitchen / branch manager.
+
+    Same eight required fields as sub-staff, in the same order, so a manager's
+    profile is as complete as the people they will provision. `role` here is the
+    real system role and decides access — unlike the free-text job_title kitchen
+    and warehouse sub-staff carry, which is a label only.
+
+    The location FK is separate and conditional: exactly the one matching `role`
+    must be supplied (enforced by validate_manager_location).
+    """
+
+    full_name: str = Field(min_length=1, max_length=255)
+    #: Key or URL from POST /v1/uploads/staff-document (kind=personal).
+    image_url: str = Field(min_length=1, max_length=1024)
+    email: str = Field(min_length=1, max_length=255)
+    phone_number: str = Field(min_length=1, max_length=30)
+    address: str = Field(min_length=1, max_length=500)
     role: UserRole
+    #: Keys or URLs from POST /v1/uploads/staff-document (kind=cnic).
+    cnic_front_url: str = Field(min_length=1, max_length=1024)
+    cnic_back_url: str = Field(min_length=1, max_length=1024)
     branch_id: int | None = None
     kitchen_id: int | None = None
     warehouse_id: int | None = None
@@ -48,10 +62,13 @@ class ManagerUserCreate(BaseModel):
 
 class ManagerUserCreateResult(BaseModel):
     user_id: int
-    email: str
     full_name: str | None = None
-    phone_number: str | None = None
     image_url: str | None = None
+    email: str
+    phone_number: str | None = None
+    address: str | None = None
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
     role: UserRole
     credential_email_sent: bool
 
@@ -65,9 +82,12 @@ class EmployeeUpdate(BaseModel):
     """
 
     full_name: str | None = Field(default=None, max_length=255)
+    image_url: str | None = Field(default=None, max_length=1024)
     email: str | None = Field(default=None, max_length=255)
     phone_number: str | None = Field(default=None, max_length=30)
-    image_url: str | None = Field(default=None, max_length=1024)
+    address: str | None = Field(default=None, max_length=500)
+    cnic_front_url: str | None = Field(default=None, max_length=1024)
+    cnic_back_url: str | None = Field(default=None, max_length=1024)
     is_active: bool | None = None
     branch_id: int | None = None
     kitchen_id: int | None = None
@@ -76,10 +96,13 @@ class EmployeeUpdate(BaseModel):
 
 class EmployeeOut(BaseModel):
     id: int
-    email: str
     full_name: str | None = None
-    phone_number: str | None = None
     image_url: str | None = None
+    email: str
+    phone_number: str | None = None
+    address: str | None = None
+    cnic_front_url: str | None = None
+    cnic_back_url: str | None = None
     role: UserRole
     is_active: bool
     branch_id: int | None = None

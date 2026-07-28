@@ -5,7 +5,7 @@ import pytest
 
 from app.core.credentials import get_mailer
 from app.models.enums import UserRole
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, staff_payload
 
 
 @pytest.fixture
@@ -26,13 +26,16 @@ def warehouse_ready(db, restaurant_setup, make_warehouse):
     return {"warehouse": warehouse, "manager": mgr, **restaurant_setup}
 
 
-def test_create_warehouse_staff_with_credential_email(
+def test_create_warehouse_staff_sends_no_credentials(
     client, warehouse_ready, mailer
 ):
+    """Warehouse sub-staff are roster records, not accounts — no password, no email."""
     headers = auth_headers(client, "warehouse@test.com")
     resp = client.post(
         "/v1/warehouse/users",
-        json={"email": "wh.sub@test.com", "full_name": "WH Sub"},
+        json=staff_payload(
+            email="wh.sub@test.com", role_field="job_title", full_name="WH Sub"
+        ),
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
@@ -40,9 +43,25 @@ def test_create_warehouse_staff_with_credential_email(
     assert data["email"] == "wh.sub@test.com"
     assert data["role"] == "WAREHOUSE_STAFF"
     assert data["warehouse_id"] == warehouse_ready["warehouse"].id
-    assert data["credential_email_sent"] is True
-    assert len(mailer.sent) == 1
-    assert mailer.sent[0]["to"] == "wh.sub@test.com"
+    # No credentials exist, so none are mailed and the field is gone entirely.
+    assert "credential_email_sent" not in data
+    assert mailer.sent == []
+
+
+def test_warehouse_staff_cannot_log_in(client, warehouse_ready, mailer):
+    """There is no warehouse sub-staff portal — all operations are the manager's."""
+    headers = auth_headers(client, "warehouse@test.com")
+    client.post(
+        "/v1/warehouse/users",
+        json=staff_payload(email="wh.nologin@test.com", role_field="job_title"),
+        headers=headers,
+    )
+    for guess in ("", "Admin@1234", "Pass@1234"):
+        resp = client.post(
+            "/v1/auth/login",
+            json={"email": "wh.nologin@test.com", "password": guess},
+        )
+        assert resp.status_code == 401, resp.text
 
 
 def test_list_staff_is_scoped_to_warehouse(
@@ -121,7 +140,7 @@ def test_create_staff_requires_warehouse_assignment(
     headers = auth_headers(client, "warehouse@test.com")
     resp = client.post(
         "/v1/warehouse/users",
-        json={"email": "nobody@test.com"},
+        json=staff_payload(email="nobody@test.com", role_field="job_title"),
         headers=headers,
     )
     assert resp.status_code == 409
@@ -132,16 +151,18 @@ def test_admin_cannot_use_warehouse_users_api(client, warehouse_ready):
     headers = auth_headers(client, "admin@test.com")
     resp = client.post(
         "/v1/warehouse/users",
-        json={"email": "x@test.com"},
+        json=staff_payload(email="x@test.com", role_field="job_title"),
         headers=headers,
     )
     assert resp.status_code == 403
 
 
-def test_warehouse_sub_staff_can_read_inventory(
-    client, warehouse_ready, make_user
-):
-    # A sub-staff shares the manager's operational warehouse access.
+def test_warehouse_sub_staff_has_no_portal_access(client, warehouse_ready, make_user):
+    """Sub-staff no longer operate the warehouse — they cannot even sign in.
+
+    Previously they shared the manager's access to inventory, stock counts and
+    requests. That is now the manager's alone.
+    """
     make_user(
         "wh.reader@test.com",
         UserRole.WAREHOUSE_STAFF,
@@ -149,29 +170,17 @@ def test_warehouse_sub_staff_can_read_inventory(
         created_by_id=warehouse_ready["manager"].id,
         warehouse_id=warehouse_ready["warehouse"].id,
     )
-    headers = auth_headers(client, "wh.reader@test.com")
-    resp = client.get("/v1/warehouse/inventory", headers=headers)
-    assert resp.status_code == 200, resp.text
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": "wh.reader@test.com", "password": "Pass@1234"},
+    )
+    assert login.status_code == 401, login.text
 
 
-def test_warehouse_sub_staff_cannot_provision_staff(
-    client, warehouse_ready, make_user
-):
-    # Staff provisioning stays manager-only — a sub-staff is forbidden.
-    make_user(
-        "wh.nostaff@test.com",
-        UserRole.WAREHOUSE_STAFF,
-        restaurant_id=warehouse_ready["restaurant"].id,
-        created_by_id=warehouse_ready["manager"].id,
-        warehouse_id=warehouse_ready["warehouse"].id,
-    )
-    headers = auth_headers(client, "wh.nostaff@test.com")
-    resp = client.post(
-        "/v1/warehouse/users",
-        json={"email": "should.fail@test.com"},
-        headers=headers,
-    )
-    assert resp.status_code == 403
+def test_warehouse_manager_still_reads_inventory(client, warehouse_ready):
+    # The manager keeps full operational access.
+    headers = auth_headers(client, "warehouse@test.com")
+    assert client.get("/v1/warehouse/inventory", headers=headers).status_code == 200
 
 
 def test_warehouse_sub_staff_appears_in_admin_roster(
@@ -199,7 +208,7 @@ def test_warehouse_sub_staff_appears_in_admin_roster(
 
 def test_duplicate_staff_email_conflicts(client, warehouse_ready, mailer):
     headers = auth_headers(client, "warehouse@test.com")
-    body = {"email": "dup.wh@test.com"}
+    body = staff_payload(email="dup.wh@test.com", role_field="job_title")
     assert client.post("/v1/warehouse/users", json=body, headers=headers).status_code == 200
     resp = client.post("/v1/warehouse/users", json=body, headers=headers)
     assert resp.status_code == 409
@@ -209,7 +218,7 @@ def test_update_and_delete_warehouse_staff(client, warehouse_ready, mailer):
     headers = auth_headers(client, "warehouse@test.com")
     created = client.post(
         "/v1/warehouse/users",
-        json={"email": "wh.edit@test.com", "full_name": "Old"},
+        json=staff_payload(email="wh.edit@test.com", role_field="job_title", full_name="Old"),
         headers=headers,
     )
     uid = created.json()["data"]["user_id"]
@@ -231,7 +240,7 @@ def test_warehouse_has_no_revoke_route(client, warehouse_ready, mailer):
     headers = auth_headers(client, "warehouse@test.com")
     created = client.post(
         "/v1/warehouse/users",
-        json={"email": "wh.norevoke@test.com"},
+        json=staff_payload(email="wh.norevoke@test.com", role_field="job_title"),
         headers=headers,
     )
     uid = created.json()["data"]["user_id"]
@@ -246,7 +255,7 @@ def test_warehouse_manager_cannot_manage_another_warehouses_staff(
     headers = auth_headers(client, "warehouse@test.com")
     created = client.post(
         "/v1/warehouse/users",
-        json={"email": "wh.owned@test.com"},
+        json=staff_payload(email="wh.owned@test.com", role_field="job_title"),
         headers=headers,
     )
     uid = created.json()["data"]["user_id"]

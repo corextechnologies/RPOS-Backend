@@ -45,11 +45,17 @@ class User(Base, PKMixin, TimestampMixin):
     position: Mapped[BranchPosition | None] = mapped_column(
         SAEnum(BranchPosition, name="branch_position")
     )
-    # Free-text job title the kitchen manager types for their sub-staff
-    # ("Head Chef", "Baker"). Distinct from `role`, which is the system role and
+    # Free-text job title the kitchen/warehouse manager types for their sub-staff
+    # ("Head Chef", "Loader"). Distinct from `role`, which is the system role and
     # decides access; this is a label only and grants nothing. Deliberately not
-    # an enum — unlike BranchPosition, the kitchen invents its own titles.
+    # an enum — unlike BranchPosition, which the POS derives capabilities from and
+    # therefore must stay a fixed list.
     job_title: Mapped[str | None] = mapped_column(String(100))
+    address: Mapped[str | None] = mapped_column(String(500))
+    # CNIC (national ID) scans. Sensitive personal documents: stored in the
+    # PRIVATE bucket and only ever served as short-lived signed links.
+    cnic_front_url: Mapped[str | None] = mapped_column(String(1024))
+    cnic_back_url: Mapped[str | None] = mapped_column(String(1024))
     # POS-0: fast re-auth on a shared terminal. Hashed like a password and never
     # returned. A PIN is a convenience *within* a device already bound to a
     # branch — it is not a credential on its own, which is why pin-unlock still

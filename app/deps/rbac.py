@@ -64,8 +64,12 @@ MANAGER_LOCATION_ATTR = {
 }
 
 # Roles that live at a warehouse and may read/operate warehouse-scoped data.
-# Both roles operate the warehouse; only the manager provisions sub-staff.
-WAREHOUSE_ROLES = {UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF}
+#
+# WAREHOUSE_STAFF is deliberately absent: like kitchen staff they are roster
+# records with no portal (see NO_LOGIN_ROLES in app/api/v1/auth.py), so they can
+# never be the actor on a request. All warehouse operations — inventory, stock
+# counts, purchase requests — are the manager's.
+WAREHOUSE_ROLES = {UserRole.WAREHOUSE_MANAGER}
 
 # Roles that live at a kitchen and may read kitchen-scoped data.
 # KITCHEN_STAFF is deliberately absent: they are roster records with no portal

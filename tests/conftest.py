@@ -103,6 +103,46 @@ def png_bytes(width: int = 40, height: int = 30) -> bytes:
     return buf.getvalue()
 
 
+def staff_payload(email: str, **overrides) -> dict:
+    """A complete staff-create body. All eight fields are required now.
+
+    Pass `position=` for branch staff (fixed dropdown) or `job_title=` for kitchen
+    and warehouse (free text); `role_field` picks which one is included.
+    """
+    role_field = overrides.pop("role_field", "job_title")
+    body = {
+        "full_name": "Test Staff",
+        "image_url": "staff-photos/photo.webp",
+        "email": email,
+        "phone_number": "+92 300 1234567",
+        "address": "12 Test Road, Lahore",
+        role_field: "SALESPERSON" if role_field == "position" else "Helper",
+        "cnic_front_url": "staff-cnic/front.webp",
+        "cnic_back_url": "staff-cnic/back.webp",
+    }
+    body.update(overrides)
+    return body
+
+
+def manager_payload(email: str, role: str, **overrides) -> dict:
+    """A complete manager-create body for POST /v1/admin/users.
+
+    Same eight required fields as staff, plus the location FK matching `role`.
+    """
+    body = {
+        "full_name": "Test Manager",
+        "image_url": "staff-photos/photo.webp",
+        "email": email,
+        "phone_number": "+92 300 7654321",
+        "address": "1 Manager Street, Karachi",
+        "role": role,
+        "cnic_front_url": "staff-cnic/front.webp",
+        "cnic_back_url": "staff-cnic/back.webp",
+    }
+    body.update(overrides)
+    return body
+
+
 class _FakeR2:
     """In-memory stand-in for the R2 client.
 

@@ -31,10 +31,14 @@ from app.schemas.auth import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Roles that exist as personnel records but have no portal. Kitchen sub-staff are
-# a roster the kitchen manager keeps — names, titles, contact details — not people
-# who use the software.
-NO_LOGIN_ROLES = {UserRole.KITCHEN_STAFF}
+# Roles that exist as personnel records but have no portal — a roster their manager
+# keeps (names, titles, contact details, ID documents), not people who use the
+# software.
+#
+# BRANCH_STAFF is deliberately NOT here: cashiers and salespeople sign in to the
+# POS to open tills and take payments, and their `position` is what the POS derives
+# those capabilities from. Removing their login would break the sell floor.
+NO_LOGIN_ROLES = {UserRole.KITCHEN_STAFF, UserRole.WAREHOUSE_STAFF}
 
 
 def _issue_tokens(db: Session, user: User) -> dict:
