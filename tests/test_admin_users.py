@@ -278,11 +278,16 @@ def test_update_employee_same_email_is_noop(client, restaurant_setup):
 
 
 def test_upload_employee_image(client, restaurant_setup):
+    from tests.conftest import png_bytes
+
     headers = auth_headers(client, "admin@test.com")
-    files = {"file": ("pic.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, "image/png")}
+    files = {"file": ("pic.png", png_bytes(), "image/png")}
     resp = client.post("/v1/admin/upload/employee-image", files=files, headers=headers)
     assert resp.status_code == 200, resp.text
-    assert "/uploads/employee-images/" in resp.json()["data"]["url"]
+    data = resp.json()["data"]
+    assert data["key"].startswith("employee-images/")
+    # A photo of a person is private — reachable only via an expiring signed link.
+    assert "X-Amz-Signature" in data["url"]
 
 
 def test_upload_employee_image_rejects_bad_type(client, restaurant_setup):

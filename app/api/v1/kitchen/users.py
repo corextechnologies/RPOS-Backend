@@ -40,7 +40,7 @@ def list_kitchen_staff(
     rows, total = KitchenUserService.list_staff(
         db, current, offset=offset, limit=page_size
     )
-    data = [KitchenStaffOut.model_validate(u).model_dump(mode="json") for u in rows]
+    data = [KitchenUserService.to_out(u).model_dump(mode="json") for u in rows]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 
@@ -52,7 +52,7 @@ def update_kitchen_staff(
     db: Session = Depends(get_db),
 ):
     user = KitchenUserService.update_staff(db, current, user_id, body)
-    return ok(KitchenStaffOut.model_validate(user).model_dump(mode="json"))
+    return ok(KitchenUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.delete("/users/{user_id}")

@@ -13,8 +13,10 @@ from app.models.user import User
 from app.schemas.kitchen_production import (
     KitchenStaffCreate,
     KitchenStaffCreateResult,
+    KitchenStaffOut,
     KitchenStaffUpdate,
 )
+from app.services import storage
 from app.services.audit import AuditService
 
 
@@ -39,7 +41,8 @@ class KitchenUserService:
             hashed_password=unusable_password(),
             full_name=body.full_name,
             phone_number=body.phone_number,
-            image_url=body.image_url,
+            # Store the KEY, never a URL — see app/services/storage.py.
+            image_url=storage.to_key(body.image_url),
             job_title=body.job_title,
             role=UserRole.KITCHEN_STAFF,
             created_by_id=manager.id,
@@ -66,7 +69,7 @@ class KitchenUserService:
             email=user.email,
             full_name=user.full_name,
             phone_number=user.phone_number,
-            image_url=user.image_url,
+            image_url=storage.resolve(user.image_url, public=False),
             job_title=user.job_title,
             role=user.role,
             kitchen_id=kitchen_id,
@@ -124,6 +127,10 @@ class KitchenUserService:
             if clash is not None:
                 raise ConflictError("A user with this email already exists.")
 
+        # The client posts back the URL it got from the upload; persist the key.
+        if "image_url" in changes:
+            changes["image_url"] = storage.to_key(changes["image_url"])
+
         for field, value in changes.items():
             setattr(target, field, value)
         AuditService.record(
@@ -138,6 +145,18 @@ class KitchenUserService:
         db.commit()
         db.refresh(target)
         return target
+
+    @staticmethod
+    def to_out(user: User) -> KitchenStaffOut:
+        """Serialize for the API, turning the stored key into a signed URL.
+
+        Routes must use this rather than KitchenStaffOut.model_validate(user):
+        that reads image_url straight off the row, which is the storage key and
+        useless to a browser.
+        """
+        out = KitchenStaffOut.model_validate(user)
+        out.image_url = storage.resolve(user.image_url, public=False)
+        return out
 
     @staticmethod
     def delete_staff(db: Session, manager: User, user_id: int) -> None:

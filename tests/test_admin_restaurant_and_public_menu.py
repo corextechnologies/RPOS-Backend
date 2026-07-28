@@ -10,9 +10,7 @@ from app.models.menu_enums import MenuVersionStatus
 from tests.conftest import auth_headers
 
 
-def _png_bytes(size: int = 256) -> bytes:
-    header = b"\x89PNG\r\n\x1a\n"
-    return header + b"\x00" * (size - len(header))
+from tests.conftest import png_bytes as _png_bytes  # real PNG — uploads shrink it
 
 
 # ---- §1 Admin's own restaurant --------------------------------------------
@@ -104,9 +102,11 @@ def test_upload_image_returns_url(client, restaurant_setup):
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    url = resp.json()["data"]["url"]
-    assert "/uploads/logos/" in url
-    assert url.endswith(".png")
+    data = resp.json()["data"]
+    # Stored as a key in the public bucket; converted to WebP on the way in.
+    assert data["key"].startswith("logos/")
+    assert data["key"].endswith(".webp")
+    assert data["url"] == f"https://cdn.test/{data['key']}"
 
 
 def test_upload_image_accepts_svg(client, restaurant_setup):

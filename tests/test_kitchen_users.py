@@ -163,17 +163,25 @@ def test_update_kitchen_staff_duplicate_email_conflicts(
     assert same.json()["data"]["job_title"] == "Prep"
 
 
-def test_kitchen_manager_can_upload_staff_image(client, restaurant_setup):
+def test_kitchen_manager_can_upload_staff_image(client, restaurant_setup, fake_r2):
+    from tests.conftest import png_bytes
+
     headers = auth_headers(client, "kitchen@test.com")
-    files = {"file": ("pic.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, "image/png")}
+    files = {"file": ("pic.png", png_bytes(), "image/png")}
     resp = client.post("/v1/kitchen/upload/staff-image", files=files, headers=headers)
     assert resp.status_code == 200, resp.text
-    assert "/uploads/staff-images/" in resp.json()["data"]["url"]
+    data = resp.json()["data"]
+    assert data["key"].startswith("staff-images/")
+    # Private bucket, and only reachable through an expiring signed link.
+    assert ("test-private", data["key"]) in fake_r2.objects
+    assert "X-Amz-Signature" in data["url"]
 
 
 def test_staff_image_upload_is_kitchen_manager_only(client, restaurant_setup):
+    from tests.conftest import png_bytes
+
     headers = auth_headers(client, "branch@test.com")
-    files = {"file": ("pic.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, "image/png")}
+    files = {"file": ("pic.png", png_bytes(), "image/png")}
     resp = client.post("/v1/kitchen/upload/staff-image", files=files, headers=headers)
     assert resp.status_code == 403
 

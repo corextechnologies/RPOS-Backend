@@ -26,6 +26,7 @@ from app.models.menu_enums import MenuVersionStatus
 from app.models.product import Product
 from app.models.user import User
 from app.pricing.money import to_minor
+from app.services import storage
 from app.services.audit import AuditService
 
 
@@ -108,7 +109,8 @@ class MenuService:
             product_id=body.product_id,
             name=body.name,
             category=body.category,
-            image_url=body.image_url,
+            # Store the KEY, never a URL — see app/services/storage.py.
+            image_url=storage.to_key(body.image_url),
             price_minor=to_minor(body.price, version.currency),
             is_combo=body.is_combo,
             sort_order=body.sort_order,

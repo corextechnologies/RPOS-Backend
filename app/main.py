@@ -1,9 +1,6 @@
 """FastAPI application entrypoint."""
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -37,16 +34,10 @@ app.add_middleware(
 register_exception_handlers(app)
 app.include_router(api_router)
 
-_upload_path = Path(settings.upload_dir)
-try:
-    _upload_path.mkdir(parents=True, exist_ok=True)
-    app.mount("/uploads", StaticFiles(directory=str(_upload_path)), name="uploads")
-except OSError:
-    # Read-only filesystem (e.g. Vercel serverless — only /tmp is writable).
-    # Don't crash the whole app at import time just because local-disk uploads
-    # aren't available here. NOTE: local-disk uploads don't persist on such
-    # platforms — object storage is the real fix. See UPLOADS note below.
-    pass
+# No /uploads mount: images live in Cloudflare R2, not on local disk. Serving from
+# disk was the source of two faults — URLs carried whichever host was live at
+# upload time (so every host change broke every image), and serverless platforms
+# wipe the disk entirely. See app/services/storage.py.
 
 
 @app.get("/health", tags=["health"])

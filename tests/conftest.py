@@ -91,6 +91,56 @@ def client(db):
     app.dependency_overrides.clear()
 
 
+def png_bytes(width: int = 40, height: int = 30) -> bytes:
+    """A real PNG. Uploads shrink images, so Pillow must be able to open them —
+    a fake header with padding is rejected as invalid_image (correctly)."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (40, 90, 160)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class _FakeR2:
+    """In-memory stand-in for the R2 client.
+
+    Keeps the suite offline and credential-free: without this every test that
+    uploads or serializes an image would hit Cloudflare, leaving stray objects in
+    a real bucket and failing whenever the network or .env is unavailable.
+    Stored objects are inspectable via `.objects` for assertions.
+    """
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], dict] = {}
+
+    def put_object(self, *, Bucket, Key, Body, **extra):  # noqa: N803
+        self.objects[(Bucket, Key)] = {"Body": Body, **extra}
+        return {}
+
+    def generate_presigned_url(self, _op, *, Params, ExpiresIn):  # noqa: N803
+        return (
+            f"https://fake-r2.test/{Params['Bucket']}/{Params['Key']}"
+            f"?X-Amz-Expires={ExpiresIn}&X-Amz-Signature=fake"
+        )
+
+
+@pytest.fixture(autouse=True)
+def fake_r2(monkeypatch):
+    """Point storage at the in-memory client for every test."""
+    from app.core import config
+    from app.services import storage
+
+    fake = _FakeR2()
+    monkeypatch.setattr(storage, "_client", lambda: fake)
+    # Deterministic base URL so URL assertions don't depend on a developer's .env.
+    monkeypatch.setattr(config.settings, "r2_public_base_url", "https://cdn.test")
+    monkeypatch.setattr(config.settings, "r2_public_bucket", "test-public")
+    monkeypatch.setattr(config.settings, "r2_private_bucket", "test-private")
+    return fake
+
+
 # ----- data helpers -------------------------------------------------------
 
 @pytest.fixture

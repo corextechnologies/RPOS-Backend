@@ -33,7 +33,7 @@ def update_manager_user(
     db: Session = Depends(get_db),
 ):
     user = AdminUserService.update_employee(db, current, user_id, body)
-    return ok(EmployeeOut.model_validate(user).model_dump(mode="json"))
+    return ok(AdminUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.post("/users/{user_id}/revoke")
@@ -43,7 +43,7 @@ def revoke_manager_user(
     db: Session = Depends(get_db),
 ):
     user = AdminUserService.set_active(db, current, user_id, is_active=False)
-    return ok(EmployeeOut.model_validate(user).model_dump(mode="json"))
+    return ok(AdminUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.post("/users/{user_id}/restore")
@@ -53,7 +53,7 @@ def restore_manager_user(
     db: Session = Depends(get_db),
 ):
     user = AdminUserService.set_active(db, current, user_id, is_active=True)
-    return ok(EmployeeOut.model_validate(user).model_dump(mode="json"))
+    return ok(AdminUserService.to_out(user).model_dump(mode="json"))
 
 
 @router.delete("/users/{user_id}")

@@ -23,6 +23,7 @@ from app.schemas.pos import (
     MenuVersionOut,
     ModifierGroupIn,
 )
+from app.services import storage
 from app.services.availability import AvailabilityService
 from app.services.menu import MenuService
 
@@ -89,7 +90,7 @@ def _serialise_menu(menu: object) -> dict:
                 "id": item.id,
                 "name": item.name,
                 "category": item.category,
-                "image_url": item.image_url,
+                "image_url": storage.resolve(item.image_url, public=True),
                 "price_minor": item.price_minor,
                 "is_combo": item.is_combo,
                 "product_id": item.product_id,
@@ -198,7 +199,7 @@ def get_menu(
                 "id": item.id,
                 "name": item.name,
                 "category": item.category,
-                "image_url": item.image_url,
+                "image_url": storage.resolve(item.image_url, public=True),
                 "price_minor": item.price_minor,
                 "is_combo": item.is_combo,
                 "product_id": item.product_id,

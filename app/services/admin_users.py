@@ -20,10 +20,12 @@ from app.deps.rbac import (
 from app.deps.scoping import visible_users
 from app.models.user import User
 from app.schemas.admin import (
+    EmployeeOut,
     EmployeeUpdate,
     ManagerUserCreate,
     ManagerUserCreateResult,
 )
+from app.services import storage
 from app.services.audit import AuditService
 
 
@@ -55,7 +57,8 @@ class AdminUserService:
             hashed_password=hash_password(password),
             full_name=body.full_name,
             phone_number=body.phone_number,
-            image_url=body.image_url,
+            # Store the KEY, never a URL — see app/services/storage.py.
+            image_url=storage.to_key(body.image_url),
             role=body.role,
             created_by_id=admin.id,
             branch_id=body.branch_id,
@@ -89,7 +92,7 @@ class AdminUserService:
             email=user.email,
             full_name=user.full_name,
             phone_number=user.phone_number,
-            image_url=user.image_url,
+            image_url=storage.resolve(user.image_url, public=False),
             role=user.role,
             credential_email_sent=sent,
         )
@@ -110,6 +113,18 @@ class AdminUserService:
             base.order_by(User.id).offset(offset).limit(limit)
         ).scalars().all()
         return list(rows), total
+
+    @staticmethod
+    def to_out(user: User) -> EmployeeOut:
+        """Serialize for the API, turning the stored key into a signed URL.
+
+        Routes must use this rather than EmployeeOut.model_validate(user): that
+        reads image_url straight off the row, which is the storage key and useless
+        to a browser.
+        """
+        out = EmployeeOut.model_validate(user)
+        out.image_url = storage.resolve(user.image_url, public=False)
+        return out
 
     @staticmethod
     def _get_managed_employee(db: Session, admin: User, user_id: int) -> User:
@@ -154,6 +169,10 @@ class AdminUserService:
             ).scalar_one_or_none()
             if clash is not None:
                 raise ConflictError("A user with this email already exists.")
+
+        # The client posts back the URL it got from the upload; persist the key.
+        if "image_url" in changes:
+            changes["image_url"] = storage.to_key(changes["image_url"])
 
         for field, value in changes.items():
             setattr(target, field, value)

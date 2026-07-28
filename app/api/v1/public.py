@@ -13,6 +13,7 @@ from app.core.exceptions import NotFoundError
 from app.core.responses import ok
 from app.db.session import get_db
 from app.models.restaurant import Restaurant
+from app.services import storage
 from app.services.menu import MenuService
 
 router = APIRouter(prefix="/public", tags=["public"])
@@ -45,7 +46,9 @@ def public_menu(slug: str, db: Session = Depends(get_db)):
             # No branch context on the public menu — a published item is
             # listed as available; branch-level 86'ing is a POS concern.
             "is_available": True,
-            "image_url": item.image_url,
+            # Built from the stored key on every read, so the URL always matches
+            # the current host/domain instead of whatever was live at upload time.
+            "image_url": storage.resolve(item.image_url, public=True),
         }
         for item in sorted(menu.items, key=lambda i: (i.sort_order, i.id))
     ]
@@ -53,7 +56,7 @@ def public_menu(slug: str, db: Session = Depends(get_db)):
     return ok(
         {
             "restaurant_name": restaurant.name,
-            "logo_url": restaurant.logo_url,
+            "logo_url": storage.resolve(restaurant.logo_url, public=True),
             "currency": menu.currency,
             "items": items,
         }

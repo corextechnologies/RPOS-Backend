@@ -30,7 +30,7 @@ def list_employees(
     rows, total = AdminUserService.list_employees(
         db, current, offset=offset, limit=page_size
     )
-    data = [EmployeeOut.model_validate(u).model_dump(mode="json") for u in rows]
+    data = [AdminUserService.to_out(u).model_dump(mode="json") for u in rows]
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 

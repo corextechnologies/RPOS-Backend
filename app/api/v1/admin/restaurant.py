@@ -18,6 +18,7 @@ from app.models.enums import UserRole
 from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.restaurant import AdminRestaurantUpdate, RestaurantOut
+from app.services import storage
 
 router = APIRouter()
 
@@ -25,6 +26,8 @@ router = APIRouter()
 def _out(restaurant: Restaurant, admin_full_name: str | None) -> dict:
     out = RestaurantOut.model_validate(restaurant)
     out.admin_full_name = admin_full_name
+    # logo_url holds a storage key; build the public URL for the caller.
+    out.logo_url = storage.resolve(restaurant.logo_url, public=True)
     return out.model_dump(mode="json")
 
 
@@ -55,6 +58,10 @@ def update_my_restaurant(
     # is that Admin, so update their own profile name.
     if "admin_full_name" in changes:
         current.full_name = changes.pop("admin_full_name")
+
+    # The client posts back the URL it got from the upload; persist the key.
+    if "logo_url" in changes:
+        changes["logo_url"] = storage.to_key(changes["logo_url"])
 
     # Everything remaining is a plain restaurant profile column. Commercial
     # fields can't reach here — AdminRestaurantUpdate forbids them (422).
