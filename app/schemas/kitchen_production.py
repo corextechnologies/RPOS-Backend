@@ -91,28 +91,50 @@ class KitchenProduceIn(BaseModel):
 
 
 class KitchenStaffCreate(BaseModel):
+    """A kitchen manager adds someone to the kitchen roster.
+
+    These are personnel records, not system users: kitchen sub-staff cannot sign
+    in, so no password is set and no credentials are emailed. `job_title` is the
+    manager's own free-text label ("Head Chef") — the UI calls it Role, but it is
+    NOT the system `role` and grants no access.
+    """
+
     email: str = Field(max_length=255)
     full_name: str | None = Field(default=None, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=30)
+    #: Public URL from POST /kitchen/upload/staff-image.
+    image_url: str | None = Field(default=None, max_length=1024)
+    job_title: str | None = Field(default=None, max_length=100)
 
 
 class KitchenStaffUpdate(BaseModel):
-    """Editable kitchen sub-staff fields."""
+    """Editable kitchen sub-staff fields. Every field is optional (partial)."""
 
     full_name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=30)
+    image_url: str | None = Field(default=None, max_length=1024)
+    job_title: str | None = Field(default=None, max_length=100)
 
 
 class KitchenStaffCreateResult(BaseModel):
     user_id: int
     email: str
+    full_name: str | None = None
+    phone_number: str | None = None
+    image_url: str | None = None
+    job_title: str | None = None
     role: UserRole
     kitchen_id: int
-    credential_email_sent: bool
 
 
 class KitchenStaffOut(BaseModel):
     id: int
     email: str
     full_name: str | None = None
+    phone_number: str | None = None
+    image_url: str | None = None
+    job_title: str | None = None
     role: UserRole
     is_active: bool
     kitchen_id: int | None = None

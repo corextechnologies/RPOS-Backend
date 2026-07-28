@@ -19,6 +19,7 @@ from app.core.security import (
 )
 from app.db.session import get_db
 from app.deps.auth import enforce_not_halted, get_current_user
+from app.models.enums import UserRole
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.auth import (
@@ -29,6 +30,11 @@ from app.schemas.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Roles that exist as personnel records but have no portal. Kitchen sub-staff are
+# a roster the kitchen manager keeps — names, titles, contact details — not people
+# who use the software.
+NO_LOGIN_ROLES = {UserRole.KITCHEN_STAFF}
 
 
 def _issue_tokens(db: Session, user: User) -> dict:
@@ -46,6 +52,12 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
     if user is None or not verify_password(body.password, user.hashed_password):
         raise AuthError("Invalid email or password.")
+    # Checked AFTER the password so it leaks nothing: an attacker probing emails
+    # can't tell a no-portal record from a wrong password. Their stored password
+    # is unguessable by construction (see unusable_password), so this is the
+    # second barrier — it still holds if a password is ever set on such a row.
+    if user.role in NO_LOGIN_ROLES:
+        raise AuthError("This account cannot sign in.")
     if not user.is_active:
         raise AuthError("User is inactive.")
     # Halted restaurants are blocked at login, not just in the UI.

@@ -8,6 +8,7 @@ from app.api.v1.kitchen import (
     production,
     production_targets,
     requests,
+    uploads,
     users,
 )
 
@@ -20,3 +21,4 @@ router.include_router(dispatch_notifications.router)
 router.include_router(production.router)
 router.include_router(production_targets.router)
 router.include_router(users.router)
+router.include_router(uploads.router)

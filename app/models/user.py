@@ -45,6 +45,11 @@ class User(Base, PKMixin, TimestampMixin):
     position: Mapped[BranchPosition | None] = mapped_column(
         SAEnum(BranchPosition, name="branch_position")
     )
+    # Free-text job title the kitchen manager types for their sub-staff
+    # ("Head Chef", "Baker"). Distinct from `role`, which is the system role and
+    # decides access; this is a label only and grants nothing. Deliberately not
+    # an enum — unlike BranchPosition, the kitchen invents its own titles.
+    job_title: Mapped[str | None] = mapped_column(String(100))
     # POS-0: fast re-auth on a shared terminal. Hashed like a password and never
     # returned. A PIN is a convenience *within* a device already bound to a
     # branch — it is not a credential on its own, which is why pin-unlock still

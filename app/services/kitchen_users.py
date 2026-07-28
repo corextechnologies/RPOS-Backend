@@ -4,13 +4,8 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.credentials import (
-    generate_password,
-    get_mailer,
-    send_credentials_email,
-)
 from app.core.exceptions import ConflictError, NotFoundError
-from app.core.security import hash_password
+from app.core.security import unusable_password
 from app.deps.rbac import assert_kitchen_manager_can_create_staff
 from app.deps.scoping import staff_at_location
 from app.models.enums import UserRole
@@ -38,12 +33,14 @@ class KitchenUserService:
         if existing is not None:
             raise ConflictError("A user with this email already exists.")
 
-        password = generate_password()
         user = User(
             restaurant_id=manager.restaurant_id,
             email=body.email,
-            hashed_password=hash_password(password),
+            hashed_password=unusable_password(),
             full_name=body.full_name,
+            phone_number=body.phone_number,
+            image_url=body.image_url,
+            job_title=body.job_title,
             role=UserRole.KITCHEN_STAFF,
             created_by_id=manager.id,
             kitchen_id=kitchen_id,
@@ -62,23 +59,17 @@ class KitchenUserService:
         db.commit()
         db.refresh(user)
 
-        sent = True
-        try:
-            send_credentials_email(
-                get_mailer(),
-                to=user.email,
-                password=password,
-                role=user.role.value,
-            )
-        except Exception:  # pragma: no cover
-            sent = False
-
+        # No credentials email: there is no password to send. Kitchen sub-staff
+        # are roster records, not accounts — see unusable_password().
         return KitchenStaffCreateResult(
             user_id=user.id,
             email=user.email,
+            full_name=user.full_name,
+            phone_number=user.phone_number,
+            image_url=user.image_url,
+            job_title=user.job_title,
             role=user.role,
             kitchen_id=kitchen_id,
-            credential_email_sent=sent,
         )
 
     @staticmethod
@@ -122,6 +113,17 @@ class KitchenUserService:
     ) -> User:
         target = KitchenUserService._get_own_staff(db, manager, user_id)
         changes = body.model_dump(exclude_unset=True)
+
+        # Email stays unique across all users. Only check when it actually
+        # changes, so re-saving the same address is a no-op rather than a clash.
+        new_email = changes.get("email")
+        if new_email is not None and new_email != target.email:
+            clash = db.execute(
+                select(User).where(User.email == new_email, User.id != target.id)
+            ).scalar_one_or_none()
+            if clash is not None:
+                raise ConflictError("A user with this email already exists.")
+
         for field, value in changes.items():
             setattr(target, field, value)
         AuditService.record(

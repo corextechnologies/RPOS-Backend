@@ -68,7 +68,10 @@ MANAGER_LOCATION_ATTR = {
 WAREHOUSE_ROLES = {UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF}
 
 # Roles that live at a kitchen and may read kitchen-scoped data.
-KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER, UserRole.KITCHEN_STAFF}
+# KITCHEN_STAFF is deliberately absent: they are roster records with no portal
+# (see NO_LOGIN_ROLES in app/api/v1/auth.py), so they can never be the actor on a
+# request. Listing them here would imply an access path that does not exist.
+KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER}
 
 # Roles that live at a branch and may read branch-scoped data.
 BRANCH_ROLES = {UserRole.BRANCH_MANAGER, UserRole.BRANCH_STAFF}

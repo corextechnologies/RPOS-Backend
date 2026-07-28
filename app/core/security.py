@@ -1,6 +1,7 @@
 """Password hashing and JWT encode/decode helpers."""
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -21,6 +22,21 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
+
+
+def unusable_password() -> str:
+    """A well-formed hash whose plaintext is random and immediately discarded.
+
+    For rows that must exist as users but can never sign in — kitchen sub-staff
+    are roster records, not accounts. Nobody, including us, ever learns the
+    plaintext, so no password can ever be presented that verifies.
+
+    Deliberately NOT a sentinel like "" or "!": passlib RAISES on a malformed
+    hash instead of returning False, so a login attempt against such a row would
+    500 rather than cleanly fail. Hashing a real random secret keeps the stored
+    value a valid bcrypt hash while remaining impossible to guess.
+    """
+    return pwd_context.hash(secrets.token_urlsafe(32))
 
 
 def _now() -> datetime:
