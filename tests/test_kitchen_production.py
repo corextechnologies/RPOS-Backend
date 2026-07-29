@@ -213,6 +213,134 @@ def test_republishing_supersedes(client, kitchen_ctx, make_product):
     assert [r["id"] for r in active] == [second["id"]]
 
 
+# ---- replay protection ------------------------------------------------------
+#
+# Producing is the one call where a lost reply is genuinely dangerous: the client
+# cannot tell "the run happened but the response never arrived" from "nothing
+# happened", and retrying blind credits the output twice while consuming the
+# ingredients twice. An Idempotency-Key makes the retry a replay.
+
+
+def _burger_with_recipe(client, kitchen_ctx, make_product):
+    burger = make_product(
+        kitchen_ctx["restaurant"].id, name="Burger", kind=ProductKind.FINISHED_GOOD
+    )
+    kt = auth_headers(client, "kitchen@test.com")
+    client.post(
+        "/v1/kitchen/recipes",
+        json={"product_id": burger.id, "yield_qty": 1,
+              "components": [
+                  {"component_product_id": kitchen_ctx["raws"]["Bun"].id, "quantity": 2},
+                  {"component_product_id": kitchen_ctx["raws"]["Patty"].id, "quantity": 1},
+              ]},
+        headers=kt,
+    )
+    return burger, kt
+
+
+def test_retrying_produce_with_the_same_key_makes_nothing_extra(
+    client, kitchen_ctx, make_product, db
+):
+    """The whole point: a duplicated call must not double the stock."""
+    burger, kt = _burger_with_recipe(client, kitchen_ctx, make_product)
+    body = {"product_id": burger.id, "quantity": 10}
+    headers = {**kt, "Idempotency-Key": "produce-key-0001"}
+
+    first = client.post("/v1/kitchen/production", json=body, headers=headers)
+    assert first.status_code == 200, first.text
+    buns_after_first = _kitchen_stock(db, kitchen_ctx, kitchen_ctx["raws"]["Bun"].id)
+    burgers_after_first = _kitchen_stock(db, kitchen_ctx, burger.id)
+
+    # The client never saw the reply and retries with the SAME key.
+    second = client.post("/v1/kitchen/production", json=body, headers=headers)
+    assert second.status_code == 200, second.text
+
+    # Same run replayed — not a new one.
+    assert second.json()["data"]["id"] == first.json()["data"]["id"]
+    # Nothing consumed twice, nothing credited twice.
+    assert _kitchen_stock(db, kitchen_ctx, kitchen_ctx["raws"]["Bun"].id) == buns_after_first
+    assert _kitchen_stock(db, kitchen_ctx, burger.id) == burgers_after_first
+
+    # And only ONE run exists in the history.
+    runs = client.get("/v1/kitchen/production", headers=kt).json()["data"]
+    assert len([r for r in runs if r["id"] == first.json()["data"]["id"]]) == 1
+
+
+def test_a_fresh_key_genuinely_produces_again(
+    client, kitchen_ctx, make_product, db
+):
+    """A real second batch must still work — this guards against over-blocking."""
+    burger, kt = _burger_with_recipe(client, kitchen_ctx, make_product)
+    body = {"product_id": burger.id, "quantity": 5}
+
+    first = client.post(
+        "/v1/kitchen/production", json=body,
+        headers={**kt, "Idempotency-Key": "produce-key-aaa1"},
+    )
+    second = client.post(
+        "/v1/kitchen/production", json=body,
+        headers={**kt, "Idempotency-Key": "produce-key-bbb2"},
+    )
+    assert first.status_code == 200 and second.status_code == 200, second.text
+    assert first.json()["data"]["id"] != second.json()["data"]["id"]
+    assert _kitchen_stock(db, kitchen_ctx, burger.id) == 10  # both batches landed
+
+
+def test_same_key_different_body_is_a_client_bug(
+    client, kitchen_ctx, make_product
+):
+    burger, kt = _burger_with_recipe(client, kitchen_ctx, make_product)
+    headers = {**kt, "Idempotency-Key": "produce-key-reuse1"}
+    assert client.post(
+        "/v1/kitchen/production", json={"product_id": burger.id, "quantity": 5},
+        headers=headers,
+    ).status_code == 200
+    resp = client.post(
+        "/v1/kitchen/production", json={"product_id": burger.id, "quantity": 99},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "idempotency_key_reuse"
+
+
+def test_produce_without_a_key_still_works(client, kitchen_ctx, make_product):
+    """The header is optional — retrofitting must not break existing callers."""
+    burger, kt = _burger_with_recipe(client, kitchen_ctx, make_product)
+    resp = client.post(
+        "/v1/kitchen/production",
+        json={"product_id": burger.id, "quantity": 3},
+        headers=kt,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_a_failed_produce_frees_its_key(client, kitchen_ctx, make_product, db):
+    """A rolled-back run must take its key with it, so the retry is not wedged.
+
+    Otherwise a shortfall would burn the key and the chef could never retry it
+    after topping up the ingredients.
+    """
+    burger, kt = _burger_with_recipe(client, kitchen_ctx, make_product)
+    headers = {**kt, "Idempotency-Key": "produce-key-fail01"}
+
+    # Far more than the kitchen holds → insufficient_stock, everything rolls back.
+    failed = client.post(
+        "/v1/kitchen/production",
+        json={"product_id": burger.id, "quantity": 100000},
+        headers=headers,
+    )
+    assert failed.status_code == 409
+    assert failed.json()["error"]["code"] == "insufficient_stock"
+
+    # The SAME key now works for a quantity that fits.
+    retry = client.post(
+        "/v1/kitchen/production",
+        json={"product_id": burger.id, "quantity": 2},
+        headers=headers,
+    )
+    assert retry.status_code == 200, retry.text
+
+
 # ---- the kitchen makes it --------------------------------------------------
 
 def test_kitchen_production_consumes_components_and_credits_the_burger(

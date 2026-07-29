@@ -74,7 +74,7 @@ class ProductionService:
 
     @staticmethod
     def produce_at_kitchen(
-        db: Session, actor: User, kitchen_id: int, body
+        db: Session, actor: User, kitchen_id: int, body, *, commit: bool = True
     ) -> ProductionRun:
         """Make N of a finished good, consuming its recipe's components.
 
@@ -147,6 +147,7 @@ class ProductionService:
             inputs=consumed,
             outputs=[(product.id, (body.batch_code or "").strip(), batches * yield_qty, body.expiry_date)],
             recipe_id=recipe.id,
+            commit=commit,
         )
 
     @staticmethod
@@ -161,8 +162,18 @@ class ProductionService:
         inputs: list[tuple[int, str, int]],
         outputs: list[tuple[int, str, int, date | None]],
         recipe_id: int | None,
+        commit: bool = True,
     ) -> ProductionRun:
-        """The shared body: consume inputs, credit outputs, one ledger, one txn."""
+        """The shared body: consume inputs, credit outputs, one ledger, one txn.
+
+        `commit=False` hands the commit to the caller. An idempotent route needs
+        that: its Idempotency-Key claim must land in the SAME transaction as the
+        production it guards. Committing here would leave the key stored as
+        IN_FLIGHT, and a crash before the caller's own commit would strand it
+        there forever — every retry then answering "already in progress" for a run
+        that did happen. A failure still rolls back either way, which correctly
+        takes the key with it and lets the client retry into a clean slate.
+        """
         run = ProductionRun(
             restaurant_id=actor.restaurant_id,
             location_type=location_type,
@@ -276,7 +287,12 @@ class ProductionService:
                     "outputs": len(outputs),
                 },
             )
-            db.commit()
+            if commit:
+                db.commit()
+            else:
+                # Caller owns the commit — everything is flushed and visible to
+                # this session, so _load below still sees the run.
+                db.flush()
         except Exception:
             db.rollback()
             raise

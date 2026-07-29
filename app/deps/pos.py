@@ -137,3 +137,25 @@ def require_idempotency_key(
     """Presence + shape only, at the router, so a missing header 422s before any
     DB work. The transactional claim itself is IdempotencyService.claim."""
     return idempotency_key
+
+
+def optional_idempotency_key(
+    idempotency_key: str | None = Header(
+        None,
+        alias="Idempotency-Key",
+        min_length=8,
+        max_length=128,
+        description=(
+            "Optional client-generated unique key. Send it and a retry replays the "
+            "original result instead of repeating the work; omit it and the request "
+            "is unprotected."
+        ),
+    ),
+) -> str | None:
+    """Same shape check, but the header may be absent.
+
+    For endpoints being retrofitted with replay protection: making the header
+    mandatory would 422 every existing caller. Protection applies when the client
+    opts in by sending it.
+    """
+    return idempotency_key

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.auth import require_role
+from app.deps.pos import optional_idempotency_key
 from app.deps.rbac import require_actor_kitchen_id
 from app.models.enums import UserRole
 from app.models.product import ProductKind
@@ -24,6 +25,7 @@ from app.schemas.kitchen_production import (
     KitchenProductCreate,
     KitchenRecipeIn,
 )
+from app.services.idempotency import IdempotencyService
 from app.services.products import ProductService
 from app.services.production import ProductionService
 from app.services.recipes import RecipeService
@@ -100,6 +102,7 @@ def get_recipe(
 @router.post("/production")
 def produce(
     body: KitchenProduceIn,
+    idempotency_key: str | None = Depends(optional_idempotency_key),
     current: User = Depends(_MGR),
     db: Session = Depends(get_db),
 ):
@@ -107,10 +110,43 @@ def produce(
 
     The recipe decides what comes off kitchen stock. Components are consumed
     before the output is credited, so a short component can never mint stock.
+
+    Send an `Idempotency-Key` header to make a retry safe. Producing is the one
+    place a network failure is genuinely dangerous: the client cannot tell "the
+    run happened but the reply was lost" from "the run never happened", and
+    retrying blind credits the stock twice while consuming the ingredients twice.
+    With a key, the replay returns the original run instead of making more.
+
+    The header is optional so existing callers keep working, but any client that
+    retries — which is every client, eventually — should send one.
     """
     kitchen_id = require_actor_kitchen_id(current)
-    run = ProductionService.produce_at_kitchen(db, current, kitchen_id, body)
-    return ok(ProductionService.to_out(run).model_dump(mode="json"))
+
+    if idempotency_key is None:
+        run = ProductionService.produce_at_kitchen(db, current, kitchen_id, body)
+        return ok(ProductionService.to_out(run).model_dump(mode="json"))
+
+    slot = IdempotencyService.claim(
+        db,
+        current,
+        endpoint="kitchen.production.create",
+        key=idempotency_key,
+        body=body.model_dump(mode="json"),
+    )
+    if slot.replay:
+        return slot.response
+
+    # commit=False so the claim and the production land in ONE transaction. If
+    # production committed on its own, a crash before our commit below would
+    # strand the key as IN_FLIGHT and every retry would answer "already in
+    # progress" for a run that really happened.
+    run = ProductionService.produce_at_kitchen(
+        db, current, kitchen_id, body, commit=False
+    )
+    payload = ok(ProductionService.to_out(run).model_dump(mode="json"))
+    slot.complete(payload, status=200)
+    db.commit()
+    return payload
 
 
 @router.get("/production")
