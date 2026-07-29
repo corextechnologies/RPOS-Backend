@@ -120,7 +120,15 @@ def apply_discount(
 
 @router.get("/discount-rules")
 def list_discount_rules(
-    current: User = Depends(require_role(UserRole.ADMIN)),
+    # Read is needed at the till to apply discounts, so branch roles get it too;
+    # create/patch/delete below stay admin-only.
+    current: User = Depends(
+        require_role(
+            UserRole.ADMIN,
+            UserRole.BRANCH_MANAGER,
+            UserRole.BRANCH_STAFF,
+        )
+    ),
     db: Session = Depends(get_db),
 ):
     rows = db.execute(
