@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -69,6 +78,15 @@ class RequestLineItem(Base, PKMixin, TimestampMixin):
     quantity_received: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     # Free text from the warehouse on a REPORTED line ("3 crates crushed").
     issue_note: Mapped[str | None] = mapped_column(Text)
+    # Flipped true as the kitchen works a BRANCH_TO_ADMIN request line by line
+    # (/kitchen/requests/{id}/lines/{id}/produced), mirroring ProductionTargetLine.
+    # A workflow marker only — it moves no stock. The real production run is a
+    # separate POST /kitchen/production the client makes alongside it, which is
+    # what actually consumes ingredients and credits the finished goods.
+    # Meaningless on other request types, where it simply stays false.
+    produced: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
     request: Mapped[Request] = relationship("Request", back_populates="line_items")
     product: Mapped["Product"] = relationship("Product")

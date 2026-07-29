@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.models.product import ProductKind
 from app.models.request_enums import LocationType, RequestType
 
 
@@ -94,6 +95,13 @@ class RequestLineOut(BaseModel):
     quantity_approved: Quantity | None = None
     quantity_received: Quantity | None = None
     issue_note: str | None = None
+    #: Has the kitchen made this line? Only meaningful for BRANCH_TO_ADMIN from
+    #: IN_PRODUCTION onward; stays false on every other request type.
+    produced: bool = False
+    #: The product's kind, so a client can tell "make this" from "set this aside".
+    #: FINISHED_GOOD / RESALE for branch requests; RAW_MATERIAL is possible on
+    #: warehouse requests, which deal in ingredients.
+    kind: ProductKind | None = None
 
     model_config = {"from_attributes": True}
 

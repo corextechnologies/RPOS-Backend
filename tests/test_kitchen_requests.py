@@ -258,16 +258,22 @@ def test_kitchen_produces_and_allocates_for_branch(
     assert [r["id"] for r in inbox.json()["data"]] == [request_id]
 
     # Production markers move status without touching stock.
-    for status in (
-        BranchToAdminStatus.IN_PRODUCTION.value,
-        BranchToAdminStatus.PRODUCED.value,
-    ):
-        resp = client.patch(
-            f"/v1/kitchen/requests/{request_id}/status",
-            json={"to_status": status},
-            headers=kitchen_headers,
-        )
-        assert resp.status_code == 200, resp.text
+    resp = client.patch(
+        f"/v1/kitchen/requests/{request_id}/status",
+        json={"to_status": BranchToAdminStatus.IN_PRODUCTION.value},
+        headers=kitchen_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The kitchen works the checklist line by line before advancing.
+    _tick_all_lines(client, kitchen_headers, request_id)
+
+    resp = client.patch(
+        f"/v1/kitchen/requests/{request_id}/status",
+        json={"to_status": BranchToAdminStatus.PRODUCED.value},
+        headers=kitchen_headers,
+    )
+    assert resp.status_code == 200, resp.text
     assert _kitchen_qty(db, setup, buns_in_kitchen.id) == 200
 
     # ALLOCATED is the one that moves stock out of the kitchen.
@@ -315,6 +321,259 @@ def _set_status(client, headers, request_id, status):
     )
 
 
+def _get_request(client, headers, request_id):
+    resp = client.get(f"/v1/kitchen/requests/{request_id}", headers=headers)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def _tick_line(client, headers, request_id, line_id):
+    return client.post(
+        f"/v1/kitchen/requests/{request_id}/lines/{line_id}/produced",
+        headers=headers,
+    )
+
+
+def _tick_all_lines(client, headers, request_id):
+    """Work the whole checklist, as the kitchen UI does line by line."""
+    for line in _get_request(client, headers, request_id)["line_items"]:
+        resp = _tick_line(client, headers, request_id, line["id"])
+        assert resp.status_code == 200, resp.text
+
+
+# ---- per-line produced tracking (parity with production targets) ----------
+
+
+def test_request_lines_expose_produced_and_kind(
+    client, restaurant_setup, make_branch, buns_in_kitchen
+):
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=10)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    line = _get_request(client, kitchen_headers, request_id)["line_items"][0]
+    assert line["produced"] is False          # defaults false
+    assert line["kind"] == "FINISHED_GOOD"    # so the UI knows "make" vs "set aside"
+
+    # Also present on the branch inbox listing.
+    inbox = client.get("/v1/kitchen/requests/branch", headers=kitchen_headers)
+    row = next(r for r in inbox.json()["data"] if r["id"] == request_id)
+    assert row["line_items"][0]["kind"] == "FINISHED_GOOD"
+
+
+def test_mark_line_produced_flips_the_flag(
+    client, restaurant_setup, make_branch, buns_in_kitchen
+):
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=10)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+    line_id = _get_request(client, kitchen_headers, request_id)["line_items"][0]["id"]
+
+    resp = _tick_line(client, kitchen_headers, request_id, line_id)
+    assert resp.status_code == 200, resp.text
+    # Returns the FULL request, with that line flipped.
+    data = resp.json()["data"]
+    assert data["id"] == request_id
+    assert data["line_items"][0]["produced"] is True
+
+
+def test_marking_a_line_twice_is_a_safe_no_op(
+    client, restaurant_setup, make_branch, buns_in_kitchen
+):
+    """Deliberate: the client pairs this with a separate production call.
+
+    If production succeeded but this failed, the client must retry ONLY this —
+    re-running production would credit stock twice. So repeating must be safe.
+    """
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=10)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+    line_id = _get_request(client, kitchen_headers, request_id)["line_items"][0]["id"]
+
+    assert _tick_line(client, kitchen_headers, request_id, line_id).status_code == 200
+    again = _tick_line(client, kitchen_headers, request_id, line_id)
+    assert again.status_code == 200, again.text
+    assert again.json()["data"]["line_items"][0]["produced"] is True
+
+
+def test_mark_line_produced_moves_no_stock(
+    client, db, restaurant_setup, make_branch, buns_in_kitchen
+):
+    """It is a workflow marker. The real production run is a separate call."""
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=10)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+    before = _kitchen_qty(db, setup, buns_in_kitchen.id)
+
+    _tick_all_lines(client, kitchen_headers, request_id)
+    assert _kitchen_qty(db, setup, buns_in_kitchen.id) == before
+
+
+def test_mark_line_produced_requires_in_production(
+    client, restaurant_setup, make_branch, buns_in_kitchen
+):
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=10)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+    line_id = _get_request(client, kitchen_headers, request_id)["line_items"][0]["id"]
+
+    _tick_all_lines(client, kitchen_headers, request_id)
+    assert _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    ).status_code == 200
+
+    # Past IN_PRODUCTION the checklist is closed.
+    resp = _tick_line(client, kitchen_headers, request_id, line_id)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "invalid_transition"
+
+
+def test_mark_line_produced_unknown_line_is_404(
+    client, restaurant_setup, make_branch, buns_in_kitchen
+):
+    setup = restaurant_setup
+    request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=10)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+    assert _tick_line(client, kitchen_headers, request_id, 999999).status_code == 404
+
+
+def test_produced_is_blocked_until_every_line_is_ticked(
+    client, restaurant_setup, make_branch, make_product, db
+):
+    """The gate is server-side, not client-only."""
+    setup = restaurant_setup
+    product = make_product(setup["restaurant"].id, name="Buns", sku="BN-1")
+    db.add(
+        InventoryItem(
+            restaurant_id=setup["restaurant"].id,
+            location_type=LocationType.KITCHEN,
+            location_id=setup["home_kitchen"].id,
+            product_id=product.id,
+            quantity=100,
+            batch_code="",
+        )
+    )
+    db.flush()
+
+    branch = make_branch(setup["restaurant"].id, name="Two Line B")
+    created = client.post(
+        "/v1/requests",
+        json={
+            "request_type": "BRANCH_TO_ADMIN",
+            "source_location_type": "BRANCH",
+            "source_location_id": branch.id,
+            "lines": [
+                {"product_id": product.id, "quantity_requested": 5},
+                {"product_id": product.id, "quantity_requested": 5},
+            ],
+        },
+        headers=auth_headers(client, "branch@test.com"),
+    )
+    request_id = created.json()["data"]["id"]
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+    lines = _get_request(client, kitchen_headers, request_id)["line_items"]
+
+    # Tick only the first of two.
+    _tick_line(client, kitchen_headers, request_id, lines[0]["id"])
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    )
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "lines_not_all_produced"
+    assert error["details"]["unproduced_count"] == 1
+    assert error["details"]["unproduced_line_ids"] == [lines[1]["id"]]
+
+    # Tick the second and it goes through.
+    _tick_line(client, kitchen_headers, request_id, lines[1]["id"])
+    assert _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    ).status_code == 200
+
+
+def test_line_gate_is_reported_before_the_stock_gate(
+    client, restaurant_setup, make_branch, make_product
+):
+    """Ordering matters: an unticked checklist is the actionable message.
+
+    With no stock AND no ticks, both gates would fail. The chef needs to hear
+    "line 1 isn't made yet", not "insufficient stock".
+    """
+    setup = restaurant_setup
+    product = make_product(setup["restaurant"].id, name="Buns", sku="BN-1")
+    request_id = _branch_request(client, setup, make_branch, product, qty=50)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    resp = _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "lines_not_all_produced"
+
+
+def test_zero_approved_lines_do_not_block_the_gate(
+    client, db, restaurant_setup, make_branch, make_product
+):
+    """A line Admin approved for nothing cannot be produced.
+
+    Requiring a tick for it would wedge the request permanently.
+    """
+    setup = restaurant_setup
+    product = make_product(setup["restaurant"].id, name="Buns", sku="BN-1")
+    db.add(
+        InventoryItem(
+            restaurant_id=setup["restaurant"].id,
+            location_type=LocationType.KITCHEN,
+            location_id=setup["home_kitchen"].id,
+            product_id=product.id,
+            quantity=100,
+            batch_code="",
+        )
+    )
+    db.flush()
+    request_id = _branch_request(client, setup, make_branch, product, qty=10)
+    kitchen_headers = _forward_to_kitchen(client, setup, request_id)
+
+    # Zero out the approved quantity, simulating a fully-rejected line.
+    from app.models.request import RequestLineItem
+    line = db.execute(
+        select(RequestLineItem).where(RequestLineItem.request_id == request_id)
+    ).scalars().first()
+    line.quantity_approved = 0
+    db.flush()
+
+    # Nothing to tick, yet the request still advances.
+    assert _set_status(
+        client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
+    ).status_code == 200
+
+
+def test_warehouse_request_has_no_per_line_production(
+    client, restaurant_setup, flour, db
+):
+    """The endpoint is BRANCH_TO_ADMIN only."""
+    setup = restaurant_setup
+    created = client.post(
+        "/v1/requests",
+        json={
+            "request_type": "KITCHEN_TO_WAREHOUSE",
+            "source_location_type": "KITCHEN",
+            "source_location_id": setup["home_kitchen"].id,
+            "lines": [{"product_id": flour.id, "quantity_requested": 5}],
+        },
+        headers=auth_headers(client, "kitchen@test.com"),
+    )
+    assert created.status_code == 200, created.text
+    request_id = created.json()["data"]["id"]
+    line_id = created.json()["data"]["line_items"][0]["id"]
+
+    resp = _tick_line(
+        client, auth_headers(client, "kitchen@test.com"), request_id, line_id
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "invalid_request_type"
+
+
 def test_produced_is_rejected_when_the_kitchen_cannot_cover_it(
     client, db, restaurant_setup, make_branch, make_product
 ):
@@ -324,6 +583,8 @@ def test_produced_is_rejected_when_the_kitchen_cannot_cover_it(
     request_id = _branch_request(client, setup, make_branch, product, qty=200)
     kitchen_headers = _forward_to_kitchen(client, setup, request_id)
 
+    # Complete the checklist first; the line gate is checked before stock.
+    _tick_all_lines(client, kitchen_headers, request_id)
     resp = _set_status(
         client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
     )
@@ -352,6 +613,8 @@ def test_produced_validates_without_moving_stock(
     request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=200)
     kitchen_headers = _forward_to_kitchen(client, setup, request_id)
 
+    # Complete the checklist first; the line gate is checked before stock.
+    _tick_all_lines(client, kitchen_headers, request_id)
     resp = _set_status(
         client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
     )
@@ -378,6 +641,8 @@ def test_dispatch_still_guards_when_stock_drops_after_produced(
     request_id = _branch_request(client, setup, make_branch, buns_in_kitchen, qty=200)
     kitchen_headers = _forward_to_kitchen(client, setup, request_id)
 
+    # Complete the checklist first; the line gate is checked before stock.
+    _tick_all_lines(client, kitchen_headers, request_id)
     resp = _set_status(
         client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
     )
@@ -427,6 +692,8 @@ def test_produced_ignores_expired_stock_exactly_as_dispatch_does(
     request_id = _branch_request(client, setup, make_branch, product, qty=200)
     kitchen_headers = _forward_to_kitchen(client, setup, request_id)
 
+    # Complete the checklist first; the line gate is checked before stock.
+    _tick_all_lines(client, kitchen_headers, request_id)
     resp = _set_status(
         client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
     )
@@ -474,6 +741,8 @@ def test_produced_sums_repeated_products_across_lines(
     kitchen_headers = _forward_to_kitchen(client, setup, request_id)
 
     # Each line alone fits in 15; together they need 20 and must be rejected.
+    # Complete the checklist first; the line gate is checked before stock.
+    _tick_all_lines(client, kitchen_headers, request_id)
     resp = _set_status(
         client, kitchen_headers, request_id, BranchToAdminStatus.PRODUCED.value
     )

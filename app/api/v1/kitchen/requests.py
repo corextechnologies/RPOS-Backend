@@ -127,6 +127,31 @@ def get_kitchen_request(
     )
 
 
+@router.post("/{request_id}/lines/{line_id}/produced")
+def mark_request_line_produced(
+    request_id: int,
+    line_id: int,
+    current: User = Depends(_KITCHEN_MANAGER),
+    db: Session = Depends(get_db),
+):
+    """Tick one branch-request line as made. Mirrors the production-target route.
+
+    Flag only — it moves no stock. The caller pairs this with a real
+    POST /kitchen/production, which is what consumes ingredients and credits the
+    finished goods. If that call succeeded and this one failed, retry ONLY this
+    one: re-running production would credit the stock twice. Ticking an
+    already-produced line is a no-op, so retrying here is always safe.
+    """
+    request = RequestService.get_request(db, current, request_id)
+    _assert_kitchen_request_type(request)
+    updated = RequestService.mark_line_produced(db, current, request_id, line_id)
+    return ok(
+        RequestService.to_out(
+            updated, from_label=RequestService.source_label(db, updated)
+        ).model_dump(mode="json")
+    )
+
+
 @router.patch("/{request_id}/status")
 def transition_kitchen_request(
     request_id: int,

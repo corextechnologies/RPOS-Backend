@@ -283,6 +283,35 @@ def _branch_receives_stock(
     )
 
 
+def _kitchen_lines_all_produced(
+    db: Session, *, actor: User, request: Request, body: RequestTransition
+) -> None:
+    """BRANCH_TO_ADMIN -> PRODUCED: every line must be ticked as made first.
+
+    Ordered BEFORE the stock check deliberately. A chef who has not finished the
+    checklist has not produced the goods either, so the stock check would fire
+    first and report "insufficient stock" when the actionable message is
+    "line 2 is not made yet".
+
+    Zero-approved lines are skipped: a line Admin approved for nothing cannot be
+    produced, and demanding a tick for it would deadlock the request.
+    """
+    unproduced = [
+        line
+        for line in request.line_items
+        if not line.produced and _approved_quantity(line) > 0
+    ]
+    if unproduced:
+        raise ConflictError(
+            "Every line must be marked produced before the request can advance.",
+            code="lines_not_all_produced",
+            details={
+                "unproduced_line_ids": [line.id for line in unproduced],
+                "unproduced_count": len(unproduced),
+            },
+        )
+
+
 def _kitchen_can_cover_produced(
     db: Session, *, actor: User, request: Request, body: RequestTransition
 ) -> None:
@@ -337,14 +366,20 @@ def _kitchen_can_cover_produced(
             )
 
 
-# (request_type, to_status) -> validator. Gates that inspect stock but must NOT
-# move it. Kept separate from _INVENTORY_SIDE_EFFECTS so a read-only check can
-# never be mistaken for — or turn into — a second debit.
+# (request_type, to_status) -> ordered validators. Gates that inspect state but
+# must NOT move stock. Kept separate from _INVENTORY_SIDE_EFFECTS so a read-only
+# check can never be mistaken for — or turn into — a second debit.
+#
+# Order is significant and is the point of using a tuple: the first failing check
+# is the one the user sees, so the most actionable message must come first.
 _TRANSITION_VALIDATORS = {
     (
         RequestType.BRANCH_TO_ADMIN,
         BranchToAdminStatus.PRODUCED.value,
-    ): _kitchen_can_cover_produced,
+    ): (
+        _kitchen_lines_all_produced,   # "line 2 isn't made yet" — check this first
+        _kitchen_can_cover_produced,   # ...then whether the stock is really there
+    ),
 }
 
 
@@ -356,10 +391,8 @@ def _apply_transition_validators(
     to_status: str,
     body: RequestTransition,
 ) -> None:
-    validator = _TRANSITION_VALIDATORS.get((request.request_type, to_status))
-    if validator is None:
-        return
-    validator(db, actor=actor, request=request, body=body)
+    for validator in _TRANSITION_VALIDATORS.get((request.request_type, to_status), ()):
+        validator(db, actor=actor, request=request, body=body)
 
 
 # (request_type, to_status) -> handler. Every stock-moving transition lives here
@@ -496,6 +529,55 @@ class RequestService:
         if not user_can_view_request(db, actor, request):
             raise NotFoundError("Request not found.")
         return request
+
+    @staticmethod
+    def mark_line_produced(
+        db: Session, actor: User, request_id: int, line_id: int
+    ) -> Request:
+        """Tick one BRANCH_TO_ADMIN line as made. Mirrors the production-target one.
+
+        A flag flip and nothing else — it moves no stock. The real production run
+        is a separate POST /kitchen/production the client makes alongside this,
+        which is what consumes ingredients and credits the finished goods.
+
+        That decoupling has a consequence worth knowing: if the production call
+        succeeds and this one fails, retrying must retry ONLY this call. Re-running
+        the production call would credit the stock a second time. Marking an
+        already-produced line is therefore a no-op rather than an error, so a
+        retry is always safe.
+        """
+        request = RequestService._load_request(db, request_id)
+        if not user_can_view_request(db, actor, request):
+            raise NotFoundError("Request not found.")
+        if request.request_type != RequestType.BRANCH_TO_ADMIN:
+            raise ConflictError(
+                "Only a branch request has per-line production.",
+                code="invalid_request_type",
+            )
+        if request.status != BranchToAdminStatus.IN_PRODUCTION.value:
+            raise ConflictError(
+                "Lines can only be marked produced while in production.",
+                code="invalid_transition",
+            )
+        line = next((l for l in request.line_items if l.id == line_id), None)
+        if line is None:
+            raise NotFoundError("Request line not found.")
+
+        if line.produced:
+            return request  # already ticked — safe to repeat, see docstring
+
+        line.produced = True
+        AuditService.record(
+            db,
+            actor=actor,
+            action="request.line.produced",
+            entity_type="request",
+            entity_id=request.id,
+            restaurant_id=request.restaurant_id,
+            payload={"line_item_id": line.id, "product_id": line.product_id},
+        )
+        db.commit()
+        return RequestService._load_request(db, request_id)
 
     @staticmethod
     def transition(
@@ -1128,6 +1210,10 @@ class RequestService:
                     "quantity_approved": item.quantity_approved,
                     "quantity_received": item.quantity_received,
                     "issue_note": item.issue_note,
+                    "produced": item.produced,
+                    # Lets a client show "make this" vs "set this aside" without
+                    # a second round-trip to look the product up.
+                    "kind": item.product.kind if item.product else None,
                 }
             )
         allocations = []

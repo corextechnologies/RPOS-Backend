@@ -72,8 +72,24 @@ def test_branch_request_happy_path(
     assert resp.status_code == 200
 
     kitchen_headers = auth_headers(client, "kitchen@test.com")
+    resp = client.patch(
+        f"/v1/requests/{request_id}/status",
+        json={"to_status": BranchToAdminStatus.IN_PRODUCTION.value},
+        headers=kitchen_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Every line must be ticked as made before PRODUCED is allowed.
+    for line in client.get(
+        f"/v1/kitchen/requests/{request_id}", headers=kitchen_headers
+    ).json()["data"]["line_items"]:
+        marked = client.post(
+            f"/v1/kitchen/requests/{request_id}/lines/{line['id']}/produced",
+            headers=kitchen_headers,
+        )
+        assert marked.status_code == 200, marked.text
+
     for status in (
-        BranchToAdminStatus.IN_PRODUCTION.value,
         BranchToAdminStatus.PRODUCED.value,
         BranchToAdminStatus.DISPATCHED.value,
     ):

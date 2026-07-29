@@ -152,6 +152,15 @@ def test_full_lifecycle_credits_branch_inventory(client, branch_ctx, db):
     _transition(admin_headers, "FORWARDED_TO_KITCHEN", "admin")
     # 3. Kitchen produces + dispatches (dispatch debits kitchen stock).
     _transition(kitchen_headers, "IN_PRODUCTION", "kitchen")
+    # Every line must be ticked as made before the request can advance.
+    for line in client.get(
+        f"/v1/kitchen/requests/{rid}", headers=kitchen_headers
+    ).json()["data"]["line_items"]:
+        marked = client.post(
+            f"/v1/kitchen/requests/{rid}/lines/{line['id']}/produced",
+            headers=kitchen_headers,
+        )
+        assert marked.status_code == 200, marked.text
     _transition(kitchen_headers, "PRODUCED", "kitchen")
     _transition(kitchen_headers, "DISPATCHED", "kitchen")
     # 4. Branch confirms receipt via the dedicated receive endpoint.
