@@ -22,9 +22,11 @@ from app.deps.auth import enforce_not_halted, get_current_user
 from app.models.enums import UserRole
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
+from app.deps.capabilities import capabilities_for
 from app.schemas.auth import (
     LoginRequest,
     LogoutRequest,
+    MeOut,
     RefreshRequest,
     UserOut,
 )
@@ -110,4 +112,13 @@ def logout(body: LogoutRequest, db: Session = Depends(get_db)):
 
 @router.get("/me")
 def me(current: User = Depends(get_current_user)):
-    return ok(UserOut.model_validate(current).model_dump())
+    """Who am I, where do I work, and what may I do.
+
+    The client routes on this: `position == "CHEF"` opens the sub-kitchen, a
+    sell-floor position opens the till. `capabilities` is the same computed set
+    the POS bootstrap returns, so a client can show/hide actions without
+    reimplementing the role rules.
+    """
+    data = MeOut.model_validate(current).model_dump()
+    data["capabilities"] = sorted(c.value for c in capabilities_for(current))
+    return ok(data)

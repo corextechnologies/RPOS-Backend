@@ -16,7 +16,7 @@ from app.core.security import (
     verify_password,
 )
 from app.deps.auth import enforce_not_halted
-from app.deps.capabilities import capabilities_for
+from app.deps.capabilities import Capability, capabilities_for, has_capability
 from app.deps.rbac import BRANCH_ROLES
 from app.models.location import Branch
 from app.models.pos import Device, DeviceStatus
@@ -300,6 +300,17 @@ class PosAuthService:
             raise ForbiddenError("Unknown or inactive device.", code="unknown_device")
         if user.role not in BRANCH_ROLES:
             raise ForbiddenError("Only branch staff can sign in to the POS.")
+        # Branch staff is necessary but not sufficient: a terminal is for selling.
+        # Gate on the capability rather than a list of positions, so a station
+        # role added later (a CHEF, a packer) is excluded automatically instead of
+        # relying on someone remembering to extend a blocklist. Without this a
+        # CHEF — who is BRANCH_STAFF — signs in fine and is then refused by every
+        # till action, which is a worse experience than being turned away here.
+        if not has_capability(user, Capability.ORDER_CREATE):
+            raise ForbiddenError(
+                "Your position does not permit signing in to a POS terminal.",
+                code="position_forbidden",
+            )
         if user.branch_id is None or device.branch_id != user.branch_id:
             raise ForbiddenError(
                 "This device is registered to a different branch.",
