@@ -102,6 +102,12 @@ class AvailabilityService:
             marked = manual.get(item.id)
             if marked is not None and not marked.is_available:
                 return ItemState(item.id, False, marked.reason or "Marked unavailable", None)
+            if item.made_to_order:
+                # Finished fresh per order, never held as stock — so finished-good
+                # on-hand (always zero) says nothing about whether it can be made.
+                # A manual 86 above is the only thing that pulls it; otherwise it
+                # is orderable, and each order spawns a prep ticket.
+                return ItemState(item.id, True, None, None)
             if item.product_id is None:
                 return ItemState(item.id, True, None, None)
             qty = on_hand.get(item.product_id, 0)

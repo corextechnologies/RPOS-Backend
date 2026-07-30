@@ -77,6 +77,60 @@ class PrepService:
         db.commit()
         return PrepService._load(db, ticket.id)
 
+    @staticmethod
+    def create_order_ticket(
+        db: Session,
+        actor: User,
+        branch_id: int,
+        *,
+        product_id: int,
+        quantity,
+        customization_note: str | None,
+        order_id: int,
+        order_line_id: int,
+        commit: bool = False,
+    ) -> PrepTicket:
+        """Auto-create a finishing job from a made-to-order order line.
+
+        Called from PosOrderService.send inside the send transaction, so
+        commit=False by default — the ticket and the order's SENT transition land
+        together. Carries the order reference and the customer's note (the name for
+        the cake, "no onions") straight onto the board.
+        """
+        ticket = PrepTicket(
+            restaurant_id=actor.restaurant_id,
+            branch_id=branch_id,
+            source=PrepSource.ORDER,
+            status=PrepStatus.QUEUED,
+            product_id=product_id,
+            quantity=quantity,
+            customization_note=customization_note,
+            order_id=order_id,
+            order_line_id=order_line_id,
+            created_by_id=actor.id,
+        )
+        db.add(ticket)
+        db.flush()
+        AuditService.record(
+            db,
+            actor=actor,
+            action="branch.prep.create",
+            entity_type="prep_ticket",
+            entity_id=ticket.id,
+            restaurant_id=actor.restaurant_id,
+            payload={
+                "branch_id": branch_id,
+                "product_id": product_id,
+                "quantity": str(quantity),
+                "source": PrepSource.ORDER.value,
+                "order_id": order_id,
+            },
+        )
+        if commit:
+            db.commit()
+            return PrepService._load(db, ticket.id)
+        return ticket
+
     # ---- reads ------------------------------------------------------------
 
     @staticmethod
@@ -211,6 +265,11 @@ class PrepService:
         out_expiry = (
             body.expiry_date if body.expiry_date is not None else ticket.expiry_date
         )
+        # A BATCH ticket builds sellable stock (prep ahead of a rush). An ORDER
+        # ticket makes one item for the customer who ordered it — it is handed
+        # over, never shelved — so it consumes components but credits no finished
+        # good. (Its revenue was already booked when the order was sent.)
+        credit_output = ticket.source is PrepSource.BATCH
 
         try:
             if body.inputs:
@@ -232,6 +291,12 @@ class PrepService:
                     (ln.product_id, (ln.batch_code or "").strip(), ln.quantity)
                     for ln in body.inputs
                 ]
+                outputs = (
+                    [(ticket.product_id, (out_batch or "").strip(),
+                      ticket.quantity, out_expiry)]
+                    if credit_output
+                    else []
+                )
                 run = ProductionService._run(
                     db,
                     actor=actor,
@@ -240,10 +305,7 @@ class PrepService:
                     occurred_at=datetime.now(timezone.utc),
                     note=f"Prep ticket #{ticket.id}",
                     inputs=inputs,
-                    outputs=[
-                        (ticket.product_id, (out_batch or "").strip(),
-                         ticket.quantity, out_expiry)
-                    ],
+                    outputs=outputs,
                     recipe_id=None,
                     commit=False,
                 )
@@ -259,6 +321,7 @@ class PrepService:
                     batch_code=out_batch,
                     expiry_date=out_expiry,
                     note=f"Prep ticket #{ticket.id}",
+                    credit_output=credit_output,
                     commit=False,
                 )
 
