@@ -47,6 +47,7 @@ def create_branch_request(
     branch_id = require_actor_branch_id(current)
     create_body = RequestCreate(
         request_type=RequestType.BRANCH_TO_ADMIN,
+        local_id=body.local_id,
         source_location_type=LocationType.BRANCH,
         source_location_id=branch_id,
         target_location_type=LocationType.KITCHEN,

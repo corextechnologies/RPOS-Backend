@@ -28,3 +28,15 @@ class OrderStatus(str, enum.Enum):
 class VoidState(str, enum.Enum):
     ACTIVE = "ACTIVE"
     VOIDED = "VOIDED"
+
+
+class FlaggedReason(str, enum.Enum):
+    """Why an order is flagged for manager review on offline sync (POS-4).
+
+    A flagged order is never rejected — the sale physically happened — only
+    surfaced. PRICE_DRIFT: the device priced it differently than the server.
+    STOCK_OVERSELL: it sold past on-hand while offline, so stock could not be
+    fully deducted (the manager reconciles the shortfall)."""
+
+    PRICE_DRIFT = "PRICE_DRIFT"
+    STOCK_OVERSELL = "STOCK_OVERSELL"

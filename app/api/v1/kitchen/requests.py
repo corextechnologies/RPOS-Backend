@@ -52,6 +52,7 @@ def create_warehouse_request(
     kitchen_id = require_actor_kitchen_id(current)
     create_body = RequestCreate(
         request_type=RequestType.KITCHEN_TO_WAREHOUSE,
+        local_id=body.local_id,
         source_location_type=LocationType.KITCHEN,
         source_location_id=kitchen_id,
         target_location_type=LocationType.WAREHOUSE,

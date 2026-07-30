@@ -41,6 +41,7 @@ def create_po_request(
     warehouse_id = require_actor_warehouse_id(current)
     create_body = RequestCreate(
         request_type=RequestType.WAREHOUSE_TO_ADMIN_PO,
+        local_id=body.local_id,
         source_location_type=LocationType.WAREHOUSE,
         source_location_id=warehouse_id,
         notes=body.notes,

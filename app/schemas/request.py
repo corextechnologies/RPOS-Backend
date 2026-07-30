@@ -19,6 +19,9 @@ class RequestLineCreate(BaseModel):
 
 class RequestCreate(BaseModel):
     request_type: RequestType
+    #: Offline-minted anchor — replaying the same local_id returns the same
+    #: request instead of double-creating. Mirrors PosOrderCreate.local_id.
+    local_id: str | None = Field(default=None, min_length=8, max_length=64)
     source_location_type: LocationType | None = None
     source_location_id: int | None = None
     target_location_type: LocationType | None = None

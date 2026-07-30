@@ -16,6 +16,7 @@ from app.models.payment import (
     DiscountRule,
     DiscountType,
     Payment,
+    PaymentAccount,
     PaymentStatus,
     Refund,
     Shift,
@@ -156,6 +157,20 @@ class PaymentService:
                 "A void order cannot be paid.", code="invalid_order_status"
             )
 
+        # Business dedupe for offline replay: the same device-minted tender is one
+        # payment, however many times a rebuilt queue replays it with a fresh
+        # transport key. Mirrors Order.local_id; stored in the (previously unused)
+        # idempotency_key column, guarded by uq_payment_idempotency.
+        if body.client_payment_id is not None:
+            prior = db.execute(
+                select(Payment).where(
+                    Payment.restaurant_id == order.restaurant_id,
+                    Payment.idempotency_key == body.client_payment_id,
+                )
+            ).scalar_one_or_none()
+            if prior is not None:
+                return prior
+
         # Capability, not politeness: an ORDER_TAKER on a drawer-less curbside
         # tablet cannot take cash however senior they are.
         needed = (
@@ -173,6 +188,20 @@ class PaymentService:
             raise ForbiddenError(
                 "This terminal has no cash drawer.", code="device_cannot_take_cash"
             )
+
+        # An ONLINE tender may name the account the customer paid into. Validate it
+        # belongs to this restaurant, is active, and is available at this branch.
+        if body.payment_account_id is not None:
+            account = db.get(PaymentAccount, body.payment_account_id)
+            if (
+                account is None
+                or account.restaurant_id != order.restaurant_id
+                or not account.is_active
+                or (account.branch_id is not None and account.branch_id != session.branch_id)
+            ):
+                raise NotFoundError(
+                    "Payment account not found.", code="payment_account_not_found"
+                )
 
         # Re-price for THIS tender: the rate can differ by payment method.
         quote = PricingQuoteService.quote(db, session, order_id, body.method)
@@ -212,6 +241,8 @@ class PaymentService:
             processor_ref=body.processor_ref,
             auth_code=body.auth_code,
             masked_pan=body.masked_pan,
+            payment_account_id=body.payment_account_id,
+            idempotency_key=body.client_payment_id,
             terminal_id=session.device.id,
             shift_id=shift.id if shift else None,
             taken_by_id=session.user.id,

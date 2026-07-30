@@ -8,8 +8,13 @@ from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.capabilities import Capability, has_capability
 from app.deps.pos import PosSession, get_pos_session, require_idempotency_key
-from app.core.exceptions import ForbiddenError
-from app.schemas.pos import PosOrderCreate, PosOrderOut, PosOrderStatusIn
+from app.core.exceptions import ForbiddenError, NotFoundError
+from app.schemas.pos import (
+    PosOrderCreate,
+    PosOrderOut,
+    PosOrderStatusIn,
+    PosOrderVoidIn,
+)
 from app.services.idempotency import IdempotencyService
 from app.services.pos_orders import PosOrderService
 
@@ -101,6 +106,25 @@ def send_order(
         {
             "order": PosOrderOut.model_validate(order).model_dump(mode="json"),
             "kot": PosOrderService.kot(order),
+            "kot_stations": PosOrderService.kot_split(db, order),
+        }
+    )
+
+
+@router.post("/{order_id}/void")
+def void_order(
+    order_id: int,
+    body: PosOrderVoidIn,
+    session: PosSession = Depends(get_pos_session),
+    db: Session = Depends(get_db),
+):
+    """Void a sent order (manager-gated): reverse stock + sales, void the kitchen
+    tickets, and return per-station void slips for the client to print."""
+    order = PosOrderService.void(db, session, order_id, body.reason_code)
+    return ok(
+        {
+            "order": PosOrderOut.model_validate(order).model_dump(mode="json"),
+            "void_tickets": PosOrderService.void_tickets(db, order),
         }
     )
 
@@ -108,10 +132,27 @@ def send_order(
 @router.get("/{order_id}/kot")
 def get_kot(
     order_id: int,
+    station_id: int | None = Query(default=None),
     session: PosSession = Depends(get_pos_session),
     db: Session = Depends(get_db),
 ):
-    """Reprint the kitchen ticket. Never blocks a sale on a piece of paper."""
+    """Reprint the kitchen ticket. Never blocks a sale on a piece of paper.
+
+    Without `station_id`, the whole-order ticket. With it, just that station's
+    ticket (for a targeted reprint) — to re-queue it for the device, POST
+    /pos/print-jobs/{job_id}/reprint.
+    """
     _guard(session, Capability.ORDER_READ)
     order = PosOrderService.get(db, session, order_id)
-    return ok(PosOrderService.kot(order))
+    if station_id is None:
+        return ok(PosOrderService.kot(order))
+    split = PosOrderService.kot_split(db, order)
+    entry = next(
+        (s for s in split["stations"] if s["station_id"] == station_id), None
+    )
+    if entry is None:
+        raise NotFoundError(
+            "No ticket for that station on this order.",
+            code="station_ticket_not_found",
+        )
+    return ok(entry)

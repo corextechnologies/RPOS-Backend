@@ -26,9 +26,12 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ConflictError
 from app.deps.pos import PosSession
+from app.models.menu_enums import FlaggedReason, OrderStatus
 from app.models.order import Order
+from app.models.printing import PrintJob
 from app.services.audit import AuditService
 from app.services.pos_orders import PosOrderService
+from app.services.print_jobs import PrintJobService
 
 # BlinkCo caps their sync at 50 items per call; same here. A device that has been
 # offline for a week must not try to post a thousand orders in one request.
@@ -56,9 +59,14 @@ class SyncService:
                         Order.local_id == env.order.local_id,
                     )
                 ).scalar_one_or_none()
-                if existing is not None:
-                    # The device already got this through, or is replaying a queue
-                    # it could not confirm. Same local_id = same order, forever.
+
+                # Heal path: an order created earlier but not yet settled (a rare
+                # gap — e.g. created online, connection dropped before send) that
+                # the device now says it fired. Settle it once. A SENT order is a
+                # pure duplicate: never re-settle, never double-deduct.
+                if existing is not None and not (
+                    env.was_sent and existing.status == OrderStatus.DRAFT
+                ):
                     duplicates += 1
                     results.append(
                         {
@@ -69,43 +77,111 @@ class SyncService:
                     )
                     continue
 
-                order = PosOrderService.create(db, session, env.order)
+                if existing is not None:
+                    order = existing
+                else:
+                    # create + settle commit atomically (commit=False here, one
+                    # commit below), so a failed element rolls back whole.
+                    order = PosOrderService.create(db, session, env.order, commit=False)
+                    # The device wins for facts, the server for rules. A price that
+                    # moved while offline keeps the sale and flags it — never a
+                    # silent re-price, never a reject.
+                    if (
+                        env.device_total_minor is not None
+                        and env.device_total_minor != order.grand_total_minor
+                    ):
+                        order.flagged_for_review = True
+                        order.flagged_reason = FlaggedReason.PRICE_DRIFT
+                        AuditService.record(
+                            db,
+                            actor=session.user,
+                            action="pos.sync.price_drift",
+                            entity_type="order",
+                            entity_id=order.id,
+                            restaurant_id=order.restaurant_id,
+                            terminal_id=session.device.id,
+                            before={"device_total_minor": env.device_total_minor},
+                            after={"server_total_minor": order.grand_total_minor},
+                            reason_code="PRICE_ADJUSTMENT",
+                        )
 
-                # The device wins for facts, the server for rules. If the device
-                # priced this differently while offline, keep the sale and flag
-                # it — do not silently re-price, do not reject.
-                if (
-                    env.device_total_minor is not None
-                    and env.device_total_minor != order.grand_total_minor
-                ):
-                    order.flagged_for_review = True
-                    AuditService.record(
-                        db,
-                        actor=session.user,
-                        action="pos.sync.price_drift",
-                        entity_type="order",
-                        entity_id=order.id,
-                        restaurant_id=order.restaurant_id,
-                        terminal_id=session.device.id,
-                        before={"device_total_minor": env.device_total_minor},
-                        after={"server_total_minor": order.grand_total_minor},
-                        reason_code="PRICE_ADJUSTMENT",
+                settled = False
+                if env.was_sent and order.status != OrderStatus.SENT:
+                    # Settle stock + sales on reconnect. A shortfall (sold offline
+                    # past on-hand) is accepted and flagged STOCK_OVERSELL, never
+                    # rejected — the food was already served.
+                    reason = PosOrderService.settle_and_fire(
+                        db, actor=session.user, order=order, tolerate_shortfall=True,
                     )
-                    db.commit()
-                    flagged += 1
+                    settled = True
+                    if reason is not None:
+                        order.flagged_for_review = True
+                        order.flagged_reason = reason  # stock oversell wins
+                        AuditService.record(
+                            db,
+                            actor=session.user,
+                            action="pos.sync.stock_oversell",
+                            entity_type="order",
+                            entity_id=order.id,
+                            restaurant_id=order.restaurant_id,
+                            terminal_id=session.device.id,
+                            after={"flagged_reason": reason.value},
+                        )
+                    PrintJobService.apply_results(db, order, env.print_results)
+                elif env.was_sent:
+                    # Already SENT on a prior replay — just reconcile prints.
+                    settled = True
+                    PrintJobService.apply_results(db, order, env.print_results)
+
+                # Snapshot before commit (attributes expire on commit).
+                order_id = order.id
+                server_total = order.grand_total_minor
+                is_flagged = order.flagged_for_review
+                reason_value = (
+                    order.flagged_reason.value if order.flagged_reason else None
+                )
+                stock_flagged = order.flagged_reason == FlaggedReason.STOCK_OVERSELL
+                print_jobs = (
+                    [
+                        {
+                            "id": j.id,
+                            "station_id": j.station_id,
+                            "kind": j.kind.value,
+                            "state": j.state.value,
+                        }
+                        for j in db.execute(
+                            select(PrintJob).where(
+                                PrintJob.branch_id == order.branch_id,
+                                PrintJob.order_local_id == order.local_id,
+                            )
+                        ).scalars()
+                    ]
+                    if env.was_sent
+                    else []
+                )
+
+                db.commit()
 
                 accepted += 1
+                if is_flagged:
+                    flagged += 1
                 results.append(
                     {
                         "local_id": env.order.local_id,
-                        "status": "flagged" if order.flagged_for_review else "accepted",
-                        "order_id": order.id,
-                        "server_total_minor": order.grand_total_minor,
+                        "status": "flagged" if is_flagged else "accepted",
+                        "order_id": order_id,
+                        "server_total_minor": server_total,
+                        "settled": settled,
+                        "stock_flagged": stock_flagged,
+                        "flagged_reason": reason_value,
+                        "print_jobs": print_jobs,
                     }
                 )
             except AppError as exc:
-                # Report per element. A single bad order must not block the other
-                # 49 — that is how a device wedges and never drains its queue.
+                # Report per element and roll back this element only. A single bad
+                # order must not block the other 49 — that is how a device wedges
+                # and never drains its queue.
+                db.rollback()
                 failed += 1
                 results.append(
                     {

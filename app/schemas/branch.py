@@ -219,6 +219,8 @@ class BranchRequestCreate(BaseModel):
     kitchen_id: int
     lines: list[RequestLineCreate] = Field(min_length=1)
     notes: str | None = None
+    #: Offline-replay anchor (mirrors PosOrderCreate.local_id).
+    local_id: str | None = Field(default=None, min_length=8, max_length=64)
 
 
 class KitchenPickerOut(BaseModel):
