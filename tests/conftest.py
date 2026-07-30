@@ -11,7 +11,7 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -52,13 +52,34 @@ TEST_URL = _direct_endpoint(
 pytestmark = pytest.mark.skipif(TEST_URL is None, reason="TEST_DATABASE_URL not set")
 
 
+def _reset_schema(eng) -> None:
+    """Drop everything in the database, not just what this branch's models know.
+
+    `Base.metadata.drop_all` only drops tables the CURRENT code declares. A table
+    left behind by another branch is therefore never dropped — and if it holds a
+    foreign key into one of ours (a print-job row referencing `orders`), Postgres
+    refuses to drop the referenced table and the whole session dies at setup with
+    "cannot drop table orders because other objects depend on it". Every test then
+    errors before running a line, and the cause looks like flakiness because it
+    depends on whose branch touched the shared database last.
+
+    Dropping the schema itself sidesteps the question entirely: whatever is in
+    there goes, ours or not, and create_all rebuilds exactly this branch's schema.
+    Safe because this is the throwaway test database — every run already rebuilds
+    it from scratch, and another branch's next run recreates its own tables.
+    """
+    with eng.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+
 @pytest.fixture(scope="session")
 def engine():
     if TEST_URL is None:
         pytest.skip("TEST_DATABASE_URL not set")
     eng = create_engine(TEST_URL, pool_pre_ping=True, future=True)
     # Fresh schema for the whole test session.
-    Base.metadata.drop_all(eng)
+    _reset_schema(eng)
     Base.metadata.create_all(eng)
     yield eng
     Base.metadata.drop_all(eng)
