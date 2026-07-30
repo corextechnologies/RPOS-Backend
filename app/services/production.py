@@ -93,6 +93,74 @@ class ProductionService:
                 code="not_a_finished_good",
             )
 
+        recipe_id, consumed, output_qty = ProductionService._explode_recipe(
+            db, product, body.quantity
+        )
+        return ProductionService._run(
+            db,
+            actor=actor,
+            location_type=LocationType.KITCHEN,
+            location_id=kitchen_id,
+            occurred_at=datetime.now(timezone.utc),
+            note=body.note,
+            inputs=consumed,
+            outputs=[(product.id, (body.batch_code or "").strip(), output_qty, body.expiry_date)],
+            recipe_id=recipe_id,
+            commit=commit,
+        )
+
+    @staticmethod
+    def produce_from_recipe(
+        db: Session,
+        actor: User,
+        location_type: LocationType,
+        location_id: int,
+        *,
+        product_id: int,
+        quantity: int,
+        batch_code: str | None = None,
+        expiry_date: date | None = None,
+        note: str | None = None,
+        commit: bool = True,
+    ) -> ProductionRun:
+        """Make N of a finished good at ANY location by exploding its recipe.
+
+        The location-generic sibling of produce_at_kitchen: the branch sub-kitchen
+        finishes goods too (a named cake off a cake base + icing), and its
+        components live at the branch because the kitchen shipped them there. Same
+        bill-of-materials math, same shared ledger — only the location differs.
+        """
+        product = db.get(Product, product_id)
+        if product is None or product.restaurant_id != actor.restaurant_id:
+            raise NotFoundError("Product not found.")
+
+        recipe_id, consumed, output_qty = ProductionService._explode_recipe(
+            db, product, quantity
+        )
+        return ProductionService._run(
+            db,
+            actor=actor,
+            location_type=location_type,
+            location_id=location_id,
+            occurred_at=datetime.now(timezone.utc),
+            note=note,
+            inputs=consumed,
+            outputs=[(product.id, (batch_code or "").strip(), output_qty, expiry_date)],
+            recipe_id=recipe_id,
+            commit=commit,
+        )
+
+    @staticmethod
+    def _explode_recipe(
+        db: Session, product: Product, quantity: int
+    ) -> tuple[int, list[tuple[int, str, Decimal]], int]:
+        """Resolve a product's active recipe into (recipe_id, consumed, output_qty).
+
+        `consumed` is the list of (component_product_id, batch_code, quantity) to
+        draw down; `output_qty` is how many of `product` that many recipe batches
+        yields. Shared by the kitchen and branch producers so the BOM math — batch
+        ceil-div, unit conversion, wastage uplift — lives in exactly one place.
+        """
         recipe = db.execute(
             select(Recipe)
             .where(Recipe.product_id == product.id, Recipe.is_active.is_(True))
@@ -123,7 +191,7 @@ class ProductionService:
         # finished-good count and yield stay whole, so this is still integer
         # ceil-div; only the component draw-down below is fractional.
         yield_qty = max(recipe.yield_qty, 1)
-        batches = -(-body.quantity // yield_qty)  # ceil-div
+        batches = -(-quantity // yield_qty)  # ceil-div
         consumed: list[tuple[int, str, Decimal]] = []
         for component in components:
             cp = db.get(Product, component.component_product_id)
@@ -137,18 +205,7 @@ class ProductionService:
             gross = round_qty(gross + gross * Decimal(component.wastage_bp) / 10000)
             consumed.append((component.component_product_id, "", gross))
 
-        return ProductionService._run(
-            db,
-            actor=actor,
-            location_type=LocationType.KITCHEN,
-            location_id=kitchen_id,
-            occurred_at=datetime.now(timezone.utc),
-            note=body.note,
-            inputs=consumed,
-            outputs=[(product.id, (body.batch_code or "").strip(), batches * yield_qty, body.expiry_date)],
-            recipe_id=recipe.id,
-            commit=commit,
-        )
+        return recipe.id, consumed, batches * yield_qty
 
     @staticmethod
     def _run(

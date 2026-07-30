@@ -40,3 +40,8 @@ class BranchPosition(str, enum.Enum):
     SALESPERSON = "SALESPERSON"
     CASHIER = "CASHIER"
     ORDER_TAKER = "ORDER_TAKER"
+    # Sub-kitchen operator: runs the branch prep board (final prep / finishing).
+    # Unlike kitchen/warehouse sub-staff (non-login roster records), a branch CHEF
+    # logs in and operates a portal — the prep station — but never the sell floor
+    # (no order-taking, no cash). Capabilities live in app/deps/capabilities.py.
+    CHEF = "CHEF"

@@ -10,6 +10,7 @@ from app.api.v1.branch import (
     orders,
     production,
     requests,
+    sub_kitchen,
     users,
 )
 
@@ -23,3 +24,4 @@ router.include_router(inventory.router)
 router.include_router(orders.router)
 router.include_router(customers.router)
 router.include_router(production.router)
+router.include_router(sub_kitchen.router)

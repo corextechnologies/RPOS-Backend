@@ -69,3 +69,5 @@ from app.models.payment import (  # noqa: F401
     ShiftStatus,
 )
 from app.models.recipe import Recipe, RecipeComponent, StockUnit  # noqa: F401
+from app.models.prep_enums import PrepSource, PrepStatus  # noqa: F401
+from app.models.prep import PrepTicket  # noqa: F401

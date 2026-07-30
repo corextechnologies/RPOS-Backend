@@ -33,6 +33,10 @@ class Capability(str, enum.Enum):
     CUSTOMER_READ = "CUSTOMER_READ"
     CUSTOMER_CREATE = "CUSTOMER_CREATE"
     INVENTORY_READ = "INVENTORY_READ"
+    # Sub-kitchen (branch prep board). PREP_READ views the board; PREP_OPERATE
+    # creates/advances/completes tickets (which move branch stock).
+    PREP_READ = "PREP_READ"
+    PREP_OPERATE = "PREP_OPERATE"
     # Reserved for POS-2 / POS-3.
     PAYMENT_TAKE = "PAYMENT_TAKE"      # card / wallet
     PAYMENT_CASH = "PAYMENT_CASH"      # tender + change (needs a drawer)
@@ -59,6 +63,17 @@ _SELL_FLOOR = frozenset(
     }
 )
 
+# The sub-kitchen operator: reads and works the prep board, and reads inventory
+# to see components on hand. Deliberately NOT part of the sell floor — a chef
+# takes no orders and no cash — so this is its own small set, not _SELL_FLOOR.
+_PREP_STATION = frozenset(
+    {
+        Capability.PREP_READ,
+        Capability.PREP_OPERATE,
+        Capability.INVENTORY_READ,
+    }
+)
+
 _POSITION_CAPS: dict[BranchPosition, frozenset[Capability]] = {
     # The curbside tablet: takes the order, sends the car to the counter to pay.
     BranchPosition.ORDER_TAKER: _SELL_FLOOR,
@@ -75,6 +90,8 @@ _POSITION_CAPS: dict[BranchPosition, frozenset[Capability]] = {
             Capability.SHIFT_CLOSE,
         }
     ),
+    # The sub-kitchen: works the prep board, sells nothing.
+    BranchPosition.CHEF: _PREP_STATION,
 }
 
 # The branch manager holds every branch capability, including the approval-gated
