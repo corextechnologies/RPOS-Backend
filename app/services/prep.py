@@ -9,12 +9,13 @@ not a bare status change.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.exceptions import ConflictError, NotFoundError
+from app.models.inventory import StockMovement, StockMovementType
 from app.models.prep import PrepTicket
 from app.models.prep_enums import (
     OPEN_STATUSES,
@@ -353,6 +354,118 @@ class PrepService:
             db.rollback()
             raise
         return PrepService._load(db, ticket.id)
+
+    # ---- stats ------------------------------------------------------------
+
+    @staticmethod
+    def stats(
+        db: Session,
+        actor: User,
+        branch_id: int,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> dict:
+        """Headline numbers for the branch portal's sub-kitchen tab.
+
+        Three things a manager actually asks: how much did we make, how much did
+        we throw away, and how long does a customer wait. The window is inclusive
+        on both ends and defaults to the last 7 days.
+        """
+        today = datetime.now(timezone.utc).date()
+        end_date = end or today
+        start_date = start or (end_date - timedelta(days=6))
+        # Half-open [start 00:00, end+1 00:00) so the whole end day is included.
+        lo = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+        hi = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+
+        scope = (
+            PrepTicket.restaurant_id == actor.restaurant_id,
+            PrepTicket.branch_id == branch_id,
+        )
+
+        # Tickets created in the window, by status.
+        status_rows = db.execute(
+            select(PrepTicket.status, func.count())
+            .where(*scope, PrepTicket.created_at >= lo, PrepTicket.created_at < hi)
+            .group_by(PrepTicket.status)
+        ).all()
+        by_status = {s.value: n for s, n in status_rows}
+
+        # Items prepped = quantity actually completed in the window (by completion
+        # time, not creation — that is what "made today" means on the floor).
+        completed_rows = db.execute(
+            select(func.count(), func.coalesce(func.sum(PrepTicket.quantity), 0)).where(
+                *scope,
+                PrepTicket.status == PrepStatus.COMPLETED,
+                PrepTicket.completed_at >= lo,
+                PrepTicket.completed_at < hi,
+            )
+        ).one()
+        completed_tickets, items_prepped = completed_rows
+
+        # Average wait, in seconds, from the ticket landing to it being ready.
+        # Order-sourced only: that is the number that means "how long the customer
+        # waited". A batch job has no customer waiting on it.
+        avg_seconds = db.execute(
+            select(
+                func.avg(
+                    func.extract("epoch", PrepTicket.ready_at - PrepTicket.created_at)
+                )
+            ).where(
+                *scope,
+                PrepTicket.source == PrepSource.ORDER,
+                PrepTicket.ready_at.is_not(None),
+                PrepTicket.ready_at >= lo,
+                PrepTicket.ready_at < hi,
+            )
+        ).scalar_one()
+
+        # Waste written off at this branch in the window, from the shared ledger.
+        waste_rows = db.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(func.abs(StockMovement.quantity_delta)), 0),
+            ).where(
+                StockMovement.restaurant_id == actor.restaurant_id,
+                StockMovement.location_type == LocationType.BRANCH,
+                StockMovement.location_id == branch_id,
+                StockMovement.movement_type.in_(
+                    [StockMovementType.WASTE, StockMovementType.EXPIRY]
+                ),
+                StockMovement.created_at >= lo,
+                StockMovement.created_at < hi,
+            )
+        ).one()
+        waste_events, waste_quantity = waste_rows
+
+        open_now = db.execute(
+            select(func.count()).where(*scope, PrepTicket.status.in_(OPEN_STATUSES))
+        ).scalar_one()
+
+        return {
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+            # What the station made.
+            "items_prepped": float(items_prepped or 0),
+            "tickets_completed": int(completed_tickets or 0),
+            # What it threw away.
+            "waste_events": int(waste_events or 0),
+            "waste_quantity": float(waste_quantity or 0),
+            # How long a customer waited (null until an order ticket is worked).
+            "avg_order_to_ready_seconds": (
+                round(float(avg_seconds)) if avg_seconds is not None else None
+            ),
+            # Board health right now, regardless of window.
+            "open_tickets": int(open_now),
+            "tickets_created": {
+                "QUEUED": by_status.get("QUEUED", 0),
+                "IN_PROGRESS": by_status.get("IN_PROGRESS", 0),
+                "READY": by_status.get("READY", 0),
+                "COMPLETED": by_status.get("COMPLETED", 0),
+                "CANCELLED": by_status.get("CANCELLED", 0),
+            },
+        }
 
     # ---- helpers ----------------------------------------------------------
 
