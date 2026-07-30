@@ -10,6 +10,8 @@ import pytest
 
 from app.models.enums import BranchPosition, UserRole
 from app.models.inventory import StockMovement, StockMovementType
+from app.models.menu import MenuItem, MenuVersion
+from app.models.menu_enums import MenuVersionStatus
 from app.models.product import ProductKind
 from app.models.recipe import Recipe, RecipeComponent
 from app.models.request_enums import LocationType
@@ -280,3 +282,106 @@ def test_ticket_is_scoped_to_its_branch(client, sub_ctx, make_branch, make_user)
     assert client.post(
         f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=other
     ).status_code == 404
+
+
+# ===========================================================================
+# Slice B — waste logging + "sold out" (86-ing)
+# ===========================================================================
+
+
+def _publish_menu_item(db, restaurant_id, product):
+    """A published menu with `product` on it, so availability has something to 86."""
+    mv = MenuVersion(
+        restaurant_id=restaurant_id, version_no=1,
+        status=MenuVersionStatus.PUBLISHED, currency="PKR",
+    )
+    db.add(mv)
+    db.flush()
+    mi = MenuItem(
+        menu_version_id=mv.id, product_id=product.id, name=product.name,
+        price_minor=50000,
+    )
+    db.add(mi)
+    db.flush()
+    return mi
+
+
+def test_chef_logs_waste_and_stock_drops(client, sub_ctx, db):
+    headers = auth_headers(client, "chef@test.com")
+    resp = client.post(
+        "/v1/branch/sub-kitchen/waste",
+        json={
+            "product_id": sub_ctx["base"].id, "quantity": 3,
+            "movement_type": "WASTE", "waste_reason": "SPOILAGE",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["on_hand"] == 7  # 10 - 3
+
+    r_id, b_id = sub_ctx["restaurant"].id, sub_ctx["branch"].id
+    assert _stock(db, r_id, b_id, sub_ctx["base"].id) == 7
+    moves = {(m.product_id, m.movement_type, m.quantity_delta)
+             for m in db.query(StockMovement).all()}
+    assert (sub_ctx["base"].id, StockMovementType.WASTE, -3) in moves
+
+    # The write-off shows up in the station's waste history.
+    hist = client.get("/v1/branch/sub-kitchen/waste", headers=headers)
+    assert hist.status_code == 200
+    assert any(e["product_id"] == sub_ctx["base"].id for e in hist.json()["data"])
+
+
+def test_chef_waste_rejects_non_waste_movement(client, sub_ctx):
+    headers = auth_headers(client, "chef@test.com")
+    resp = client.post(
+        "/v1/branch/sub-kitchen/waste",
+        json={"product_id": sub_ctx["base"].id, "quantity": 1, "movement_type": "RECEIPT"},
+        headers=headers,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "invalid_movement_type"
+
+
+def test_chef_can_86_and_restore_a_menu_item(client, sub_ctx, db):
+    mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
+    headers = auth_headers(client, "chef@test.com")
+
+    # 86 it: the station can't make cake today.
+    off = client.put(
+        f"/v1/branch/sub-kitchen/availability/{mi.id}",
+        json={"is_available": False, "reason": "Out of icing"},
+        headers=headers,
+    )
+    assert off.status_code == 200
+    assert off.json()["data"]["is_available"] is False
+
+    avail = client.get("/v1/branch/sub-kitchen/availability", headers=headers)
+    assert avail.status_code == 200
+    state = next(s for s in avail.json()["data"] if s["menu_item_id"] == mi.id)
+    assert state["is_available"] is False and state["reason"] == "Out of icing"
+
+    # Restore it.
+    on = client.put(
+        f"/v1/branch/sub-kitchen/availability/{mi.id}",
+        json={"is_available": True},
+        headers=headers,
+    )
+    assert on.status_code == 200 and on.json()["data"]["is_available"] is True
+
+
+def test_sell_floor_cannot_waste_or_86(client, sub_ctx, db, make_user):
+    mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
+    make_user(
+        "cashier2@test.com", UserRole.BRANCH_STAFF, restaurant_id=sub_ctx["restaurant"].id,
+        branch_id=sub_ctx["branch"].id, position=BranchPosition.CASHIER,
+    )
+    cashier = auth_headers(client, "cashier2@test.com")
+    assert client.post(
+        "/v1/branch/sub-kitchen/waste",
+        json={"product_id": sub_ctx["base"].id, "quantity": 1, "movement_type": "WASTE"},
+        headers=cashier,
+    ).status_code == 403
+    assert client.put(
+        f"/v1/branch/sub-kitchen/availability/{mi.id}",
+        json={"is_available": False}, headers=cashier,
+    ).status_code == 403

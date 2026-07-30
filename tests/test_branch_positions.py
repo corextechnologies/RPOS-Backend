@@ -28,6 +28,15 @@ def priced_ctx(db, restaurant_setup, make_product):
     return {**restaurant_setup, "branch": branch, "product": product}
 
 
+# The positions that work the till. CHEF is deliberately excluded — it runs the
+# sub-kitchen prep station and takes neither orders nor cash.
+SELL_FLOOR_POSITIONS = [
+    BranchPosition.SALESPERSON,
+    BranchPosition.CASHIER,
+    BranchPosition.ORDER_TAKER,
+]
+
+
 # ---- unit: the capability matrix --------------------------------------------
 
 def _u(role, position=None):
@@ -37,15 +46,31 @@ def _u(role, position=None):
     return u
 
 
-def test_matrix_sell_floor_shared_by_all_positions():
+def test_matrix_sell_floor_shared_by_all_sell_positions():
     floor = {
         Capability.ORDER_READ, Capability.ORDER_CREATE,
         Capability.CUSTOMER_READ, Capability.CUSTOMER_CREATE,
         Capability.INVENTORY_READ,
     }
-    for pos in BranchPosition:
+    for pos in SELL_FLOOR_POSITIONS:
         caps = capabilities_for(_u(UserRole.BRANCH_STAFF, pos))
         assert floor.issubset(caps), pos
+
+
+def test_matrix_chef_is_prep_station_not_sell_floor():
+    caps = capabilities_for(_u(UserRole.BRANCH_STAFF, BranchPosition.CHEF))
+    # Works the prep board and reads stock...
+    assert {Capability.PREP_READ, Capability.PREP_OPERATE,
+            Capability.INVENTORY_READ}.issubset(caps)
+    # ...but never the till: no orders, no customers, no cash.
+    for cap in (Capability.ORDER_CREATE, Capability.CUSTOMER_CREATE,
+                Capability.PAYMENT_TAKE, Capability.PAYMENT_CASH):
+        assert cap not in caps
+    # And no sell-floor position leaks the prep capability.
+    for pos in SELL_FLOOR_POSITIONS:
+        assert Capability.PREP_OPERATE not in capabilities_for(
+            _u(UserRole.BRANCH_STAFF, pos)
+        )
 
 
 def test_matrix_only_cashier_has_cash_and_shift():
@@ -72,8 +97,8 @@ def test_matrix_manager_has_everything():
 
 # ---- integration: every position can sell, null-position is 403 -------------
 
-@pytest.mark.parametrize("position", list(BranchPosition))
-def test_each_position_can_take_orders_and_add_customers(
+@pytest.mark.parametrize("position", SELL_FLOOR_POSITIONS)
+def test_each_sell_position_can_take_orders_and_add_customers(
     client, priced_ctx, make_user, position
 ):
     make_user(
@@ -92,6 +117,28 @@ def test_each_position_can_take_orders_and_add_customers(
         "/v1/branch/customers", json={"name": "Walk-in"}, headers=headers
     )
     assert cust.status_code == 200, cust.text
+
+
+def test_chef_is_prep_only_never_the_till(client, priced_ctx, make_user):
+    """A CHEF works the prep board but is barred from orders and customers."""
+    make_user(
+        "chef@test.com", UserRole.BRANCH_STAFF,
+        restaurant_id=priced_ctx["restaurant"].id, branch_id=priced_ctx["branch"].id,
+        position=BranchPosition.CHEF,
+    )
+    headers = auth_headers(client, "chef@test.com")
+    order = client.post(
+        "/v1/branch/orders",
+        json={"lines": [{"product_id": priced_ctx["product"].id, "quantity": 1}]},
+        headers=headers,
+    )
+    assert order.status_code == 403
+    assert order.json()["error"]["code"] == "position_forbidden"
+    assert client.post(
+        "/v1/branch/customers", json={"name": "Walk-in"}, headers=headers
+    ).status_code == 403
+    # But the prep board is open to them.
+    assert client.get("/v1/branch/sub-kitchen/board", headers=headers).status_code == 200
 
 
 def test_positionless_branch_staff_is_forbidden(client, priced_ctx, make_user):

@@ -15,6 +15,8 @@ TESTS = [
     "tests/test_branch_positions.py",
     "tests/test_rbac.py",
     "tests/test_branch_orders.py",
+    # Regression on the shared availability service the prep station reuses (86-ing).
+    "tests/test_pos_sell.py",
 ]
 
 
