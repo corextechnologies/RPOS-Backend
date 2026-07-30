@@ -369,6 +369,23 @@ def test_chef_can_86_and_restore_a_menu_item(client, sub_ctx, db):
     assert on.status_code == 200 and on.json()["data"]["is_available"] is True
 
 
+def test_chef_can_read_branch_stock(client, sub_ctx):
+    """The chef holds INVENTORY_READ, so branch stock is visible to the station.
+
+    It lives on the branch inventory endpoints, not under /sub-kitchen — the
+    prep station reads the branch's one stock ledger, it does not own a separate
+    one. Pinned here so a future capability change can't silently blind the chef.
+    """
+    headers = auth_headers(client, "chef@test.com")
+    resp = client.get("/v1/branch/inventory", headers=headers)
+    assert resp.status_code == 200, resp.text
+    on_hand = {row["product_id"]: row["quantity"] for row in resp.json()["data"]}
+    assert on_hand[sub_ctx["base"].id] == 10
+    assert client.get(
+        "/v1/branch/inventory/near-expiry", headers=headers
+    ).status_code == 200
+
+
 def test_sell_floor_cannot_waste_or_86(client, sub_ctx, db, make_user):
     mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
     make_user(
