@@ -51,6 +51,95 @@ def _recipe_body(ctx, yield_qty=1):
     }
 
 
+# ---- the catalogue both recipe pickers read from ---------------------------
+
+def test_products_endpoint_feeds_both_recipe_pickers(client, manage_ctx):
+    """The ids here are the ones the recipe endpoints expect.
+
+    Regression for a real frontend trap: the availability read returns
+    `menu_item_id`, which is a different table's key. Both are small integers, so
+    a mixed-up id resolves to a *different real product* and writes the recipe
+    against the wrong item instead of failing loudly.
+    """
+    chef = auth_headers(client, "chef@test.com")
+    resp = client.get("/v1/branch/sub-kitchen/products", headers=chef)
+    assert resp.status_code == 200, resp.text
+    by_id = {p["id"]: p for p in resp.json()["data"]}
+
+    # "What am I making" — the finished good, even with no stock at the branch.
+    cake = by_id[manage_ctx["cake"].id]
+    assert cake["name"] == "Named Cake"
+    assert cake["stock_unit"]                 # the picker needs the unit label
+    assert "cost_price" not in cake           # never exposed off the Admin portal
+
+    # "What is it made of" — raw materials, which are never on a menu.
+    assert manage_ctx["base"].id in by_id
+    assert manage_ctx["plaque"].id in by_id
+
+
+def test_products_filter_by_kind(client, manage_ctx):
+    chef = auth_headers(client, "chef@test.com")
+
+    made = client.get(
+        "/v1/branch/sub-kitchen/products?kind=FINISHED_GOOD", headers=chef
+    ).json()["data"]
+    assert {p["id"] for p in made} == {manage_ctx["cake"].id}
+
+    components = client.get(
+        "/v1/branch/sub-kitchen/products?kind=RAW_MATERIAL", headers=chef
+    ).json()["data"]
+    ids = {p["id"] for p in components}
+    assert {manage_ctx["base"].id, manage_ctx["plaque"].id}.issubset(ids)
+    assert manage_ctx["cake"].id not in ids
+
+
+def test_products_are_tenant_scoped_and_sell_floor_is_forbidden(
+    client, manage_ctx, make_restaurant, make_product, make_user
+):
+    other = make_restaurant("Other")
+    foreign = make_product(other.id, name="Foreign Cake", sku="FGN-9")
+    chef = auth_headers(client, "chef@test.com")
+    ids = {
+        p["id"]
+        for p in client.get(
+            "/v1/branch/sub-kitchen/products", headers=chef
+        ).json()["data"]
+    }
+    assert foreign.id not in ids
+
+    make_user(
+        "cashier9@test.com", UserRole.BRANCH_STAFF,
+        restaurant_id=manage_ctx["restaurant"].id, branch_id=manage_ctx["branch"].id,
+        position=BranchPosition.CASHIER,
+    )
+    cashier = auth_headers(client, "cashier9@test.com")
+    assert client.get(
+        "/v1/branch/sub-kitchen/products", headers=cashier
+    ).status_code == 403
+
+
+def test_ids_from_products_actually_publish_a_recipe(client, manage_ctx):
+    """End to end: take ids straight from the picker and build a recipe."""
+    chef = auth_headers(client, "chef@test.com")
+    catalogue = client.get(
+        "/v1/branch/sub-kitchen/products", headers=chef
+    ).json()["data"]
+    cake = next(p for p in catalogue if p["name"] == "Named Cake")
+    base = next(p for p in catalogue if p["name"] == "Cake Base")
+
+    resp = client.post(
+        "/v1/branch/sub-kitchen/recipes",
+        json={
+            "product_id": cake["id"],
+            "yield_qty": 1,
+            "components": [{"component_product_id": base["id"], "quantity": 1}],
+        },
+        headers=chef,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["product_name"] == "Named Cake"
+
+
 # ---- recipes, written by the chef ------------------------------------------
 
 def test_chef_publishes_and_reads_a_recipe(client, manage_ctx):

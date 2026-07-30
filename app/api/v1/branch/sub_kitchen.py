@@ -25,6 +25,7 @@ from app.deps.rbac import require_actor_branch_id
 from app.models.enums import UserRole
 from app.models.inventory import StockMovementType
 from app.models.prep_enums import PrepStatus
+from app.models.product import ProductKind
 from app.models.request_enums import LocationType
 from app.models.user import User
 from app.schemas.branch import BranchWasteIn
@@ -35,6 +36,7 @@ from app.services.availability import AvailabilityService
 from app.services.inventory import InventoryService
 from app.services.menu import MenuService
 from app.services.prep import PrepService
+from app.services.products import ProductService
 from app.services.recipes import RecipeService
 from app.services.waste import WasteService
 
@@ -237,6 +239,33 @@ def get_stats(
 # one product has one active recipe wherever it is made) — publishing a new
 # version supersedes the old rather than editing it, so completed prep runs keep
 # meaning what they meant.
+
+
+@router.get("/products")
+def list_products(
+    kind: ProductKind | None = Query(default=None),
+    current: User = Depends(require_capability(Capability.PREP_READ)),
+    db: Session = Depends(get_db),
+):
+    """The catalogue the chef writes recipes against.
+
+    Both recipe pickers need this and neither could be served before:
+
+      * "what am I making" — a FINISHED_GOOD, which may have no stock at the
+        branch yet, so the inventory read cannot list it.
+      * "what is it made of" — RAW_MATERIALs like flour or a message plaque,
+        which never appear on a menu, so the availability read cannot list them.
+
+    Returns the real `id` — the `product_id` the recipe endpoints expect. A menu
+    item's id is a different table's key and must never be sent here: the two are
+    both small integers, so a mixed-up id resolves to a *different real product*
+    and silently writes the recipe against the wrong item rather than failing.
+
+    Never exposes cost_price, like every other non-Admin product read.
+    """
+    require_actor_branch_id(current)
+    products = ProductService.list_products(db, current, kind=kind)
+    return ok([ProductService.to_public(p).model_dump(mode="json") for p in products])
 
 
 @router.post("/recipes")
