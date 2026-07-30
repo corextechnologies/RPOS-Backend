@@ -3,8 +3,8 @@
 Why an order was flagged for review on offline sync: PRICE_DRIFT or
 STOCK_OVERSELL. Nullable — existing and un-flagged orders stay NULL.
 
-Revision ID: 0040_flagged_reason
-Revises: 0039_print_jobs
+Revision ID: 0042_flagged_reason
+Revises: 0041_print_jobs
 Create Date: 2026-07-30
 """
 from typing import Sequence, Union
@@ -13,8 +13,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0040_flagged_reason"
-down_revision: Union[str, None] = "0039_print_jobs"
+revision: str = "0042_flagged_reason"
+down_revision: Union[str, None] = "0041_print_jobs"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

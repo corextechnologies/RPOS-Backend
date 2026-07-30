@@ -369,29 +369,19 @@ class PosOrderService:
         Does not commit — the caller owns the transaction. Returns the
         FlaggedReason set by settlement, or None.
         """
-        # Which lines are made-to-order? Those bypass finished-good deduction (they
-        # were never stocked) and instead spawn a prep ticket for the sub-kitchen.
-        made_ids = {
-            mid
-            for (mid,) in db.execute(
-                select(MenuItem.id).where(
-                    MenuItem.id.in_(
-                        [l.menu_item_id for l in order.lines if l.menu_item_id]
-                        or [-1]
-                    ),
-                    MenuItem.made_to_order.is_(True),
-                )
-            ).all()
-        }
-
+        # Which lines need finishing at the sub-kitchen? Those bypass finished-good
+        # deduction (they are made fresh, never held as stock) and instead spawn a
+        # prep ticket. `needs_prep` is a per-line flag set at order time — migration
+        # 0039_order_line_needs_prep moved it off the menu item onto the order line —
+        # so no menu lookup is needed.
         qty_by_product: dict[int, int] = {}
         prep_lines = []
         for line in order.lines:
             # A combo header holds no stock; its component lines do.
             if line.product_id is None:
                 continue
-            if line.menu_item_id in made_ids:
-                made_to_order_lines.append(line)
+            if line.needs_prep:
+                prep_lines.append(line)
                 continue
             qty_by_product[line.product_id] = (
                 qty_by_product.get(line.product_id, 0) + line.quantity
@@ -412,7 +402,7 @@ class PosOrderService:
             )
             reason = None
 
-        for line in made_to_order_lines:
+        for line in prep_lines:
             PrepService.create_order_ticket(
                 db,
                 actor=actor,

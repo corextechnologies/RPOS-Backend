@@ -3,8 +3,8 @@
 Purely additive. A bank/wallet destination for ONLINE payments; cached on the
 device via /pos/config so a cashier can show it (or a QR) offline.
 
-Revision ID: 0041_payment_accounts
-Revises: 0040_flagged_reason
+Revision ID: 0043_payment_accounts
+Revises: 0042_flagged_reason
 Create Date: 2026-07-30
 """
 from typing import Sequence, Union
@@ -13,8 +13,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0041_payment_accounts"
-down_revision: Union[str, None] = "0040_flagged_reason"
+revision: str = "0043_payment_accounts"
+down_revision: Union[str, None] = "0042_flagged_reason"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

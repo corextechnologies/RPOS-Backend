@@ -4,8 +4,8 @@ Adds the per-branch POS print topology (Phase 0). These tables are POS-printing
 only and unrelated to the Kitchen commissary or ProductionRun. Purely additive —
 no existing table changes.
 
-Revision ID: 0038_printing_routing
-Revises: 0037_menu_item_made_to_order
+Revision ID: 0040_printing_routing
+Revises: 0039_order_line_needs_prep
 Create Date: 2026-07-30
 """
 from typing import Sequence, Union
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0038_printing_routing"
-down_revision: Union[str, None] = "0037_menu_item_made_to_order"
+revision: str = "0040_printing_routing"
+down_revision: Union[str, None] = "0039_order_line_needs_prep"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

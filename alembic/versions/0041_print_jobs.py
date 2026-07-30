@@ -4,8 +4,8 @@ One QUEUED job per (order, station) kitchen ticket + one per order receipt.
 Keyed on the order's device-minted local_id; two partial unique indexes make a
 re-send / weeks-later replay a no-op instead of a double-print. Purely additive.
 
-Revision ID: 0039_print_jobs
-Revises: 0038_printing_routing
+Revision ID: 0041_print_jobs
+Revises: 0040_printing_routing
 Create Date: 2026-07-30
 """
 from typing import Sequence, Union
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0039_print_jobs"
-down_revision: Union[str, None] = "0038_printing_routing"
+revision: str = "0041_print_jobs"
+down_revision: Union[str, None] = "0040_printing_routing"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

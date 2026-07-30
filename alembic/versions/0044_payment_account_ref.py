@@ -5,8 +5,8 @@ unused) payments.idempotency_key column + uq_payment_idempotency now carry the
 device-minted client_payment_id business-dedup anchor — no schema change needed
 for that, it is reused.
 
-Revision ID: 0042_payment_account_ref
-Revises: 0041_payment_accounts
+Revision ID: 0044_payment_account_ref
+Revises: 0043_payment_accounts
 Create Date: 2026-07-30
 """
 from typing import Sequence, Union
@@ -14,8 +14,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0042_payment_account_ref"
-down_revision: Union[str, None] = "0041_payment_accounts"
+revision: str = "0044_payment_account_ref"
+down_revision: Union[str, None] = "0043_payment_accounts"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

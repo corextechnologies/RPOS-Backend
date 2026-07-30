@@ -4,8 +4,8 @@ Purely additive, nullable. Unique (restaurant_id, local_id) makes a requisition
 created offline replay to the same row instead of double-creating (mirrors
 Order.local_id). NULLs are distinct in Postgres, so existing rows are unaffected.
 
-Revision ID: 0043_request_local_id
-Revises: 0042_payment_account_ref
+Revision ID: 0045_request_local_id
+Revises: 0044_payment_account_ref
 Create Date: 2026-07-30
 """
 from typing import Sequence, Union
@@ -13,8 +13,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0043_request_local_id"
-down_revision: Union[str, None] = "0042_payment_account_ref"
+revision: str = "0045_request_local_id"
+down_revision: Union[str, None] = "0044_payment_account_ref"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
