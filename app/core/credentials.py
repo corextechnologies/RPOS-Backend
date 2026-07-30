@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import logging
 import secrets
+import smtplib
 import string
+from email.message import EmailMessage
 
 from app.core.config import settings
 
@@ -64,8 +66,38 @@ class ConsoleMailer(Mailer):
         logger.info("EMAIL -> %s | %s\n%s", to, subject, body)
 
 
-# Single shared instance for the dev/console transport.
-_mailer: Mailer = ConsoleMailer()
+class SmtpMailer(Mailer):
+    """Real SMTP transport (e.g. Gmail).
+
+    Sender is always settings.mail_from. For Gmail, smtp_password must be a 16-char
+    App Password, and mail_from should match (or be an alias of) smtp_username —
+    Gmail rewrites/refuses a From that isn't an owned identity.
+    """
+
+    def send(self, *, to: str, subject: str, body: str) -> None:
+        msg = EmailMessage()
+        msg["From"] = settings.mail_from
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.set_content(body)
+
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+            if settings.smtp_use_tls:
+                server.starttls()
+            if settings.smtp_username:
+                server.login(settings.smtp_username, settings.smtp_password)
+            server.send_message(msg)
+        logger.info("EMAIL(smtp) -> %s | %s", to, subject)
+
+
+def _build_mailer() -> Mailer:
+    if settings.mail_backend.lower() == "smtp":
+        return SmtpMailer()
+    return ConsoleMailer()
+
+
+# Single shared instance, chosen by MAIL_BACKEND. Dev/tests default to console.
+_mailer: Mailer = _build_mailer()
 
 
 def get_mailer() -> Mailer:
