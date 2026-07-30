@@ -24,6 +24,7 @@ from app.deps.capabilities import Capability, require_capability
 from app.deps.rbac import require_actor_branch_id
 from app.models.enums import UserRole
 from app.models.inventory import StockMovementType
+from app.models.menu import MenuItem
 from app.models.prep_enums import PrepStatus
 from app.models.product import ProductKind
 from app.models.request_enums import LocationType
@@ -195,7 +196,17 @@ def list_availability(
     current: User = Depends(require_capability(Capability.PREP_READ)),
     db: Session = Depends(get_db),
 ):
-    """What the branch can sell right now, so the chef sees what's already 86'd."""
+    """What the branch can sell right now, so the chef sees what's already 86'd.
+
+    Carries `product_name`, unlike the POS poll of the same data: a till already
+    holds the whole menu and joins these ids against it, but this screen has no
+    such cache, and "Item #14" tells a manager nothing about what they are about
+    to pull off sale.
+
+    `on_hand` is null where stock is not the deciding factor — a manually 86'd
+    item, a combo (its components hold the stock), or an item with no product
+    linked. A genuine zero is reported as 0, not null.
+    """
     branch_id = require_actor_branch_id(current)
     menu = MenuService.published(db, current.restaurant_id)
     states = AvailabilityService.states(db, current.restaurant_id, branch_id, menu)
@@ -203,9 +214,13 @@ def list_availability(
         [
             {
                 "menu_item_id": s.menu_item_id,
+                "product_name": s.product_name,
                 "is_available": s.is_available,
                 "reason": s.reason,
                 "on_hand": s.on_hand,
+                "auto_clear_at": (
+                    s.auto_clear_at.isoformat() if s.auto_clear_at else None
+                ),
             }
             for s in states.values()
         ]
@@ -244,17 +259,32 @@ def get_stats(
 @router.get("/products")
 def list_products(
     kind: ProductKind | None = Query(default=None),
+    all: bool = Query(
+        default=False,
+        description="Include products this branch has never stocked.",
+    ),
     current: User = Depends(require_capability(Capability.PREP_READ)),
     db: Session = Depends(get_db),
 ):
     """The catalogue the chef writes recipes against.
 
-    Both recipe pickers need this and neither could be served before:
+    COMPONENTS are scoped to what this branch has actually held, because a
+    sub-kitchen can only cook with what the central kitchen shipped it. The
+    restaurant-wide catalogue would offer flour and chocolate that live at the
+    warehouse, and a recipe written against them can never run — every prep ticket
+    would die on insufficient_stock.
 
-      * "what am I making" — a FINISHED_GOOD, which may have no stock at the
-        branch yet, so the inventory read cannot list it.
-      * "what is it made of" — RAW_MATERIALs like flour or a message plaque,
-        which never appear on a menu, so the availability read cannot list them.
+    FINISHED GOODS are not scoped that way: a made-to-order item is never held as
+    stock, so the same filter would hide exactly what the chef is writing the
+    recipe for. Pass `all=true` to drop the component filter too, for setting an
+    item up before its components have ever been delivered.
+
+    Serves both recipe pickers, and neither could be served before:
+
+      * "what am I making" — a FINISHED_GOOD, which the availability read cannot
+        list because it returns menu item keys, not products.
+      * "what is it made of" — RAW_MATERIALs like a message plaque, which never
+        appear on a menu at all.
 
     Returns the real `id` — the `product_id` the recipe endpoints expect. A menu
     item's id is a different table's key and must never be sent here: the two are
@@ -263,8 +293,13 @@ def list_products(
 
     Never exposes cost_price, like every other non-Admin product read.
     """
-    require_actor_branch_id(current)
-    products = ProductService.list_products(db, current, kind=kind)
+    branch_id = require_actor_branch_id(current)
+    if all:
+        products = ProductService.list_products(db, current, kind=kind)
+    else:
+        products = ProductService.list_for_prep_station(
+            db, current, branch_id, kind=kind
+        )
     return ok([ProductService.to_public(p).model_dump(mode="json") for p in products])
 
 
@@ -276,7 +311,7 @@ def publish_recipe(
 ):
     """Say what a finished item is made of. A new version supersedes the old."""
     require_actor_branch_id(current)
-    recipe = RecipeService.publish(db, current, body)
+    recipe = RecipeService.publish(db, current, body, made_at=LocationType.BRANCH)
     return ok(RecipeService.to_out(db, recipe).model_dump(mode="json"))
 
 
@@ -285,8 +320,9 @@ def list_recipes(
     current: User = Depends(require_capability(Capability.PREP_READ)),
     db: Session = Depends(get_db),
 ):
+    """This station's own recipes — not the central kitchen's."""
     require_actor_branch_id(current)
-    rows = RecipeService.list_active(db, current)
+    rows = RecipeService.list_active(db, current, made_at=LocationType.BRANCH)
     return ok([RecipeService.to_out(db, r).model_dump(mode="json") for r in rows])
 
 
@@ -308,7 +344,10 @@ def set_availability(
     current: User = Depends(require_capability(Capability.PREP_OPERATE)),
     db: Session = Depends(get_db),
 ):
-    """Mark a dish sold-out / unmakeable today (or restore it). Stops sales."""
+    """Mark a dish sold-out / unmakeable today (or restore it). Stops sales.
+
+    Echoes `product_name` so the row can update in place without a re-fetch.
+    """
     branch_id = require_actor_branch_id(current)
     row = AvailabilityService.set_manual(
         db,
@@ -319,10 +358,17 @@ def set_availability(
         reason=body.reason,
         auto_clear_at=body.auto_clear_at,
     )
+    # Read the name here rather than widening set_manual's return type — the POS
+    # calls that same service, and its payload must stay byte-identical.
+    item = db.get(MenuItem, row.menu_item_id)
     return ok(
         {
             "menu_item_id": row.menu_item_id,
+            "product_name": item.name if item else None,
             "is_available": row.is_available,
             "reason": row.reason,
+            "auto_clear_at": (
+                row.auto_clear_at.isoformat() if row.auto_clear_at else None
+            ),
         }
     )

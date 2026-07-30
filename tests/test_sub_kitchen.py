@@ -386,6 +386,41 @@ def test_chef_can_read_branch_stock(client, sub_ctx):
     ).status_code == 200
 
 
+def test_availability_rows_carry_the_dish_name(client, sub_ctx, db):
+    """A manager 86-ing a dish must see what it is, not "Item #14".
+
+    The POS poll ships ids only because a till already holds the whole menu and
+    joins against it; a portal screen has no such cache.
+    """
+    mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
+    headers = auth_headers(client, "chef@test.com")
+
+    rows = client.get("/v1/branch/sub-kitchen/availability", headers=headers).json()["data"]
+    row = next(r for r in rows if r["menu_item_id"] == mi.id)
+    assert row["product_name"] == "Named Cake"
+    assert "auto_clear_at" in row
+
+    # The PUT echoes the name too, so the row updates in place without a re-fetch.
+    off = client.put(
+        f"/v1/branch/sub-kitchen/availability/{mi.id}",
+        json={"is_available": False, "reason": "Out of icing"},
+        headers=headers,
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["data"]["product_name"] == "Named Cake"
+
+
+def test_pos_availability_payload_is_unchanged(client, sub_ctx, db, make_user):
+    """The till's poll must stay lean — it is called every few seconds and the
+    device already has the names. Pinned so a future 'add the name everywhere'
+    does not quietly fatten it."""
+    _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
+    mgr = auth_headers(client, "branch@test.com")
+    rows = client.get("/v1/pos/availability", headers=mgr).json()["data"]
+    assert rows, "expected at least one availability row"
+    assert set(rows[0]) == {"menu_item_id", "is_available", "reason", "on_hand"}
+
+
 def test_sell_floor_cannot_waste_or_86(client, sub_ctx, db, make_user):
     mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
     make_user(

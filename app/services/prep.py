@@ -245,12 +245,22 @@ class PrepService:
         ticket_id: int,
         body: PrepComplete,
     ) -> PrepTicket:
-        """Finish a ticket: consume components, produce the finished good.
+        """Finish a ticket. What that moves depends on why the ticket exists.
 
-        Recipe-driven by default; `inputs` overrides with hand-entered components
-        (the fallback for one-offs or substitutions). The production run and the
-        ticket update commit together — a short component rolls back both, leaving
-        the ticket open for a clean retry.
+        BATCH — prep ahead of a rush. Consumes components (from the product's
+        recipe, or from hand-entered `inputs`) and credits the finished good to
+        branch stock, because nobody has bought it yet.
+
+        ORDER — finishing something a customer already bought. The item itself
+        came off stock when the order was SENT, so this must not touch it again:
+        exploding the recipe here would deduct the base and the plaque on top of
+        the cake that was already sold, and crediting an output would put a
+        phantom cake back on the shelf. It consumes only what the chef says the
+        finishing used (icing, a plaque) and credits nothing; completing with no
+        inputs simply records the work as done.
+
+        The production run and the ticket update commit together — a short
+        component rolls back both, leaving the ticket open for a clean retry.
         """
         ticket = PrepService.get_ticket(db, actor, branch_id, ticket_id)
         if ticket.status not in OPEN_STATUSES:
@@ -266,14 +276,19 @@ class PrepService:
         out_expiry = (
             body.expiry_date if body.expiry_date is not None else ticket.expiry_date
         )
-        # A BATCH ticket builds sellable stock (prep ahead of a rush). An ORDER
-        # ticket makes one item for the customer who ordered it — it is handed
-        # over, never shelved — so it consumes components but credits no finished
-        # good. (Its revenue was already booked when the order was sent.)
+        # Only a BATCH ticket builds sellable stock; an ORDER ticket's item was
+        # already sold and deducted (see the docstring).
         credit_output = ticket.source is PrepSource.BATCH
+        recipe_driven = ticket.source is PrepSource.BATCH and not body.inputs
 
         try:
-            if body.inputs:
+            run = None
+            if not recipe_driven and not body.inputs:
+                # An ORDER ticket completed without stating any extras: the
+                # finishing consumed nothing worth recording, so there is no
+                # movement to write. Marking the work done is the whole effect.
+                pass
+            elif body.inputs:
                 # Manual path: the sub-chef states exactly what was used. Validate
                 # every component belongs to the restaurant before touching stock.
                 pids = [ln.product_id for ln in body.inputs] + [ticket.product_id]
@@ -333,8 +348,8 @@ class PrepService:
                 ticket.started_at = now
             if ticket.ready_at is None:
                 ticket.ready_at = now
-            ticket.production_run_id = run.id
-            ticket.recipe_id = run.recipe_id
+            ticket.production_run_id = run.id if run is not None else None
+            ticket.recipe_id = run.recipe_id if run is not None else None
             db.flush()
             AuditService.record(
                 db,
@@ -344,8 +359,9 @@ class PrepService:
                 entity_id=ticket.id,
                 restaurant_id=actor.restaurant_id,
                 payload={
-                    "production_run_id": run.id,
-                    "recipe_id": run.recipe_id,
+                    "source": ticket.source.value,
+                    "production_run_id": run.id if run is not None else None,
+                    "recipe_id": run.recipe_id if run is not None else None,
                     "manual": bool(body.inputs),
                 },
             )

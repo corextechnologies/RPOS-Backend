@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.deps.scoping import apply_tenant_scope
+from app.models.inventory import InventoryItem
 from app.models.product import Product, ProductKind
 from app.models.recipe import StockUnit
 from app.models.reorder_level import ReorderLevel
@@ -171,6 +172,87 @@ class ProductService:
             stmt = stmt.where(Product.kind == kind)
         elif kinds is not None:
             stmt = stmt.where(Product.kind.in_(list(kinds)))
+        return list(db.execute(stmt.order_by(Product.id)).scalars().all())
+
+    @staticmethod
+    def list_stocked_at(
+        db: Session,
+        actor: User,
+        location_type: LocationType,
+        location_id: int,
+        *,
+        kind: ProductKind | None = None,
+    ) -> list[Product]:
+        """Products this location has actually held — its usable catalogue.
+
+        A branch sub-kitchen can only cook with what the central kitchen shipped
+        it: offering the restaurant's whole catalogue lets a chef write
+        "Buns = 150g Flour" at a branch that has never held flour, and that recipe
+        can never run — every prep ticket using it dies on insufficient_stock.
+
+        Membership is "has an inventory row here", not "quantity > 0". A component
+        that happens to be at zero today is still part of what this location
+        works with, and dropping it would make an existing recipe uneditable
+        exactly when the chef needs to look at it.
+        """
+        stocked = (
+            select(InventoryItem.product_id)
+            .where(
+                InventoryItem.restaurant_id == actor.restaurant_id,
+                InventoryItem.location_type == location_type,
+                InventoryItem.location_id == location_id,
+            )
+            .distinct()
+        )
+        stmt = apply_tenant_scope(select(Product), actor, Product).where(
+            Product.id.in_(stocked)
+        )
+        if kind is not None:
+            stmt = stmt.where(Product.kind == kind)
+        return list(db.execute(stmt.order_by(Product.id)).scalars().all())
+
+    @staticmethod
+    def list_for_prep_station(
+        db: Session,
+        actor: User,
+        branch_id: int,
+        *,
+        kind: ProductKind | None = None,
+    ) -> list[Product]:
+        """The catalogue a branch sub-kitchen writes recipes against.
+
+        The two sides of a recipe need opposite rules, which is why this is not
+        simply list_stocked_at:
+
+          * COMPONENTS must be filtered to branch stock. The restaurant's whole
+            catalogue offers flour and chocolate that live at the warehouse, and
+            a recipe written against them can never run — every prep ticket dies
+            on insufficient_stock.
+          * The FINISHED GOOD must NOT be. A made-to-order item is never held as
+            stock (that is the point of it), and a batch item the branch is about
+            to start making has none yet, so a stock filter would hide exactly the
+            things the chef is trying to write a recipe for.
+        """
+        stocked = (
+            select(InventoryItem.product_id)
+            .where(
+                InventoryItem.restaurant_id == actor.restaurant_id,
+                InventoryItem.location_type == LocationType.BRANCH,
+                InventoryItem.location_id == branch_id,
+            )
+            .distinct()
+        )
+        stmt = apply_tenant_scope(select(Product), actor, Product)
+        if kind is ProductKind.FINISHED_GOOD:
+            stmt = stmt.where(Product.kind == kind)
+        elif kind is not None:
+            stmt = stmt.where(Product.kind == kind, Product.id.in_(stocked))
+        else:
+            # Unfiltered: everything makeable, plus whatever is actually held.
+            stmt = stmt.where(
+                (Product.kind == ProductKind.FINISHED_GOOD)
+                | Product.id.in_(stocked)
+            )
         return list(db.execute(stmt.order_by(Product.id)).scalars().all())
 
     @staticmethod

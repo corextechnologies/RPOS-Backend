@@ -36,6 +36,17 @@ class ItemState:
     is_available: bool
     reason: str | None
     on_hand: int | None  # None for a combo header (it holds no stock of its own)
+    # Both carry defaults so every existing positional construction still works.
+    #
+    # The POS poll deliberately ships neither: a till already holds the whole menu
+    # from /pos/menu and joins these ids against it, which is what makes the poll
+    # cheap enough to run every few seconds. A portal screen has no such cache, so
+    # the sub-kitchen endpoints do send the name — otherwise a manager 86-ing a
+    # dish sees "Item #14" and cannot tell what they are pulling off sale.
+    product_name: str | None = None
+    #: When a manual 86 lapses on its own ("off sale until 6pm"). None = until
+    #: someone puts it back.
+    auto_clear_at: datetime | None = None
 
 
 class AvailabilityService:
@@ -98,22 +109,29 @@ class AvailabilityService:
 
         states: dict[int, ItemState] = {}
 
+        def clears_at(item_id: int):
+            row = manual.get(item_id)
+            return row.auto_clear_at if row is not None else None
+
         def simple_state(item: MenuItem) -> ItemState:
             marked = manual.get(item.id)
             if marked is not None and not marked.is_available:
-                return ItemState(item.id, False, marked.reason or "Marked unavailable", None)
-            if item.made_to_order:
-                # Finished fresh per order, never held as stock — so finished-good
-                # on-hand (always zero) says nothing about whether it can be made.
-                # A manual 86 above is the only thing that pulls it; otherwise it
-                # is orderable, and each order spawns a prep ticket.
-                return ItemState(item.id, True, None, None)
+                return ItemState(
+                    item.id, False, marked.reason or "Marked unavailable", None,
+                    item.name, marked.auto_clear_at,
+                )
             if item.product_id is None:
-                return ItemState(item.id, True, None, None)
+                return ItemState(
+                    item.id, True, None, None, item.name, clears_at(item.id)
+                )
             qty = on_hand.get(item.product_id, 0)
             if qty <= 0:
-                return ItemState(item.id, False, "Out of stock", qty)
-            return ItemState(item.id, True, None, qty)
+                return ItemState(
+                    item.id, False, "Out of stock", qty, item.name, clears_at(item.id)
+                )
+            return ItemState(
+                item.id, True, None, qty, item.name, clears_at(item.id)
+            )
 
         for item in items:
             if not item.is_combo:
@@ -127,7 +145,8 @@ class AvailabilityService:
             marked = manual.get(item.id)
             if marked is not None and not marked.is_available:
                 states[item.id] = ItemState(
-                    item.id, False, marked.reason or "Marked unavailable", None
+                    item.id, False, marked.reason or "Marked unavailable", None,
+                    item.name, marked.auto_clear_at,
                 )
                 continue
             parts = combo_parts.get(item.id, [])
@@ -139,10 +158,13 @@ class AvailabilityService:
             ]
             if blocked:
                 states[item.id] = ItemState(
-                    item.id, False, f"Unavailable: {', '.join(blocked)}", None
+                    item.id, False, f"Unavailable: {', '.join(blocked)}", None,
+                    item.name, clears_at(item.id),
                 )
             else:
-                states[item.id] = ItemState(item.id, True, None, None)
+                states[item.id] = ItemState(
+                    item.id, True, None, None, item.name, clears_at(item.id)
+                )
         return states
 
     @staticmethod

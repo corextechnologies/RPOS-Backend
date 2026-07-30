@@ -1,9 +1,12 @@
-"""Slice C — made-to-order lines auto-create prep tickets on POS send.
+"""Order lines flagged for finishing raise a prep ticket at the sub-kitchen.
 
-A made-to-order menu item (a named cake) is never held as finished stock: it is
-orderable at zero on-hand, sending the order spawns a prep ticket carrying the
-customer's note, and the finished good is never deducted — only its components
-are, when the sub-chef completes the ticket.
+The mark is made per LINE by whoever rings the order up, not per menu item: the
+same chocolate cake is sold plain to one customer and personalised for the next,
+and only the order-taker knows which.
+
+The item still comes off stock when the order is sent — the kitchen baked it and
+shipped it, and the sub-kitchen decorates it rather than conjuring it. The ticket
+covers the finishing work on top.
 """
 import uuid
 from decimal import Decimal
@@ -12,19 +15,14 @@ import pytest
 
 from app.models.enums import BranchPosition, UserRole
 from app.models.product import ProductKind
-from app.models.recipe import Recipe, RecipeComponent
 from app.models.request_enums import LocationType
 from app.services.inventory import InventoryService
 from tests.conftest import auth_headers, pair_terminal
 
 
 @pytest.fixture
-def mto_ctx(db, restaurant_setup, make_product, make_user, client):
-    """A published menu with a stocked Burger and a made-to-order Named Cake.
-
-    The branch holds the burger and the cake's components (base + plaque), but NO
-    finished cakes — that is the whole point of made-to-order.
-    """
+def prep_order_ctx(db, restaurant_setup, make_product, make_user, client):
+    """A branch selling a burger and a cake, with a chef and a paired till."""
     r = restaurant_setup["restaurant"]
     branch = restaurant_setup["home_branch"]
     branch.code = "BR0001"
@@ -34,18 +32,11 @@ def mto_ctx(db, restaurant_setup, make_product, make_user, client):
     db.flush()
 
     burger = make_product(r.id, name="Burger", sku="BUR", selling_price=Decimal("1.00"))
-    cake = make_product(r.id, name="Named Cake", sku="CAKE", selling_price=Decimal("1.00"))
-    base = make_product(r.id, name="Cake Base", sku="BASE", kind=ProductKind.RAW_MATERIAL)
-    plaque = make_product(r.id, name="Plaque", sku="PLQ", kind=ProductKind.RAW_MATERIAL)
-
-    recipe = Recipe(restaurant_id=r.id, product_id=cake.id, version=1, is_active=True, yield_qty=1)
-    db.add(recipe)
-    db.flush()
-    db.add(RecipeComponent(recipe_id=recipe.id, component_product_id=base.id, quantity=Decimal("1")))
-    db.add(RecipeComponent(recipe_id=recipe.id, component_product_id=plaque.id, quantity=Decimal("1")))
+    cake = make_product(r.id, name="Cake", sku="CAKE", selling_price=Decimal("1.00"))
+    icing = make_product(r.id, name="Icing", sku="ICE", kind=ProductKind.RAW_MATERIAL)
 
     mgr = restaurant_setup["branch_mgr"]
-    for product, qty in [(burger, 100), (base, 10), (plaque, 10)]:
+    for product, qty in [(burger, 100), (cake, 10), (icing, 50)]:
         InventoryService.receive_stock(
             db, actor=mgr, location_type=LocationType.BRANCH,
             location_id=branch.id, product_id=product.id, quantity=qty,
@@ -53,25 +44,28 @@ def mto_ctx(db, restaurant_setup, make_product, make_user, client):
     db.flush()
 
     admin = auth_headers(client, "admin@test.com")
-    vid = client.post("/v1/pos/menu/versions", json={"note": "v1"}, headers=admin).json()["data"]["id"]
+    vid = client.post(
+        "/v1/pos/menu/versions", json={"note": "v1"}, headers=admin
+    ).json()["data"]["id"]
 
-    def add(name, price, product, made_to_order=False):
+    def add(name, price, product):
         resp = client.post(
             f"/v1/pos/menu/versions/{vid}/items",
-            json={"name": name, "price": price, "product_id": product.id,
-                  "made_to_order": made_to_order},
+            json={"name": name, "price": price, "product_id": product.id},
             headers=admin,
         )
         assert resp.status_code == 200, resp.text
         return resp.json()["data"]["id"]
 
     burger_item = add("Burger", "500.00", burger)
-    cake_item = add("Named Cake", "1000.00", cake, made_to_order=True)
-    assert client.post(f"/v1/pos/menu/versions/{vid}/publish", headers=admin).status_code == 200
+    cake_item = add("Cake", "1000.00", cake)
+    assert client.post(
+        f"/v1/pos/menu/versions/{vid}/publish", headers=admin
+    ).status_code == 200
 
-    mgr_h = auth_headers(client, "branch@test.com")
-    device_uid = pair_terminal(client, mgr_h, code="T1", profile="COUNTER")
-
+    device_uid = pair_terminal(
+        client, auth_headers(client, "branch@test.com"), code="T1", profile="COUNTER"
+    )
     make_user(
         "cashier@test.com", UserRole.BRANCH_STAFF, restaurant_id=r.id,
         branch_id=branch.id, position=BranchPosition.CASHIER,
@@ -89,8 +83,8 @@ def mto_ctx(db, restaurant_setup, make_product, make_user, client):
 
     return {
         **restaurant_setup, "branch": branch, "burger": burger, "cake": cake,
-        "base": base, "plaque": plaque, "burger_item": burger_item,
-        "cake_item": cake_item, "pos_headers": pos_headers,
+        "icing": icing, "burger_item": burger_item, "cake_item": cake_item,
+        "pos_headers": pos_headers,
     }
 
 
@@ -112,82 +106,140 @@ def _order(client, ctx, lines):
     )
 
 
-def test_made_to_order_item_is_orderable_at_zero_finished_stock(client, mto_ctx):
-    # Availability must NOT grey the cake out despite zero finished-good on hand.
-    avail = client.get("/v1/pos/availability", headers=mto_ctx["pos_headers"]).json()["data"]
-    cake = next(a for a in avail if a["menu_item_id"] == mto_ctx["cake_item"])
-    assert cake["is_available"] is True
-
-    created = _order(client, mto_ctx, [{"menu_item_id": mto_ctx["cake_item"], "quantity": 1}])
-    assert created.status_code == 200, created.text
+def _send(client, ctx, order_id):
+    return client.post(f"/v1/pos/orders/{order_id}/send", headers=ctx["pos_headers"])
 
 
-def test_send_spawns_prep_ticket_and_skips_finished_deduction(client, mto_ctx, db):
-    created = _order(
-        client, mto_ctx,
-        [
-            {"menu_item_id": mto_ctx["burger_item"], "quantity": 1},
-            {"menu_item_id": mto_ctx["cake_item"], "quantity": 1,
-             "note": "Happy Birthday Ali"},
-        ],
-    ).json()["data"]
-    sent = client.post(f"/v1/pos/orders/{created['id']}/send", headers=mto_ctx["pos_headers"])
-    assert sent.status_code == 200, sent.text
-
-    # Stocked burger deducts; made-to-order cake never does (it isn't stocked).
-    assert _stock(db, mto_ctx, mto_ctx["burger"]) == 99
-    assert _stock(db, mto_ctx, mto_ctx["cake"]) is None
-
-    # A prep ticket landed on the branch board, carrying the customer's note.
+def _board(client):
     chef = auth_headers(client, "chef@test.com")
-    board = client.get("/v1/branch/sub-kitchen/board", headers=chef).json()
+    return client.get("/v1/branch/sub-kitchen/board", headers=chef).json()
+
+
+# ---- the order-taker decides, per line -------------------------------------
+
+def test_flagged_line_deducts_stock_and_raises_a_prep_ticket(client, prep_order_ctx, db):
+    """10 cakes in stock, one sold with a name on it -> 9 left, and a prep job."""
+    created = _order(
+        client, prep_order_ctx,
+        [{"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+          "needs_prep": True, "note": "Happy Birthday Ali"}],
+    ).json()["data"]
+    assert _send(client, prep_order_ctx, created["id"]).status_code == 200
+
+    # The cake exists and was sold, so it comes off the shelf like anything else.
+    assert _stock(db, prep_order_ctx, prep_order_ctx["cake"]) == 9
+
+    board = _board(client)
     assert board["meta"]["total"] == 1
     ticket = board["data"][0]
     assert ticket["source"] == "ORDER"
-    assert ticket["product_id"] == mto_ctx["cake"].id
+    assert ticket["product_id"] == prep_order_ctx["cake"].id
     assert ticket["customization_note"] == "Happy Birthday Ali"
     assert ticket["order_id"] == created["id"]
 
-    # The whole order still counts as revenue (burger + cake).
+
+def test_the_same_item_unflagged_raises_nothing(client, prep_order_ctx, db):
+    """The point of a per-line mark: the next customer buys the same cake plain."""
+    created = _order(
+        client, prep_order_ctx,
+        [{"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1}],
+    ).json()["data"]
+    assert _send(client, prep_order_ctx, created["id"]).status_code == 200
+
+    assert _stock(db, prep_order_ctx, prep_order_ctx["cake"]) == 9   # still sold
+    assert _board(client)["meta"]["total"] == 0                      # but no job
+
+
+def test_only_the_flagged_line_of_a_mixed_order_raises_a_ticket(
+    client, prep_order_ctx, db
+):
+    created = _order(
+        client, prep_order_ctx,
+        [
+            {"menu_item_id": prep_order_ctx["burger_item"], "quantity": 2},
+            {"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+             "needs_prep": True, "note": "For Sara"},
+        ],
+    ).json()["data"]
+    assert _send(client, prep_order_ctx, created["id"]).status_code == 200
+
+    assert _stock(db, prep_order_ctx, prep_order_ctx["burger"]) == 98
+    assert _stock(db, prep_order_ctx, prep_order_ctx["cake"]) == 9
+
+    board = _board(client)
+    assert board["meta"]["total"] == 1
+    assert board["data"][0]["product_id"] == prep_order_ctx["cake"].id
+
+    # The whole order is still one sale.
     admin = auth_headers(client, "admin@test.com")
     assert client.get("/v1/admin/sales/records", headers=admin).json()["meta"]["total"] == 1
 
 
-def test_completing_order_ticket_consumes_components_credits_no_finished_good(
-    client, mto_ctx, db
+def test_a_flagged_line_is_refused_when_the_item_is_out_of_stock(
+    client, prep_order_ctx, db
 ):
+    """Finishing is not conjuring: you cannot decorate a cake you do not have."""
+    InventoryService.apply_dispatch(
+        db, actor=prep_order_ctx["branch_mgr"], location_type=LocationType.BRANCH,
+        location_id=prep_order_ctx["branch"].id,
+        product_id=prep_order_ctx["cake"].id, quantity=10,
+    )
+    db.flush()
     created = _order(
-        client, mto_ctx,
-        [{"menu_item_id": mto_ctx["cake_item"], "quantity": 1, "note": "For Sara"}],
+        client, prep_order_ctx,
+        [{"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+          "needs_prep": True, "note": "Happy Birthday"}],
+    )
+    # Zero on hand greys the item out at capture time.
+    assert created.status_code == 409
+    assert created.json()["error"]["code"] == "item_unavailable"
+
+
+# ---- completing the finishing work -----------------------------------------
+
+def test_completing_an_order_ticket_moves_no_stock_by_default(
+    client, prep_order_ctx, db
+):
+    """The cake already came off stock at sale; completing must not touch it."""
+    created = _order(
+        client, prep_order_ctx,
+        [{"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+          "needs_prep": True, "note": "For Sara"}],
     ).json()["data"]
-    client.post(f"/v1/pos/orders/{created['id']}/send", headers=mto_ctx["pos_headers"])
+    _send(client, prep_order_ctx, created["id"])
+    before = _stock(db, prep_order_ctx, prep_order_ctx["cake"])
 
     chef = auth_headers(client, "chef@test.com")
-    tid = client.get("/v1/branch/sub-kitchen/board", headers=chef).json()["data"][0]["id"]
-    done = client.post(f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
+    tid = _board(client)["data"][0]["id"]
+    done = client.post(
+        f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef
+    )
     assert done.status_code == 200, done.text
     assert done.json()["data"]["status"] == "COMPLETED"
+    assert done.json()["data"]["production_run_id"] is None   # nothing moved
 
-    # Components come off; the finished cake is NEVER credited to sellable stock —
-    # it went to the customer, not the shelf.
-    assert _stock(db, mto_ctx, mto_ctx["base"]) == 9
-    assert _stock(db, mto_ctx, mto_ctx["plaque"]) == 9
-    assert _stock(db, mto_ctx, mto_ctx["cake"]) is None
+    # Not deducted twice, and no phantom cake credited back.
+    assert _stock(db, prep_order_ctx, prep_order_ctx["cake"]) == before
 
 
-def test_a_combo_cannot_be_made_to_order(client, mto_ctx):
-    admin = auth_headers(client, "admin@test.com")
-    vid = client.post("/v1/pos/menu/versions", json={"note": "v2"}, headers=admin).json()["data"]["id"]
-    child = client.post(
-        f"/v1/pos/menu/versions/{vid}/items",
-        json={"name": "Side", "price": "100.00", "product_id": mto_ctx["burger"].id},
-        headers=admin,
-    ).json()["data"]["id"]
-    resp = client.post(
-        f"/v1/pos/menu/versions/{vid}/items",
-        json={"name": "Combo", "price": "500.00", "is_combo": True,
-              "made_to_order": True, "component_item_ids": [child]},
-        headers=admin,
+def test_the_chef_may_log_what_the_finishing_used(client, prep_order_ctx, db):
+    """Icing spent decorating still comes off stock, if the chef records it."""
+    created = _order(
+        client, prep_order_ctx,
+        [{"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+          "needs_prep": True, "note": "Happy Birthday"}],
+    ).json()["data"]
+    _send(client, prep_order_ctx, created["id"])
+    cake_before = _stock(db, prep_order_ctx, prep_order_ctx["cake"])
+
+    chef = auth_headers(client, "chef@test.com")
+    tid = _board(client)["data"][0]["id"]
+    done = client.post(
+        f"/v1/branch/sub-kitchen/tickets/{tid}/complete",
+        json={"inputs": [{"product_id": prep_order_ctx["icing"].id, "quantity": 2}]},
+        headers=chef,
     )
-    assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "combo_not_made_to_order"
+    assert done.status_code == 200, done.text
+
+    assert _stock(db, prep_order_ctx, prep_order_ctx["icing"]) == 48   # 50 - 2
+    assert _stock(db, prep_order_ctx, prep_order_ctx["cake"]) == cake_before

@@ -77,6 +77,79 @@ def test_products_endpoint_feeds_both_recipe_pickers(client, manage_ctx):
     assert manage_ctx["plaque"].id in by_id
 
 
+def test_components_exclude_what_the_branch_has_never_stocked(
+    client, manage_ctx, make_product
+):
+    """A sub-kitchen can only cook with what the central kitchen shipped it.
+
+    Offering the whole catalogue lets a chef write "Buns = 150g Flour" at a
+    branch that has never held flour — a recipe that can never run, because every
+    prep ticket using it dies on insufficient_stock.
+    """
+    # Flour exists in the restaurant but is never delivered to this branch.
+    flour = make_product(
+        manage_ctx["restaurant"].id, name="Flour", sku="FLR-D",
+        kind=ProductKind.RAW_MATERIAL,
+    )
+    chef = auth_headers(client, "chef@test.com")
+
+    ids = {
+        p["id"]
+        for p in client.get(
+            "/v1/branch/sub-kitchen/products?kind=RAW_MATERIAL", headers=chef
+        ).json()["data"]
+    }
+    assert flour.id not in ids                    # never held here
+    assert manage_ctx["base"].id in ids           # delivered to this branch
+
+    # The escape hatch, for setting an item up before its components arrive.
+    all_ids = {
+        p["id"]
+        for p in client.get(
+            "/v1/branch/sub-kitchen/products?kind=RAW_MATERIAL&all=true",
+            headers=chef,
+        ).json()["data"]
+    }
+    assert flour.id in all_ids
+
+
+def test_a_never_stocked_finished_good_is_still_offered(client, manage_ctx):
+    """The made-to-order case: a named cake is never held as stock — that is the
+    point of it — so the component filter must not hide what the chef is writing
+    the recipe *for*."""
+    chef = auth_headers(client, "chef@test.com")
+    # manage_ctx stocks the components but deliberately never the cake itself.
+    for query in ("", "?kind=FINISHED_GOOD"):
+        ids = {
+            p["id"]
+            for p in client.get(
+                f"/v1/branch/sub-kitchen/products{query}", headers=chef
+            ).json()["data"]
+        }
+        assert manage_ctx["cake"].id in ids, query
+
+
+def test_products_keep_a_component_that_is_currently_at_zero(
+    client, manage_ctx, db
+):
+    """Zero on hand still belongs to the station — dropping it would make an
+    existing recipe uneditable exactly when the chef needs to look at it."""
+    InventoryService.apply_dispatch(
+        db, actor=manage_ctx["branch_mgr"], location_type=LocationType.BRANCH,
+        location_id=manage_ctx["branch"].id,
+        product_id=manage_ctx["plaque"].id, quantity=20,
+    )
+    db.flush()
+    chef = auth_headers(client, "chef@test.com")
+    ids = {
+        p["id"]
+        for p in client.get(
+            "/v1/branch/sub-kitchen/products", headers=chef
+        ).json()["data"]
+    }
+    assert manage_ctx["plaque"].id in ids
+
+
 def test_products_filter_by_kind(client, manage_ctx):
     chef = auth_headers(client, "chef@test.com")
 
@@ -204,6 +277,50 @@ def test_the_chefs_recipe_drives_ticket_completion(client, manage_ctx, db):
     assert stock(manage_ctx["base"]) == 18    # 20 - 2
     assert stock(manage_ctx["plaque"]) == 18
     assert stock(manage_ctx["cake"]) == 2     # batch prep builds stock
+
+
+def test_each_station_lists_only_its_own_recipes(client, manage_ctx, make_product):
+    """The chef must not see the central kitchen's recipes.
+
+    Both stations share one recipe table, so before `made_at` the branch prep
+    board listed "burger = 2 buns + 1 patty" next to the cake — components the
+    branch never holds and cannot cook with.
+    """
+    r = manage_ctx["restaurant"].id
+    burger = make_product(r, name="Burger", sku="BUR-D")
+    patty = make_product(r, name="Patty", sku="PTY-D", kind=ProductKind.RAW_MATERIAL)
+
+    # The central kitchen publishes its own recipe.
+    kitchen = auth_headers(client, "kitchen@test.com")
+    made = client.post(
+        "/v1/kitchen/recipes",
+        json={"product_id": burger.id, "yield_qty": 1,
+              "components": [{"component_product_id": patty.id, "quantity": 1}]},
+        headers=kitchen,
+    )
+    assert made.status_code == 200, made.text
+    assert made.json()["data"]["made_at"] == "KITCHEN"
+
+    # The chef publishes theirs.
+    chef = auth_headers(client, "chef@test.com")
+    cake = client.post(
+        "/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef
+    )
+    assert cake.status_code == 200, cake.text
+    assert cake.json()["data"]["made_at"] == "BRANCH"
+
+    # Each station sees only its own.
+    chef_list = client.get(
+        "/v1/branch/sub-kitchen/recipes", headers=chef
+    ).json()["data"]
+    chef_products = {r_["product_id"] for r_ in chef_list}
+    assert manage_ctx["cake"].id in chef_products
+    assert burger.id not in chef_products
+
+    kitchen_list = client.get("/v1/kitchen/recipes", headers=kitchen).json()["data"]
+    kitchen_products = {r_["product_id"] for r_ in kitchen_list}
+    assert burger.id in kitchen_products
+    assert manage_ctx["cake"].id not in kitchen_products
 
 
 def test_sell_floor_cannot_write_recipes(client, manage_ctx, make_user):

@@ -83,7 +83,8 @@ def list_recipes(
     current: User = Depends(_MGR),
     db: Session = Depends(get_db),
 ):
-    rows = RecipeService.list_active(db, current)
+    """The kitchen's own recipes — not a branch sub-kitchen's final-prep ones."""
+    rows = RecipeService.list_active(db, current, made_at=LocationType.KITCHEN)
     return ok([RecipeService.to_out(db, r).model_dump(mode="json") for r in rows])
 
 

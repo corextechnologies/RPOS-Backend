@@ -71,6 +71,9 @@ class RecipeOut(BaseModel):
     version: int
     is_active: bool
     yield_qty: int
+    #: Which station works this recipe — KITCHEN or BRANCH. Each portal lists only
+    #: its own, so this is mainly for display and for an Admin-side overview.
+    made_at: str = "KITCHEN"
     note: str | None = None
     components: list[RecipeComponentOut] = Field(default_factory=list)
 

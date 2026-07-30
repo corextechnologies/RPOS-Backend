@@ -96,7 +96,6 @@ def _serialise_menu(menu: object) -> dict:
                 "prep_time_minutes": item.prep_time_minutes,
                 "price_minor": item.price_minor,
                 "is_combo": item.is_combo,
-                "made_to_order": item.made_to_order,
                 "product_id": item.product_id,
                 "components": [
                     {"item_id": c.component_item_id, "quantity": c.quantity}

@@ -180,9 +180,6 @@ class MenuItemIn(BaseModel):
     calories: int | None = Field(default=None, ge=0)
     prep_time_minutes: int | None = Field(default=None, ge=0)
     is_combo: bool = False
-    # Finished fresh per order at the branch sub-kitchen (a named cake), not sold
-    # from stock. An order line for it auto-creates a prep ticket.
-    made_to_order: bool = False
     sort_order: int = 0
     component_item_ids: list[int] = Field(default_factory=list)
     modifier_group_ids: list[int] = Field(default_factory=list)
@@ -216,6 +213,11 @@ class PosOrderLineIn(BaseModel):
     quantity: int = Field(gt=0)
     modifier_option_ids: list[int] = Field(default_factory=list)
     note: str | None = None
+    #: Send this line to the branch sub-kitchen for finishing (a name on the
+    #: cake, a dietary swap). Set by whoever takes the order, per line — the same
+    #: product is sold plain to one customer and personalised for the next. Pair
+    #: it with `note`, which becomes the instruction on the chef's prep card.
+    needs_prep: bool = False
 
 
 class PosOrderCreate(BaseModel):

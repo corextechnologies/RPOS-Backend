@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.product import Product, ProductKind
 from app.models.recipe import Recipe, RecipeComponent, StockUnit
+from app.models.request_enums import LocationType
 from app.models.user import User
 from app.schemas.kitchen_production import (
     KitchenRecipeIn,
@@ -27,7 +28,13 @@ from app.services.units import same_dimension
 
 class RecipeService:
     @staticmethod
-    def publish(db: Session, actor: User, body: KitchenRecipeIn) -> Recipe:
+    def publish(
+        db: Session,
+        actor: User,
+        body: KitchenRecipeIn,
+        *,
+        made_at: LocationType = LocationType.KITCHEN,
+    ) -> Recipe:
         product = db.get(Product, body.product_id)
         if product is None or product.restaurant_id != actor.restaurant_id:
             raise NotFoundError("Product not found.")
@@ -88,6 +95,7 @@ class RecipeService:
             version=next_version,
             is_active=True,
             yield_qty=body.yield_qty,
+            made_at=made_at,
             note=body.note,
         )
         db.add(recipe)
@@ -131,18 +139,23 @@ class RecipeService:
         return recipe
 
     @staticmethod
-    def list_active(db: Session, actor: User) -> list[Recipe]:
+    def list_active(
+        db: Session, actor: User, *, made_at: LocationType | None = None
+    ) -> list[Recipe]:
+        """Active recipes. `made_at` narrows to one station's own.
+
+        Without it the branch prep board listed the kitchen's recipes too — the
+        chef saw "burger = 2 buns + 1 patty" next to their cake, for components
+        the branch never holds.
+        """
+        stmt = RecipeService._loaded().where(
+            Recipe.restaurant_id == actor.restaurant_id,
+            Recipe.is_active.is_(True),
+        )
+        if made_at is not None:
+            stmt = stmt.where(Recipe.made_at == made_at)
         return list(
-            db.execute(
-                RecipeService._loaded()
-                .where(
-                    Recipe.restaurant_id == actor.restaurant_id,
-                    Recipe.is_active.is_(True),
-                )
-                .order_by(Recipe.product_id)
-            )
-            .scalars()
-            .all()
+            db.execute(stmt.order_by(Recipe.product_id)).scalars().all()
         )
 
     @staticmethod
@@ -177,6 +190,7 @@ class RecipeService:
             version=recipe.version,
             is_active=recipe.is_active,
             yield_qty=recipe.yield_qty,
+            made_at=recipe.made_at.value,
             note=recipe.note,
             components=components,
         )

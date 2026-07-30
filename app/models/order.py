@@ -146,6 +146,15 @@ class OrderLine(Base, PKMixin, TimestampMixin):
     tax_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     note: Mapped[str | None] = mapped_column(Text)
+    # The order-taker says this line needs finishing at the branch sub-kitchen —
+    # a name piped onto the cake, a dietary swap. Decided per LINE and not per
+    # menu item, because the same cake is sold plain to one customer and
+    # personalised for the next; only the person taking the order knows which.
+    # Sending the order still deducts the item normally: it exists, the kitchen
+    # baked it, and the prep ticket covers the finishing work on top.
+    needs_prep: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # Reserved so split-bill-by-seat can be added later without a migration of
     # live order data — designed for, but no UI in v1.
     seat_no: Mapped[int | None] = mapped_column(Integer)

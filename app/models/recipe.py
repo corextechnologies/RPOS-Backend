@@ -26,6 +26,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, PKMixin, TimestampMixin
+from app.models.request_enums import LocationType
 
 
 class StockUnit(str, enum.Enum):
@@ -78,6 +79,19 @@ class Recipe(Base, PKMixin, TimestampMixin):
     )
     # How many of product_id one run of this recipe makes.
     yield_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Where this recipe is worked: the central kitchen, or a branch sub-kitchen.
+    # A recipe stays restaurant-wide (one product, one active recipe) — this only
+    # says whose screen it belongs on, so the branch prep station stops showing
+    # the kitchen's "burger = 2 buns + 1 patty" next to its own cake recipe.
+    # Existing rows backfill to KITCHEN: every recipe written before this column
+    # came from the kitchen portal, which was the only one that could write them.
+    made_at: Mapped[LocationType] = mapped_column(
+        SAEnum(LocationType, name="location_type", create_type=False),
+        nullable=False,
+        default=LocationType.KITCHEN,
+        server_default=LocationType.KITCHEN.value,
+        index=True,
+    )
     note: Mapped[str | None] = mapped_column(String(500))
 
     components: Mapped[list["RecipeComponent"]] = relationship(

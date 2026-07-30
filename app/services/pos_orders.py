@@ -114,6 +114,7 @@ class PosOrderService:
                     "modifiers": mods,
                     "parent_no": None,
                     "note": entry.note,
+                    "needs_prep": entry.needs_prep,
                 }
             )
 
@@ -135,6 +136,9 @@ class PosOrderService:
                             "modifiers": [],
                             "parent_no": header_no,
                             "note": None,
+                            # Finishing is asked for on the combo header, not on
+                            # each component the customer never named.
+                            "needs_prep": False,
                         }
                     )
 
@@ -215,6 +219,7 @@ class PosOrderService:
                     net_minor=priced_line.net_minor if priced_line else 0,
                     tax_minor=priced_line.tax_minor if priced_line else 0,
                     note=p["note"],
+                    needs_prep=p["needs_prep"],
                     parent_line_id=(
                         no_to_id.get(p["parent_no"]) if p["parent_no"] else None
                     ),
@@ -313,40 +318,23 @@ class PosOrderService:
                 code="invalid_order_status",
             )
 
-        # Which lines are made-to-order? Those bypass finished-good deduction (they
-        # were never stocked) and instead spawn a prep ticket for the sub-kitchen.
-        made_ids = {
-            mid
-            for (mid,) in db.execute(
-                select(MenuItem.id).where(
-                    MenuItem.id.in_(
-                        [l.menu_item_id for l in order.lines if l.menu_item_id]
-                        or [-1]
-                    ),
-                    MenuItem.made_to_order.is_(True),
-                )
-            ).all()
-        }
-
+        # Every sold line deducts, including one flagged for finishing: the item
+        # exists — the kitchen baked it and shipped it — and the sub-kitchen is
+        # decorating it, not conjuring it. Skipping the deduction here would leave
+        # a phantom cake on the shelf forever.
         qty_by_product: dict[int, int] = {}
-        made_to_order_lines = []
+        prep_lines = []
         for line in order.lines:
             # A combo header holds no stock; its component lines do.
             if line.product_id is None:
                 continue
-            if line.menu_item_id in made_ids:
-                # Never deduct a finished good the branch does not hold — the prep
-                # station will make it fresh from components.
-                made_to_order_lines.append(line)
-                continue
+            if line.needs_prep:
+                prep_lines.append(line)
             qty_by_product[line.product_id] = (
                 qty_by_product.get(line.product_id, 0) + line.quantity
             )
 
         try:
-            # Revenue (SalesRecord) is booked over the whole order total inside
-            # settle, so a made-to-order line still counts as a sale — only its
-            # stock effect is deferred to the prep ticket.
             settle_stock_and_sales(
                 db,
                 actor=session.user,
@@ -354,7 +342,8 @@ class PosOrderService:
                 branch_id=session.branch_id,
                 qty_by_product=qty_by_product,
             )
-            for line in made_to_order_lines:
+            # The finishing work itself, carrying the customer's instruction.
+            for line in prep_lines:
                 PrepService.create_order_ticket(
                     db,
                     actor=session.user,
