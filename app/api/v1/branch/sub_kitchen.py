@@ -11,6 +11,8 @@ holds PREP_READ/PREP_OPERATE. A cashier or order-taker gets a clean 403.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -26,12 +28,14 @@ from app.models.prep_enums import PrepStatus
 from app.models.request_enums import LocationType
 from app.models.user import User
 from app.schemas.branch import BranchWasteIn
+from app.schemas.kitchen_production import KitchenRecipeIn
 from app.schemas.pos import AvailabilityIn
 from app.schemas.prep import PrepBatchCreate, PrepComplete, PrepStatusUpdate
 from app.services.availability import AvailabilityService
 from app.services.inventory import InventoryService
 from app.services.menu import MenuService
 from app.services.prep import PrepService
+from app.services.recipes import RecipeService
 from app.services.waste import WasteService
 
 # Blanket branch gate first (non-branch roles get the generic 403); the
@@ -204,6 +208,68 @@ def list_availability(
             for s in states.values()
         ]
     )
+
+
+@router.get("/stats")
+def get_stats(
+    start: date | None = Query(default=None),
+    end: date | None = Query(default=None),
+    current: User = Depends(require_capability(Capability.PREP_READ)),
+    db: Session = Depends(get_db),
+):
+    """Headline numbers for the branch portal's sub-kitchen tab.
+
+    Read-only, so both the chef and the branch manager (who holds every branch
+    capability) see the same figures — the manager's oversight view is this
+    endpoint, not a separate screen.
+    """
+    branch_id = require_actor_branch_id(current)
+    return ok(PrepService.stats(db, current, branch_id, start=start, end=end))
+
+
+# --- Slice D: recipes, owned by the chef ------------------------------------
+#
+# The recipe is the station's craft, not Admin's paperwork: the chef knows a
+# named cake is a base plus a plaque, and the chef is who consumes those
+# components. Admin only decides the item is made-to-order and prices it.
+#
+# Same RecipeService the central kitchen uses (recipes are restaurant-scoped, so
+# one product has one active recipe wherever it is made) — publishing a new
+# version supersedes the old rather than editing it, so completed prep runs keep
+# meaning what they meant.
+
+
+@router.post("/recipes")
+def publish_recipe(
+    body: KitchenRecipeIn,
+    current: User = Depends(require_capability(Capability.PREP_OPERATE)),
+    db: Session = Depends(get_db),
+):
+    """Say what a finished item is made of. A new version supersedes the old."""
+    require_actor_branch_id(current)
+    recipe = RecipeService.publish(db, current, body)
+    return ok(RecipeService.to_out(db, recipe).model_dump(mode="json"))
+
+
+@router.get("/recipes")
+def list_recipes(
+    current: User = Depends(require_capability(Capability.PREP_READ)),
+    db: Session = Depends(get_db),
+):
+    require_actor_branch_id(current)
+    rows = RecipeService.list_active(db, current)
+    return ok([RecipeService.to_out(db, r).model_dump(mode="json") for r in rows])
+
+
+@router.get("/recipes/{recipe_id}")
+def get_recipe(
+    recipe_id: int,
+    current: User = Depends(require_capability(Capability.PREP_READ)),
+    db: Session = Depends(get_db),
+):
+    require_actor_branch_id(current)
+    recipe = RecipeService.get(db, current, recipe_id)
+    return ok(RecipeService.to_out(db, recipe).model_dump(mode="json"))
 
 
 @router.put("/availability/{menu_item_id}")

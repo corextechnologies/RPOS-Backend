@@ -6,8 +6,12 @@ import subprocess
 import sys
 
 TESTS = [
-    # New: the prep board.
+    # New: the prep board, made-to-order auto-tickets, chef recipes + stats.
     "tests/test_sub_kitchen.py",
+    "tests/test_sub_kitchen_orders.py",
+    "tests/test_sub_kitchen_manage.py",
+    # Regression on the shared recipe service the chef now also writes through.
+    "tests/test_kitchen_production.py",
     # Regression on the shared production path the board reuses.
     "tests/test_kitchen_production.py",
     "tests/test_branch_production.py",

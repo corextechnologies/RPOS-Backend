@@ -86,6 +86,15 @@ class MenuItem(Base, PKMixin, TimestampMixin):
     is_combo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Made fresh per order at the branch sub-kitchen (a named cake), rather than
+    # sold from finished-good stock the kitchen shipped. Two consequences: an
+    # order line for it auto-creates a prep ticket instead of deducting finished
+    # stock, and it is NOT auto-86'd when finished-good on-hand is zero — there is
+    # never any, because it is never stocked. See app/services/availability.py and
+    # PosOrderService.send.
+    made_to_order: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     menu_version: Mapped[MenuVersion] = relationship(

@@ -121,6 +121,7 @@ class ProductionService:
         batch_code: str | None = None,
         expiry_date: date | None = None,
         note: str | None = None,
+        credit_output: bool = True,
         commit: bool = True,
     ) -> ProductionRun:
         """Make N of a finished good at ANY location by exploding its recipe.
@@ -129,6 +130,11 @@ class ProductionService:
         finishes goods too (a named cake off a cake base + icing), and its
         components live at the branch because the kitchen shipped them there. Same
         bill-of-materials math, same shared ledger — only the location differs.
+
+        `credit_output=False` consumes the components but credits NO finished-good
+        stock. That is the made-to-order case: the finished item is handed to the
+        customer who ordered it, so it must never land on the sellable shelf. The
+        run then records only what was consumed.
         """
         product = db.get(Product, product_id)
         if product is None or product.restaurant_id != actor.restaurant_id:
@@ -136,6 +142,11 @@ class ProductionService:
 
         recipe_id, consumed, output_qty = ProductionService._explode_recipe(
             db, product, quantity
+        )
+        outputs = (
+            [(product.id, (batch_code or "").strip(), output_qty, expiry_date)]
+            if credit_output
+            else []
         )
         return ProductionService._run(
             db,
@@ -145,7 +156,7 @@ class ProductionService:
             occurred_at=datetime.now(timezone.utc),
             note=note,
             inputs=consumed,
-            outputs=[(product.id, (batch_code or "").strip(), output_qty, expiry_date)],
+            outputs=outputs,
             recipe_id=recipe_id,
             commit=commit,
         )

@@ -180,6 +180,9 @@ class MenuItemIn(BaseModel):
     calories: int | None = Field(default=None, ge=0)
     prep_time_minutes: int | None = Field(default=None, ge=0)
     is_combo: bool = False
+    # Finished fresh per order at the branch sub-kitchen (a named cake), not sold
+    # from stock. An order line for it auto-creates a prep ticket.
+    made_to_order: bool = False
     sort_order: int = 0
     component_item_ids: list[int] = Field(default_factory=list)
     modifier_group_ids: list[int] = Field(default_factory=list)

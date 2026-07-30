@@ -83,6 +83,13 @@ class MenuService:
                     "A combo needs at least one component.",
                     code="combo_needs_components",
                 )
+            if body.made_to_order:
+                # A combo has no product to produce; made-to-order belongs on the
+                # individual sellable item, whose recipe the prep station explodes.
+                raise ConflictError(
+                    "A combo cannot be made-to-order; mark its components instead.",
+                    code="combo_not_made_to_order",
+                )
         else:
             if body.product_id is None:
                 raise ConflictError(
@@ -116,6 +123,7 @@ class MenuService:
             prep_time_minutes=body.prep_time_minutes,
             price_minor=to_minor(body.price, version.currency),
             is_combo=body.is_combo,
+            made_to_order=body.made_to_order,
             sort_order=body.sort_order,
         )
         db.add(item)

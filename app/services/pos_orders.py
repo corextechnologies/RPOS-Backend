@@ -30,6 +30,7 @@ from app.services.audit import AuditService
 from app.services.availability import AvailabilityService
 from app.services.menu import MenuService
 from app.services.orders import settle_stock_and_sales
+from app.services.prep import PrepService
 import app.pricing.packs  # noqa: F401  (registers the country packs)
 
 # An order can be edited while it is still on the device; once SENT the kitchen
@@ -312,16 +313,40 @@ class PosOrderService:
                 code="invalid_order_status",
             )
 
+        # Which lines are made-to-order? Those bypass finished-good deduction (they
+        # were never stocked) and instead spawn a prep ticket for the sub-kitchen.
+        made_ids = {
+            mid
+            for (mid,) in db.execute(
+                select(MenuItem.id).where(
+                    MenuItem.id.in_(
+                        [l.menu_item_id for l in order.lines if l.menu_item_id]
+                        or [-1]
+                    ),
+                    MenuItem.made_to_order.is_(True),
+                )
+            ).all()
+        }
+
         qty_by_product: dict[int, int] = {}
+        made_to_order_lines = []
         for line in order.lines:
             # A combo header holds no stock; its component lines do.
             if line.product_id is None:
+                continue
+            if line.menu_item_id in made_ids:
+                # Never deduct a finished good the branch does not hold — the prep
+                # station will make it fresh from components.
+                made_to_order_lines.append(line)
                 continue
             qty_by_product[line.product_id] = (
                 qty_by_product.get(line.product_id, 0) + line.quantity
             )
 
         try:
+            # Revenue (SalesRecord) is booked over the whole order total inside
+            # settle, so a made-to-order line still counts as a sale — only its
+            # stock effect is deferred to the prep ticket.
             settle_stock_and_sales(
                 db,
                 actor=session.user,
@@ -329,6 +354,18 @@ class PosOrderService:
                 branch_id=session.branch_id,
                 qty_by_product=qty_by_product,
             )
+            for line in made_to_order_lines:
+                PrepService.create_order_ticket(
+                    db,
+                    actor=session.user,
+                    branch_id=session.branch_id,
+                    product_id=line.product_id,
+                    quantity=line.quantity,
+                    customization_note=line.note,
+                    order_id=order.id,
+                    order_line_id=line.id,
+                    commit=False,
+                )
             order.status = OrderStatus.SENT
             order.sent_at = datetime.now(timezone.utc)
             db.flush()
