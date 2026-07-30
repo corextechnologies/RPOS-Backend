@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
 
+    # Outbound email. "console" (default) just logs the message — used by dev and
+    # the whole test suite. Set MAIL_BACKEND=smtp with the SMTP_* values below to
+    # send real mail (e.g. Gmail). SMTP_PASSWORD for Gmail must be a 16-char App
+    # Password (Google Account -> Security -> App Passwords), NOT the login password.
+    mail_backend: str = "console"  # "console" | "smtp"
+    mail_from: str = "thecorextech@gmail.com"
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = "thecorextech@gmail.com"
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+
     # File uploads. 10 MB because images are shrunk before storage (see
     # app/services/storage.py) — a phone photo is accepted and comes out small,
     # rather than being rejected as too large.
