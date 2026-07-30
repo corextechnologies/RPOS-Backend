@@ -4,6 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
@@ -450,6 +451,19 @@ class RequestService:
                 raise ForbiddenError("You must belong to a restaurant.")
             restaurant_id = actor.restaurant_id
 
+        # Business dedupe for offline replay: the same device/portal-minted
+        # local_id is the same requisition, forever. Return the original rather
+        # than creating a second (and firing a second notification).
+        if body.local_id is not None:
+            existing = db.execute(
+                select(Request).where(
+                    Request.restaurant_id == restaurant_id,
+                    Request.local_id == body.local_id,
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return RequestService._load_request(db, existing.id)
+
         RequestService._validate_locations(db, restaurant_id, body)
         product_ids = [line.product_id for line in body.lines]
         if product_ids:
@@ -462,6 +476,7 @@ class RequestService:
 
         request = Request(
             restaurant_id=restaurant_id,
+            local_id=body.local_id,
             request_type=body.request_type,
             status=INITIAL_STATUS[body.request_type],
             requester_id=actor.id,
@@ -472,7 +487,22 @@ class RequestService:
             notes=body.notes,
         )
         db.add(request)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # A concurrent duplicate won the race to the unique (restaurant_id,
+            # local_id). Replay it cleanly instead of 500-ing.
+            db.rollback()
+            if body.local_id is not None:
+                existing = db.execute(
+                    select(Request).where(
+                        Request.restaurant_id == restaurant_id,
+                        Request.local_id == body.local_id,
+                    )
+                ).scalar_one_or_none()
+                if existing is not None:
+                    return RequestService._load_request(db, existing.id)
+            raise
 
         for line in body.lines:
             db.add(

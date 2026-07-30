@@ -104,6 +104,63 @@ def settle_stock_and_sales(
     )
 
 
+def settle_or_flag(
+    db: Session,
+    *,
+    actor: User,
+    order: Order,
+    branch_id: int,
+    qty_by_product: dict[int, int],
+) -> "FlaggedReason | None":
+    """The OFFLINE-sync twin of settle_stock_and_sales.
+
+    An offline sale already happened — the food was served and (for cash) the
+    money is in the drawer — so a stock shortfall must NOT reject it. This deducts
+    what stock it can, always books the revenue, and returns STOCK_OVERSELL if any
+    line outran on-hand, so the caller flags the order for the manager to
+    reconcile the negative. Non-shortfall errors still propagate. The online send
+    path keeps the strict settle_stock_and_sales, which rejects — an unsent order
+    can still be refused.
+    """
+    from app.models.menu_enums import FlaggedReason
+
+    short = False
+    for product_id in sort_lock_order(qty_by_product):
+        qty = qty_by_product[product_id]
+        if qty <= 0:
+            continue
+        try:
+            InventoryService.apply_sale_deduction(
+                db,
+                actor=actor,
+                branch_id=branch_id,
+                product_id=product_id,
+                quantity=qty,
+                notes=f"Order #{order.id} (offline)",
+            )
+        except NotFoundError:
+            # No stock row at all — nothing on hand to sell against.
+            short = True
+        except ConflictError as exc:
+            if exc.code != "insufficient_stock":
+                raise
+            # Present but short. The guard raises BEFORE the decrement, so state
+            # stays clean; we simply cannot deduct this line.
+            short = True
+
+    db.add(
+        SalesRecord(
+            restaurant_id=order.restaurant_id,
+            branch_id=branch_id,
+            order_id=order.id,
+            amount=to_decimal(order.grand_total_minor, order.currency),
+            occurred_at=order.occurred_at,
+            note=f"Order #{order.id} (offline)",
+        )
+    )
+    return FlaggedReason.STOCK_OVERSELL if short else None
+
+
 class OrderService:
     @staticmethod
     def create_order(

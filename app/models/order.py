@@ -26,7 +26,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, PKMixin, TimestampMixin
-from app.models.menu_enums import OrderStatus, VoidState
+from app.models.menu_enums import FlaggedReason, OrderStatus, VoidState
 from app.pricing.types import OrderChannel, OrderType
 
 
@@ -114,6 +114,11 @@ class Order(Base, PKMixin, TimestampMixin):
     # order for the manager to review — never a silent correction, never a reject.
     flagged_for_review: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Why it was flagged (POS-4 sync). NULL when not flagged. Set on the offline
+    # replay path only — an online send still rejects rather than flags.
+    flagged_reason: Mapped[FlaggedReason | None] = mapped_column(
+        SAEnum(FlaggedReason, name="flagged_reason")
     )
 
     lines: Mapped[list["OrderLine"]] = relationship(

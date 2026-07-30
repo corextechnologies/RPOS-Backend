@@ -18,6 +18,7 @@ from app.models.payment import (
     ShiftStatus,
 )
 from app.models.pos import DeviceProfile, DeviceStatus
+from app.models.printing_enums import PrintJobState, PrintKind
 from app.pricing.types import OrderChannel, OrderType, PaymentMethod
 
 
@@ -240,6 +241,13 @@ class PosOrderStatusIn(BaseModel):
     status: OrderStatus
 
 
+class PosOrderVoidIn(BaseModel):
+    """Void a sent order. A reason is mandatory — 'because the manager said so'
+    is not a number you can query at month end."""
+
+    reason_code: ReasonCode
+
+
 class PosOrderModifierOut(BaseModel):
     option_id: int | None = None
     name: str | None = None
@@ -316,6 +324,12 @@ class PaymentIn(BaseModel):
     auth_code: str | None = Field(default=None, max_length=64)
     #: Masked only — a full PAN must never reach this API.
     masked_pan: str | None = Field(default=None, max_length=24)
+    #: Device-minted anchor for offline replay — the same client_payment_id is the
+    #: same tender, forever, however many times a rebuilt queue replays it. Mirrors
+    #: Order.local_id.
+    client_payment_id: str | None = Field(default=None, min_length=8, max_length=128)
+    #: Which admin-configured account the customer paid into (ONLINE only).
+    payment_account_id: int | None = None
 
 
 class PaymentOut(BaseModel):
@@ -444,6 +458,26 @@ class ShiftOut(BaseModel):
 
 # --- POS-4: sync --------------------------------------------------------------
 
+class PrintResultIn(BaseModel):
+    """What the device printed for one ticket while offline. On sync the server
+    marks the matching job PRINTED so it is never re-emitted (the double-print
+    guard). `station_id` is required for a KITCHEN ticket, null for a RECEIPT."""
+
+    kind: PrintKind
+    station_id: int | None = None
+    state: PrintJobState  # PRINTED or FAILED
+    error: str | None = Field(default=None, max_length=500)
+
+
+class PrintJobAckIn(BaseModel):
+    """The device reporting the outcome of one print job it holds (by id, from the
+    send response / config). Only PRINTED or FAILED are meaningful."""
+
+    print_job_id: int
+    state: PrintJobState
+    error: str | None = Field(default=None, max_length=500)
+
+
 class SyncEnvelopeIn(BaseModel):
     """One queued mutation from a device's outbound queue."""
 
@@ -451,6 +485,14 @@ class SyncEnvelopeIn(BaseModel):
     #: What the device charged while offline. A mismatch flags the order for
     #: review rather than silently re-pricing or rejecting a sale that happened.
     device_total_minor: int | None = None
+    #: The device fired this order to the kitchen while offline. On sync the
+    #: server settles it (stock + sales) instead of leaving it a draft.
+    was_sent: bool = False
+    #: Advisory only — the server stamps the authoritative sent_at.
+    device_sent_at: datetime | None = None
+    #: What the device already printed offline, so those tickets are not
+    #: re-emitted on reconnect.
+    print_results: list[PrintResultIn] | None = None
 
 
 class SyncBatchIn(BaseModel):

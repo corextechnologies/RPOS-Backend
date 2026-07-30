@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
+from app.deps.capabilities import Capability, has_capability
 from app.deps.pos import PosSession
 from app.models.customer import Customer
 from app.models.menu import (
@@ -21,16 +22,25 @@ from app.models.menu import (
     MenuVersion,
     ModifierOption,
 )
-from app.models.menu_enums import OrderStatus
+from app.models.menu_enums import FlaggedReason, OrderStatus, VoidState
 from app.models.order import Order, OrderLine, OrderLineModifier
+from app.models.payment import Payment, PaymentStatus
+from app.models.printing import PrintJob, Station
+from app.models.printing_enums import PrintJobState, PrintKind
+from app.models.request_enums import LocationType
+from app.models.sales import SalesRecord
 from app.models.user import User
 from app.pricing import registry
+from app.pricing.money import to_decimal
 from app.pricing.types import Cart, CartLine, PricingContext
 from app.services.audit import AuditService
 from app.services.availability import AvailabilityService
+from app.services.inventory import InventoryService
 from app.services.menu import MenuService
-from app.services.orders import settle_stock_and_sales
+from app.services.orders import settle_or_flag, settle_stock_and_sales
 from app.services.prep import PrepService
+from app.services.print_jobs import PrintJobService
+from app.services.printing import RoutingService
 import app.pricing.packs  # noqa: F401  (registers the country packs)
 
 # An order can be edited while it is still on the device; once SENT the kitchen
@@ -38,9 +48,41 @@ import app.pricing.packs  # noqa: F401  (registers the country packs)
 _EDITABLE = {OrderStatus.DRAFT, OrderStatus.PARKED}
 
 
+def _ticket_header(order: Order) -> dict:
+    """The price-less ticket header shared by the whole-order kot and every
+    per-station ticket in kot_split."""
+    return {
+        "order_no": order.order_no,
+        "order_id": order.id,
+        "type": order.order_type.value,
+        "channel": order.channel.value,
+        "vehicle_plate": order.vehicle_plate,
+        "vehicle_colour": order.vehicle_colour,
+        "bay_no": order.bay_no,
+        "table_no": order.table_no,
+        "sent_at": order.sent_at.isoformat() if order.sent_at else None,
+    }
+
+
+def _kot_line(line: OrderLine) -> dict:
+    """One ticket line: name, qty, modifiers, note, and the combo-component flag.
+    No prices — the kitchen makes food, not money."""
+    return {
+        "line_no": line.line_no,
+        "name": line.name,
+        "quantity": line.quantity,
+        "is_component": line.parent_line_id is not None,
+        "note": line.note,
+        "modifiers": [m.name for m in line.modifiers],
+    }
+
+
 class PosOrderService:
     @staticmethod
-    def create(db: Session, session: PosSession, body) -> Order:
+    def create(db: Session, session: PosSession, body, *, commit: bool = True) -> Order:
+        """Create/upsert an order. commit=False lets a caller (the sync replay)
+        wrap create + settlement in one atomic transaction, so a failed element
+        rolls back whole and replays clean instead of stranding a DRAFT."""
         actor, branch_id = session.user, session.branch_id
 
         # Business dedupe: the same device-minted local_id is the same order,
@@ -248,7 +290,10 @@ class PosOrderService:
                     "menu_version_id": version.id,
                 },
             )
-            db.commit()
+            if commit:
+                db.commit()
+            else:
+                db.flush()
         except Exception:
             db.rollback()
             raise
@@ -302,17 +347,23 @@ class PosOrderService:
         return f"{branch.code or 'BR'}-{device.code}-{local_id[:8].upper()}"
 
     @staticmethod
-    def send(db: Session, session: PosSession, order_id: int) -> Order:
-        """Fire the order: deduct stock, roll up sales, hand the kitchen a ticket."""
-        order = PosOrderService.get(db, session, order_id)
-        if order.status == OrderStatus.SENT:
-            return order  # idempotent: re-sending is a no-op, not a double-deduct
-        if order.status not in _EDITABLE:
-            raise ConflictError(
-                f"An order in {order.status.value} cannot be sent.",
-                code="invalid_order_status",
-            )
+    def settle_and_fire(
+        db: Session,
+        *,
+        actor: User,
+        order: Order,
+        tolerate_shortfall: bool,
+        sent_at: datetime | None = None,
+    ):
+        """Deduct stock, roll up sales, spawn prep tickets for made-to-order
+        lines, mark the order SENT, and emit its print jobs.
 
+        The single settlement path shared by the online send and the offline
+        sync replay. `tolerate_shortfall=False` (send) rejects a stock shortfall;
+        `True` (sync) accepts the sale and returns a STOCK_OVERSELL flag reason.
+        Does not commit — the caller owns the transaction. Returns the
+        FlaggedReason set by settlement, or None.
+        """
         # Which lines are made-to-order? Those bypass finished-good deduction (they
         # were never stocked) and instead spawn a prep ticket for the sub-kitchen.
         made_ids = {
@@ -335,40 +386,64 @@ class PosOrderService:
             if line.product_id is None:
                 continue
             if line.menu_item_id in made_ids:
-                # Never deduct a finished good the branch does not hold — the prep
-                # station will make it fresh from components.
                 made_to_order_lines.append(line)
                 continue
             qty_by_product[line.product_id] = (
                 qty_by_product.get(line.product_id, 0) + line.quantity
             )
 
-        try:
-            # Revenue (SalesRecord) is booked over the whole order total inside
-            # settle, so a made-to-order line still counts as a sale — only its
-            # stock effect is deferred to the prep ticket.
-            settle_stock_and_sales(
-                db,
-                actor=session.user,
-                order=order,
-                branch_id=session.branch_id,
+        # Revenue (SalesRecord) is booked over the whole order total inside settle,
+        # so a made-to-order line still counts as a sale — only its stock effect is
+        # deferred to the prep ticket.
+        if tolerate_shortfall:
+            reason = settle_or_flag(
+                db, actor=actor, order=order, branch_id=order.branch_id,
                 qty_by_product=qty_by_product,
             )
-            for line in made_to_order_lines:
-                PrepService.create_order_ticket(
-                    db,
-                    actor=session.user,
-                    branch_id=session.branch_id,
-                    product_id=line.product_id,
-                    quantity=line.quantity,
-                    customization_note=line.note,
-                    order_id=order.id,
-                    order_line_id=line.id,
-                    commit=False,
-                )
-            order.status = OrderStatus.SENT
-            order.sent_at = datetime.now(timezone.utc)
-            db.flush()
+        else:
+            settle_stock_and_sales(
+                db, actor=actor, order=order, branch_id=order.branch_id,
+                qty_by_product=qty_by_product,
+            )
+            reason = None
+
+        for line in made_to_order_lines:
+            PrepService.create_order_ticket(
+                db,
+                actor=actor,
+                branch_id=order.branch_id,
+                product_id=line.product_id,
+                quantity=line.quantity,
+                customization_note=line.note,
+                order_id=order.id,
+                order_line_id=line.id,
+                commit=False,
+            )
+
+        order.status = OrderStatus.SENT
+        order.sent_at = sent_at or datetime.now(timezone.utc)
+        db.flush()
+        # Hand the kitchen its tickets: one QUEUED job per resolved station + one
+        # receipt. Idempotent, inside this transaction so a rollback leaves none.
+        PrintJobService.emit_for_order(db, order)
+        return reason
+
+    @staticmethod
+    def send(db: Session, session: PosSession, order_id: int) -> Order:
+        """Fire the order: deduct stock, roll up sales, hand the kitchen a ticket."""
+        order = PosOrderService.get(db, session, order_id)
+        if order.status == OrderStatus.SENT:
+            return order  # idempotent: re-sending is a no-op, not a double-deduct
+        if order.status not in _EDITABLE:
+            raise ConflictError(
+                f"An order in {order.status.value} cannot be sent.",
+                code="invalid_order_status",
+            )
+
+        try:
+            PosOrderService.settle_and_fire(
+                db, actor=session.user, order=order, tolerate_shortfall=False,
+            )
             AuditService.record(
                 db,
                 actor=session.user,
@@ -400,30 +475,205 @@ class PosOrderService:
         return PosOrderService._load(db, order.id)
 
     @staticmethod
-    def kot(order: Order) -> dict:
-        """The kitchen ticket payload. Prices deliberately absent — the kitchen
-        makes food, it does not need to know the money."""
-        return {
-            "order_no": order.order_no,
-            "order_id": order.id,
-            "type": order.order_type.value,
-            "channel": order.channel.value,
-            "vehicle_plate": order.vehicle_plate,
-            "vehicle_colour": order.vehicle_colour,
-            "bay_no": order.bay_no,
-            "table_no": order.table_no,
-            "sent_at": order.sent_at.isoformat() if order.sent_at else None,
-            "lines": [
+    def void(db: Session, session: PosSession, order_id: int, reason_code) -> Order:
+        """Void a SENT order: reverse stock + sales, mark its kitchen/receipt
+        tickets VOID, and set the order and its lines VOIDED.
+
+        Idempotent (a re-void is a no-op) so an offline-originated void replays
+        safely once the device reconnects. Money stays a SEPARATE concern: a paid
+        order must be refunded first via the existing refund flow, never rewritten
+        here. Two deliberate post-MVP limitations, documented: made-to-order prep
+        tickets are not cancelled, and a STOCK_OVERSELL order's (partial/absent)
+        deduction is not reversed (adding it back would invent inventory).
+        """
+        order = PosOrderService.get(db, session, order_id)
+        if order.status == OrderStatus.VOID:
+            return order  # idempotent — a replayed void is a no-op
+        if order.status != OrderStatus.SENT:
+            raise ConflictError(
+                f"An order in {order.status.value} cannot be voided.",
+                code="invalid_order_status",
+            )
+        if not has_capability(session.user, Capability.VOID_AFTER_SEND):
+            raise ForbiddenError(
+                "Voiding a sent order needs a manager.", code="position_forbidden"
+            )
+
+        captured = db.execute(
+            select(func.coalesce(func.sum(Payment.amount_minor), 0)).where(
+                Payment.order_id == order.id,
+                Payment.status == PaymentStatus.CAPTURED,
+            )
+        ).scalar_one()
+        if captured and captured > 0:
+            raise ConflictError(
+                "Refund the order's payments before voiding it.",
+                code="refund_before_void",
+            )
+
+        reason = reason_code.value if hasattr(reason_code, "value") else reason_code
+        try:
+            # Reverse the finished-good stock this order deducted — unless it was
+            # flagged STOCK_OVERSELL, where the deduction was partial or never
+            # happened and adding it back would invent inventory.
+            if order.flagged_reason != FlaggedReason.STOCK_OVERSELL:
+                qty_by_product: dict[int, int] = {}
+                for line in order.lines:
+                    if line.product_id is None:  # combo header holds no stock
+                        continue
+                    qty_by_product[line.product_id] = (
+                        qty_by_product.get(line.product_id, 0) + line.quantity
+                    )
+                for product_id, qty in qty_by_product.items():
+                    if qty <= 0:
+                        continue
+                    InventoryService.adjust_stock(
+                        db,
+                        actor=session.user,
+                        location_type=LocationType.BRANCH,
+                        location_id=order.branch_id,
+                        product_id=product_id,
+                        quantity_delta=qty,
+                        notes=f"Void of order #{order.id}",
+                    )
+
+            # Remove the revenue: sales_records is unique per order, so zero the
+            # existing record rather than appending a reversal (a void cancels the
+            # whole sale; the order and audit trail preserve the history).
+            sales = db.execute(
+                select(SalesRecord).where(SalesRecord.order_id == order.id)
+            ).scalar_one_or_none()
+            if sales is not None:
+                sales.amount = to_decimal(0, order.currency)
+                sales.note = f"{sales.note or f'Order #{order.id}'} (voided)"
+
+            # Mark the tickets VOID so they are never reprinted as active work; the
+            # client prints a physical void slip from void_tickets().
+            for job in db.execute(
+                select(PrintJob).where(
+                    PrintJob.branch_id == order.branch_id,
+                    PrintJob.order_local_id == order.local_id,
+                )
+            ).scalars():
+                job.state = PrintJobState.VOID
+
+            for line in order.lines:
+                line.void_state = VoidState.VOIDED
+                line.void_reason_code = reason
+                line.voided_by_id = session.user.id
+            order.status = OrderStatus.VOID
+
+            db.flush()
+            AuditService.record(
+                db,
+                actor=session.user,
+                action="pos.order.void",
+                entity_type="order",
+                entity_id=order.id,
+                restaurant_id=order.restaurant_id,
+                terminal_id=session.device.id,
+                before={"status": OrderStatus.SENT.value},
+                after={"status": OrderStatus.VOID.value},
+                reason_code=reason,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return PosOrderService._load(db, order.id)
+
+    @staticmethod
+    def void_tickets(db: Session, order: Order) -> list[dict]:
+        """Per-station void slips for the client to print at each station that
+        held a kitchen ticket for this (now voided) order."""
+        tickets = []
+        for job in db.execute(
+            select(PrintJob).where(
+                PrintJob.branch_id == order.branch_id,
+                PrintJob.order_local_id == order.local_id,
+                PrintJob.kind == PrintKind.KITCHEN,
+            )
+        ).scalars():
+            station = db.get(Station, job.station_id) if job.station_id else None
+            tickets.append(
                 {
-                    "line_no": line.line_no,
-                    "name": line.name,
-                    "quantity": line.quantity,
-                    "is_component": line.parent_line_id is not None,
-                    "note": line.note,
-                    "modifiers": [m.name for m in line.modifiers],
+                    "print_job_id": job.id,
+                    "station_id": job.station_id,
+                    "code": station.code if station is not None else "UNROUTED",
+                    "name": station.name if station is not None else "Unrouted",
+                    "order_no": order.order_no,
+                    "voided": True,
                 }
+            )
+        return tickets
+
+    @staticmethod
+    def kot(order: Order) -> dict:
+        """The whole-order kitchen ticket. Prices deliberately absent — the
+        kitchen makes food, it does not need to know the money. Kept for reprint
+        and backward compatibility; per-station tickets come from kot_split."""
+        return {
+            **_ticket_header(order),
+            "lines": [
+                _kot_line(line)
                 for line in sorted(order.lines, key=lambda l: l.line_no)
             ],
+        }
+
+    @staticmethod
+    def kot_split(db: Session, order: Order) -> dict:
+        """Per-station tickets the device actually prints, plus the receipt job.
+
+        Groups the order's lines by their resolved station (item override →
+        category map → expo) and attaches the QUEUED PrintJob id for each station
+        so the device can ACK by id. A line whose station cannot be resolved (no
+        expo configured) is surfaced in an `UNROUTED` bucket with a null
+        print_job_id — visible, never silently dropped.
+        """
+        header = _ticket_header(order)
+
+        groups: dict[int | None, list[dict]] = {}
+        station_meta: dict[int, object] = {}
+        for line in sorted(order.lines, key=lambda l: l.line_no):
+            station = RoutingService.resolve(db, order.branch_id, line.menu_item_id)
+            sid = station.id if station is not None else None
+            if sid is not None:
+                station_meta[sid] = station
+            groups.setdefault(sid, []).append(_kot_line(line))
+
+        jobs = list(
+            db.execute(
+                select(PrintJob).where(
+                    PrintJob.branch_id == order.branch_id,
+                    PrintJob.order_local_id == order.local_id,
+                )
+            ).scalars()
+        )
+        kitchen_job = {j.station_id: j for j in jobs if j.kind == PrintKind.KITCHEN}
+        receipt_job = next((j for j in jobs if j.kind == PrintKind.RECEIPT), None)
+
+        def _order_key(sid: int | None):
+            station = station_meta.get(sid) if sid is not None else None
+            # Unrouted (None) sorts last; real stations by (sort_order, id).
+            return (1, 0, 0) if station is None else (0, station.sort_order, station.id)
+
+        stations = []
+        for sid in sorted(groups, key=_order_key):
+            station = station_meta.get(sid) if sid is not None else None
+            job = kitchen_job.get(sid)
+            stations.append(
+                {
+                    "print_job_id": job.id if job is not None else None,
+                    "station_id": sid,
+                    "code": station.code if station is not None else "UNROUTED",
+                    "name": station.name if station is not None else "Unrouted",
+                    "ticket": {**header, "lines": groups[sid]},
+                }
+            )
+
+        return {
+            "stations": stations,
+            "receipt": {"print_job_id": receipt_job.id} if receipt_job else None,
         }
 
     @staticmethod

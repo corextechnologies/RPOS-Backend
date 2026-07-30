@@ -65,6 +65,14 @@ class ReasonCode(str, enum.Enum):
     OTHER = "OTHER"
 
 
+class PaymentAccountKind(str, enum.Enum):
+    """An admin-configured destination the customer pays into for an ONLINE
+    tender (no gateway — the cashier confirms receipt)."""
+
+    BANK = "BANK"
+    WALLET = "WALLET"
+
+
 class DiscountScope(str, enum.Enum):
     ORDER = "ORDER"
     LINE = "LINE"
@@ -106,6 +114,11 @@ class Payment(Base, PKMixin, TimestampMixin):
     auth_code: Mapped[str | None] = mapped_column(String(64))
     # Masked only. A PAN must never reach this database.
     masked_pan: Mapped[str | None] = mapped_column(String(24))
+    # The account the customer paid into for an ONLINE tender (for the admin's
+    # manual reconciliation). NULL for cash and unattributed online payments.
+    payment_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("payment_accounts.id", ondelete="SET NULL"), index=True
+    )
 
     terminal_id: Mapped[int | None] = mapped_column(
         ForeignKey("pos_devices.id", ondelete="SET NULL"), index=True
@@ -119,6 +132,43 @@ class Payment(Base, PKMixin, TimestampMixin):
     idempotency_key: Mapped[str | None] = mapped_column(String(128))
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
+    )
+
+
+class PaymentAccount(Base, PKMixin, TimestampMixin):
+    """A bank/wallet the customer pays into for an ONLINE tender.
+
+    Admin-configured, restaurant-scoped (branch_id NULL = every branch, else one
+    branch's account). Cached on the device via GET /pos/config so the cashier
+    can show it (or a QR) even during an outage; the cashier confirms the
+    transfer and captures the payment — there is no payment gateway and no
+    automated reconciliation.
+    """
+
+    __tablename__ = "payment_accounts"
+
+    restaurant_id: Mapped[int] = mapped_column(
+        ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # NULL = available at every branch; else scoped to one branch.
+    branch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("branches.id", ondelete="CASCADE"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[PaymentAccountKind] = mapped_column(
+        SAEnum(PaymentAccountKind, name="payment_account_kind"), nullable=False
+    )
+    account_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # IBAN / account number / wallet number.
+    account_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    bank_or_wallet: Mapped[str | None] = mapped_column(String(255))
+    # Optional pre-rendered QR string the device turns into a scannable code.
+    qr_payload: Mapped[str | None] = mapped_column(String(1024))
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
     )
 
 

@@ -11,6 +11,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy import Enum as SAEnum
@@ -25,10 +26,20 @@ _request_type_enum = SAEnum(RequestType, name="request_type")
 
 class Request(Base, PKMixin, TimestampMixin):
     __tablename__ = "requests"
+    __table_args__ = (
+        # Device/portal-minted anchor for offline replay — the same local_id is the
+        # same requisition, forever (mirrors Order.local_id). NULLs are distinct in
+        # Postgres, so online creates that mint none never collide.
+        UniqueConstraint(
+            "restaurant_id", "local_id", name="uq_request_restaurant_local_id"
+        ),
+    )
 
     restaurant_id: Mapped[int] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Offline-minted business-dedup anchor; NULL for online creates without one.
+    local_id: Mapped[str | None] = mapped_column(String(64))
     request_type: Mapped[RequestType] = mapped_column(
         _request_type_enum, nullable=False, index=True
     )

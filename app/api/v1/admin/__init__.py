@@ -5,6 +5,7 @@ from app.api.v1.admin import (
     billing,
     inventory,
     locations,
+    payment_accounts,
     pricing,
     production_targets,
     reads,
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 router.include_router(billing.router)
 router.include_router(locations.router)
 router.include_router(users.router)
+router.include_router(payment_accounts.router)
 # pricing owns the literal /products/pricing — keep it ahead of any future
 # /products/{id} route or that path parameter will shadow it.
 router.include_router(pricing.router)
