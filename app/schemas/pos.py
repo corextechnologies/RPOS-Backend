@@ -270,6 +270,10 @@ class PosOrderLineOut(BaseModel):
     tax_minor: int
     parent_line_id: int | None = None
     note: str | None = None
+    # Must round-trip: a parked order is rebuilt from this read on recall, and if
+    # the flag were absent it would be silently dropped — the cashier marks a cake
+    # for prep, parks, recalls, sends, and no ticket is ever created.
+    needs_prep: bool = False
     modifiers: list[PosOrderModifierOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

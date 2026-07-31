@@ -309,3 +309,24 @@ def test_voiding_does_not_touch_an_already_completed_ticket(client, prep_order_c
     # Still COMPLETED — not rewritten to CANCELLED.
     detail = client.get(f"/v1/sub-kitchen/tickets/{tid}", headers=chef)
     assert detail.json()["data"]["status"] == "COMPLETED"
+
+
+def test_needs_prep_round_trips_on_the_order_read(client, prep_order_ctx):
+    """Park/recall rebuilds the cart from the order read, so the flag MUST come
+    back — otherwise a parked-then-recalled order silently loses its prep flag
+    and no ticket is ever created."""
+    created = _order(
+        client, prep_order_ctx,
+        [
+            {"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+             "needs_prep": True, "note": "Happy Birthday"},
+            {"menu_item_id": prep_order_ctx["burger_item"], "quantity": 1},
+        ],
+    ).json()["data"]
+
+    fetched = client.get(
+        f"/v1/pos/orders/{created['id']}", headers=prep_order_ctx["pos_headers"]
+    ).json()["data"]
+    by_item = {l["menu_item_id"]: l for l in fetched["lines"]}
+    assert by_item[prep_order_ctx["cake_item"]]["needs_prep"] is True
+    assert by_item[prep_order_ctx["burger_item"]]["needs_prep"] is False
