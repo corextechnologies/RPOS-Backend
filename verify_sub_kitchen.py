@@ -10,11 +10,9 @@ TESTS = [
     "tests/test_sub_kitchen.py",
     "tests/test_sub_kitchen_orders.py",
     "tests/test_sub_kitchen_manage.py",
-    # Regression on the shared recipe service the chef now also writes through.
+    # Regression on the shared recipe + production path the board reuses (the
+    # chef now writes recipes through it, and prep completion writes runs).
     "tests/test_kitchen_production.py",
-    # Regression on the shared production path the board reuses.
-    "tests/test_kitchen_production.py",
-    "tests/test_branch_production.py",
     # Regression on the capability/position layer the CHEF position extends.
     "tests/test_branch_positions.py",
     "tests/test_rbac.py",

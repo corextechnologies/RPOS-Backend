@@ -122,7 +122,7 @@ def test_the_sell_floor_and_manager_still_sign_in(client, login_ctx):
 def test_chef_reaches_the_sub_kitchen_on_a_plain_portal_token(client, login_ctx):
     """No device, no pairing — the sub-kitchen runs on the ordinary login."""
     chef = auth_headers(client, "chef@test.com")
-    assert client.get("/v1/branch/sub-kitchen/board", headers=chef).status_code == 200
+    assert client.get("/v1/sub-kitchen/board", headers=chef).status_code == 200
     # And still cannot sell, whichever door they came through.
     assert client.post(
         "/v1/branch/orders",

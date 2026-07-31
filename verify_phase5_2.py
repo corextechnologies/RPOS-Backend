@@ -16,8 +16,11 @@ from verify_phase5_1 import TESTS as PHASE_5_1_TESTS
 
 TESTS = [
     *PHASE_5_1_TESTS,
-    # P5-R
-    "tests/test_branch_production.py",
+    # P5-R — the sub-kitchen. The old hand-logged branch production flow it
+    # replaced (test_branch_production.py) was retired once the prep board landed.
+    "tests/test_sub_kitchen.py",
+    "tests/test_sub_kitchen_orders.py",
+    "tests/test_sub_kitchen_manage.py",
 ]
 
 

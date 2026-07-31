@@ -24,18 +24,16 @@ from app.deps.capabilities import Capability, require_capability
 from app.deps.rbac import require_actor_branch_id
 from app.models.enums import UserRole
 from app.models.inventory import StockMovementType
-from app.models.menu import MenuItem
 from app.models.prep_enums import PrepStatus
 from app.models.product import ProductKind
 from app.models.request_enums import LocationType
 from app.models.user import User
+from app.schemas.admin import ProductPublicOut
 from app.schemas.branch import BranchWasteIn
 from app.schemas.kitchen_production import KitchenRecipeIn
-from app.schemas.pos import AvailabilityIn
+from app.schemas.warehouse import InventoryItemOut
 from app.schemas.prep import PrepBatchCreate, PrepComplete, PrepStatusUpdate
-from app.services.availability import AvailabilityService
 from app.services.inventory import InventoryService
-from app.services.menu import MenuService
 from app.services.prep import PrepService
 from app.services.products import ProductService
 from app.services.recipes import RecipeService
@@ -191,42 +189,6 @@ def list_waste(
     return ok(data)
 
 
-@router.get("/availability")
-def list_availability(
-    current: User = Depends(require_capability(Capability.PREP_READ)),
-    db: Session = Depends(get_db),
-):
-    """What the branch can sell right now, so the chef sees what's already 86'd.
-
-    Carries `product_name`, unlike the POS poll of the same data: a till already
-    holds the whole menu and joins these ids against it, but this screen has no
-    such cache, and "Item #14" tells a manager nothing about what they are about
-    to pull off sale.
-
-    `on_hand` is null where stock is not the deciding factor — a manually 86'd
-    item, a combo (its components hold the stock), or an item with no product
-    linked. A genuine zero is reported as 0, not null.
-    """
-    branch_id = require_actor_branch_id(current)
-    menu = MenuService.published(db, current.restaurant_id)
-    states = AvailabilityService.states(db, current.restaurant_id, branch_id, menu)
-    return ok(
-        [
-            {
-                "menu_item_id": s.menu_item_id,
-                "product_name": s.product_name,
-                "is_available": s.is_available,
-                "reason": s.reason,
-                "on_hand": s.on_hand,
-                "auto_clear_at": (
-                    s.auto_clear_at.isoformat() if s.auto_clear_at else None
-                ),
-            }
-            for s in states.values()
-        ]
-    )
-
-
 @router.get("/stats")
 def get_stats(
     start: date | None = Query(default=None),
@@ -337,38 +299,55 @@ def get_recipe(
     return ok(RecipeService.to_out(db, recipe).model_dump(mode="json"))
 
 
-@router.put("/availability/{menu_item_id}")
-def set_availability(
-    menu_item_id: int,
-    body: AvailabilityIn,
-    current: User = Depends(require_capability(Capability.PREP_OPERATE)),
+# --- Branch stock, surfaced inside the sub-kitchen portal -------------------
+#
+# The prep station reads the branch's ONE stock ledger — it does not own a
+# separate one. These wrap the same InventoryService the branch portal uses,
+# scoped to the chef's branch, so a standalone sub-kitchen portal never has to
+# reach into /branch/* URLs to see what it has to work with. cost_price is never
+# exposed, like every other non-Admin stock read.
+
+
+def _inv_out(item, product) -> dict:
+    return InventoryItemOut(
+        id=item.id,
+        product_id=item.product_id,
+        product=ProductPublicOut.model_validate(product),
+        quantity=item.quantity,
+        batch_code=item.batch_code,
+        expiry_date=item.expiry_date,
+        location_type=item.location_type.value,
+        location_id=item.location_id,
+    ).model_dump(mode="json")
+
+
+@router.get("/inventory")
+def list_inventory(
+    current: User = Depends(require_capability(Capability.PREP_READ)),
     db: Session = Depends(get_db),
 ):
-    """Mark a dish sold-out / unmakeable today (or restore it). Stops sales.
-
-    Echoes `product_name` so the row can update in place without a re-fetch.
-    """
     branch_id = require_actor_branch_id(current)
-    row = AvailabilityService.set_manual(
+    rows = InventoryService.list_for_location(
         db,
-        current,
-        branch_id,
-        menu_item_id,
-        is_available=body.is_available,
-        reason=body.reason,
-        auto_clear_at=body.auto_clear_at,
+        restaurant_id=current.restaurant_id,
+        location_type=LocationType.BRANCH,
+        location_id=branch_id,
     )
-    # Read the name here rather than widening set_manual's return type — the POS
-    # calls that same service, and its payload must stay byte-identical.
-    item = db.get(MenuItem, row.menu_item_id)
-    return ok(
-        {
-            "menu_item_id": row.menu_item_id,
-            "product_name": item.name if item else None,
-            "is_available": row.is_available,
-            "reason": row.reason,
-            "auto_clear_at": (
-                row.auto_clear_at.isoformat() if row.auto_clear_at else None
-            ),
-        }
+    return ok([_inv_out(item, product) for item, product in rows])
+
+
+@router.get("/inventory/near-expiry")
+def list_near_expiry(
+    within_days: int = Query(7, ge=0, le=365),
+    current: User = Depends(require_capability(Capability.PREP_READ)),
+    db: Session = Depends(get_db),
+):
+    branch_id = require_actor_branch_id(current)
+    rows = InventoryService.list_near_expiry(
+        db,
+        restaurant_id=current.restaurant_id,
+        location_type=LocationType.BRANCH,
+        location_id=branch_id,
+        within_days=within_days,
     )
+    return ok([_inv_out(item, product) for item, product in rows])

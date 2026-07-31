@@ -138,7 +138,7 @@ def test_chef_is_prep_only_never_the_till(client, priced_ctx, make_user):
         "/v1/branch/customers", json={"name": "Walk-in"}, headers=headers
     ).status_code == 403
     # But the prep board is open to them.
-    assert client.get("/v1/branch/sub-kitchen/board", headers=headers).status_code == 200
+    assert client.get("/v1/sub-kitchen/board", headers=headers).status_code == 200
 
 
 def test_positionless_branch_staff_is_forbidden(client, priced_ctx, make_user):

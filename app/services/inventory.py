@@ -390,7 +390,7 @@ class InventoryService:
         The seam stays because it is still the single place a sale touches stock:
         if a future branch assembles on site, that behaviour goes here and
         nowhere else. Branch-side finishing today is an explicit, logged
-        sub-kitchen prep ticket instead — see /v1/branch/sub-kitchen.
+        sub-kitchen prep ticket instead — see /v1/sub-kitchen.
         """
         return InventoryService.apply_dispatch(
             db,

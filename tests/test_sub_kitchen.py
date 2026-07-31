@@ -10,8 +10,6 @@ import pytest
 
 from app.models.enums import BranchPosition, UserRole
 from app.models.inventory import StockMovement, StockMovementType
-from app.models.menu import MenuItem, MenuVersion
-from app.models.menu_enums import MenuVersionStatus
 from app.models.product import ProductKind
 from app.models.recipe import Recipe, RecipeComponent
 from app.models.request_enums import LocationType
@@ -75,7 +73,7 @@ def _stock(db, restaurant_id, branch_id, product_id):
 def _new_batch(client, headers, product_id, **over):
     body = {"product_id": product_id, "quantity": 2}
     body.update(over)
-    return client.post("/v1/branch/sub-kitchen/batch", json=body, headers=headers)
+    return client.post("/v1/sub-kitchen/batch", json=body, headers=headers)
 
 
 # --- creation + board ------------------------------------------------------
@@ -94,7 +92,7 @@ def test_chef_queues_a_batch_ticket_and_sees_it_on_the_board(client, sub_ctx):
     assert data["product_name"] == "Named Cake"
     assert data["quantity"] == 3
 
-    board = client.get("/v1/branch/sub-kitchen/board", headers=headers)
+    board = client.get("/v1/sub-kitchen/board", headers=headers)
     assert board.status_code == 200
     assert board.json()["meta"]["total"] == 1
     assert board.json()["data"][0]["id"] == data["id"]
@@ -115,7 +113,7 @@ def test_status_advances_through_the_board(client, sub_ctx):
 
     def patch(status):
         return client.patch(
-            f"/v1/branch/sub-kitchen/tickets/{tid}/status",
+            f"/v1/sub-kitchen/tickets/{tid}/status",
             json={"status": status}, headers=headers,
         )
 
@@ -132,7 +130,7 @@ def test_illegal_status_jump_is_rejected(client, sub_ctx):
     tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
     # QUEUED -> READY is not a legal single hop.
     resp = client.patch(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/status",
+        f"/v1/sub-kitchen/tickets/{tid}/status",
         json={"status": "READY"}, headers=headers,
     )
     assert resp.status_code == 409
@@ -143,7 +141,7 @@ def test_completed_is_not_settable_via_status(client, sub_ctx):
     headers = auth_headers(client, "chef@test.com")
     tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
     resp = client.patch(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/status",
+        f"/v1/sub-kitchen/tickets/{tid}/status",
         json={"status": "COMPLETED"}, headers=headers,
     )
     assert resp.status_code == 409
@@ -153,11 +151,11 @@ def test_completed_is_not_settable_via_status(client, sub_ctx):
 def test_cancel_marks_ticket_cancelled(client, sub_ctx):
     headers = auth_headers(client, "chef@test.com")
     tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
-    resp = client.post(f"/v1/branch/sub-kitchen/tickets/{tid}/cancel", headers=headers)
+    resp = client.post(f"/v1/sub-kitchen/tickets/{tid}/cancel", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "CANCELLED"
     # Cancelled tickets drop off the default (open) board.
-    assert client.get("/v1/branch/sub-kitchen/board", headers=headers).json()["meta"]["total"] == 0
+    assert client.get("/v1/sub-kitchen/board", headers=headers).json()["meta"]["total"] == 0
 
 
 # --- completion: recipe-driven ---------------------------------------------
@@ -169,7 +167,7 @@ def test_complete_recipe_driven_consumes_components_and_credits_finished_good(
     tid = _new_batch(client, headers, sub_ctx["cake"].id, quantity=2).json()["data"]["id"]
 
     resp = client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
+        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
@@ -194,7 +192,7 @@ def test_complete_short_component_rolls_back_and_keeps_ticket_open(client, sub_c
     # Only 10 bases on hand; ask for 999 cakes.
     tid = _new_batch(client, headers, sub_ctx["cake"].id, quantity=999).json()["data"]["id"]
     resp = client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
+        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "insufficient_stock"
@@ -203,16 +201,16 @@ def test_complete_short_component_rolls_back_and_keeps_ticket_open(client, sub_c
     assert _stock(db, r_id, b_id, sub_ctx["base"].id) == 10   # untouched
     assert _stock(db, r_id, b_id, sub_ctx["cake"].id) is None  # nothing produced
     # Ticket is still open for a clean retry.
-    again = client.get(f"/v1/branch/sub-kitchen/tickets/{tid}", headers=headers)
+    again = client.get(f"/v1/sub-kitchen/tickets/{tid}", headers=headers)
     assert again.json()["data"]["status"] == "QUEUED"
 
 
 def test_complete_twice_is_rejected(client, sub_ctx):
     headers = auth_headers(client, "chef@test.com")
     tid = _new_batch(client, headers, sub_ctx["cake"].id, quantity=1).json()["data"]["id"]
-    first = client.post(f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers)
+    first = client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers)
     assert first.status_code == 200
-    second = client.post(f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers)
+    second = client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers)
     assert second.status_code == 409
     assert second.json()["error"]["code"] == "prep_not_open"
 
@@ -224,7 +222,7 @@ def test_complete_manual_inputs_for_a_no_recipe_item(client, sub_ctx, db):
     # Fruit Platter has no recipe: the chef states what was used.
     tid = _new_batch(client, headers, sub_ctx["platter"].id, quantity=1).json()["data"]["id"]
     resp = client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete",
+        f"/v1/sub-kitchen/tickets/{tid}/complete",
         json={"inputs": [{"product_id": sub_ctx["fruit"].id, "quantity": 5}]},
         headers=headers,
     )
@@ -240,7 +238,7 @@ def test_complete_no_recipe_no_inputs_is_rejected(client, sub_ctx):
     headers = auth_headers(client, "chef@test.com")
     tid = _new_batch(client, headers, sub_ctx["platter"].id, quantity=1).json()["data"]["id"]
     resp = client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
+        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "no_active_recipe"
@@ -260,11 +258,11 @@ def test_sell_floor_position_and_non_branch_are_forbidden(client, sub_ctx, make_
         branch_id=sub_ctx["branch"].id, position=BranchPosition.CASHIER,
     )
     cashier = auth_headers(client, "cashier@test.com")
-    assert client.get("/v1/branch/sub-kitchen/board", headers=cashier).status_code == 403
+    assert client.get("/v1/sub-kitchen/board", headers=cashier).status_code == 403
     assert _new_batch(client, cashier, sub_ctx["cake"].id).status_code == 403
 
     kitchen = auth_headers(client, "kitchen@test.com")
-    assert client.get("/v1/branch/sub-kitchen/board", headers=kitchen).status_code == 403
+    assert client.get("/v1/sub-kitchen/board", headers=kitchen).status_code == 403
 
 
 def test_ticket_is_scoped_to_its_branch(client, sub_ctx, make_branch, make_user):
@@ -277,39 +275,22 @@ def test_ticket_is_scoped_to_its_branch(client, sub_ctx, make_branch, make_user)
         branch_id=other_branch.id, position=BranchPosition.CHEF,
     )
     other = auth_headers(client, "chef2@test.com")
-    assert client.get("/v1/branch/sub-kitchen/board", headers=other).json()["meta"]["total"] == 0
-    assert client.get(f"/v1/branch/sub-kitchen/tickets/{tid}", headers=other).status_code == 404
+    assert client.get("/v1/sub-kitchen/board", headers=other).json()["meta"]["total"] == 0
+    assert client.get(f"/v1/sub-kitchen/tickets/{tid}", headers=other).status_code == 404
     assert client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=other
+        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=other
     ).status_code == 404
 
 
 # ===========================================================================
-# Slice B — waste logging + "sold out" (86-ing)
+# Slice B — waste logging
 # ===========================================================================
-
-
-def _publish_menu_item(db, restaurant_id, product):
-    """A published menu with `product` on it, so availability has something to 86."""
-    mv = MenuVersion(
-        restaurant_id=restaurant_id, version_no=1,
-        status=MenuVersionStatus.PUBLISHED, currency="PKR",
-    )
-    db.add(mv)
-    db.flush()
-    mi = MenuItem(
-        menu_version_id=mv.id, product_id=product.id, name=product.name,
-        price_minor=50000,
-    )
-    db.add(mi)
-    db.flush()
-    return mi
 
 
 def test_chef_logs_waste_and_stock_drops(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
     resp = client.post(
-        "/v1/branch/sub-kitchen/waste",
+        "/v1/sub-kitchen/waste",
         json={
             "product_id": sub_ctx["base"].id, "quantity": 3,
             "movement_type": "WASTE", "waste_reason": "SPOILAGE",
@@ -326,7 +307,7 @@ def test_chef_logs_waste_and_stock_drops(client, sub_ctx, db):
     assert (sub_ctx["base"].id, StockMovementType.WASTE, -3) in moves
 
     # The write-off shows up in the station's waste history.
-    hist = client.get("/v1/branch/sub-kitchen/waste", headers=headers)
+    hist = client.get("/v1/sub-kitchen/waste", headers=headers)
     assert hist.status_code == 200
     assert any(e["product_id"] == sub_ctx["base"].id for e in hist.json()["data"])
 
@@ -334,7 +315,7 @@ def test_chef_logs_waste_and_stock_drops(client, sub_ctx, db):
 def test_chef_waste_rejects_non_waste_movement(client, sub_ctx):
     headers = auth_headers(client, "chef@test.com")
     resp = client.post(
-        "/v1/branch/sub-kitchen/waste",
+        "/v1/sub-kitchen/waste",
         json={"product_id": sub_ctx["base"].id, "quantity": 1, "movement_type": "RECEIPT"},
         headers=headers,
     )
@@ -342,98 +323,53 @@ def test_chef_waste_rejects_non_waste_movement(client, sub_ctx):
     assert resp.json()["error"]["code"] == "invalid_movement_type"
 
 
-def test_chef_can_86_and_restore_a_menu_item(client, sub_ctx, db):
-    mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
+def test_chef_reads_branch_stock_from_its_own_portal(client, sub_ctx):
+    """The sub-kitchen portal surfaces the branch's stock under its own path, so
+    the chef never has to reach into /branch/* to see what it has to work with.
+    It is the SAME branch ledger — the portal owns no separate stock."""
     headers = auth_headers(client, "chef@test.com")
-
-    # 86 it: the station can't make cake today.
-    off = client.put(
-        f"/v1/branch/sub-kitchen/availability/{mi.id}",
-        json={"is_available": False, "reason": "Out of icing"},
-        headers=headers,
-    )
-    assert off.status_code == 200
-    assert off.json()["data"]["is_available"] is False
-
-    avail = client.get("/v1/branch/sub-kitchen/availability", headers=headers)
-    assert avail.status_code == 200
-    state = next(s for s in avail.json()["data"] if s["menu_item_id"] == mi.id)
-    assert state["is_available"] is False and state["reason"] == "Out of icing"
-
-    # Restore it.
-    on = client.put(
-        f"/v1/branch/sub-kitchen/availability/{mi.id}",
-        json={"is_available": True},
-        headers=headers,
-    )
-    assert on.status_code == 200 and on.json()["data"]["is_available"] is True
-
-
-def test_chef_can_read_branch_stock(client, sub_ctx):
-    """The chef holds INVENTORY_READ, so branch stock is visible to the station.
-
-    It lives on the branch inventory endpoints, not under /sub-kitchen — the
-    prep station reads the branch's one stock ledger, it does not own a separate
-    one. Pinned here so a future capability change can't silently blind the chef.
-    """
-    headers = auth_headers(client, "chef@test.com")
-    resp = client.get("/v1/branch/inventory", headers=headers)
+    resp = client.get("/v1/sub-kitchen/inventory", headers=headers)
     assert resp.status_code == 200, resp.text
-    on_hand = {row["product_id"]: row["quantity"] for row in resp.json()["data"]}
+    rows = resp.json()["data"]
+    on_hand = {row["product_id"]: row["quantity"] for row in rows}
     assert on_hand[sub_ctx["base"].id] == 10
+    # cost_price is never exposed off the Admin portal.
+    assert all("cost_price" not in row.get("product", {}) for row in rows)
     assert client.get(
-        "/v1/branch/inventory/near-expiry", headers=headers
+        "/v1/sub-kitchen/inventory/near-expiry", headers=headers
     ).status_code == 200
 
 
-def test_availability_rows_carry_the_dish_name(client, sub_ctx, db):
-    """A manager 86-ing a dish must see what it is, not "Item #14".
-
-    The POS poll ships ids only because a till already holds the whole menu and
-    joins against it; a portal screen has no such cache.
-    """
-    mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
+def test_branch_path_is_read_only_oversight(client, sub_ctx):
+    """The branch /sub-kitchen path is the manager's WATCH-ONLY tab. Reads work;
+    operate endpoints do not exist there (404), so the station can't be run from
+    the branch portal. The full station lives at /v1/sub-kitchen/*."""
     headers = auth_headers(client, "chef@test.com")
-
-    rows = client.get("/v1/branch/sub-kitchen/availability", headers=headers).json()["data"]
-    row = next(r for r in rows if r["menu_item_id"] == mi.id)
-    assert row["product_name"] == "Named Cake"
-    assert "auto_clear_at" in row
-
-    # The PUT echoes the name too, so the row updates in place without a re-fetch.
-    off = client.put(
-        f"/v1/branch/sub-kitchen/availability/{mi.id}",
-        json={"is_available": False, "reason": "Out of icing"},
-        headers=headers,
-    )
-    assert off.status_code == 200, off.text
-    assert off.json()["data"]["product_name"] == "Named Cake"
-
-
-def test_pos_availability_payload_is_unchanged(client, sub_ctx, db, make_user):
-    """The till's poll must stay lean — it is called every few seconds and the
-    device already has the names. Pinned so a future 'add the name everywhere'
-    does not quietly fatten it."""
-    _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
-    mgr = auth_headers(client, "branch@test.com")
-    rows = client.get("/v1/pos/availability", headers=mgr).json()["data"]
-    assert rows, "expected at least one availability row"
-    assert set(rows[0]) == {"menu_item_id", "is_available", "reason", "on_hand"}
+    # Reads answer on the branch oversight path.
+    assert client.get("/v1/branch/sub-kitchen/board", headers=headers).status_code == 200
+    assert client.get("/v1/branch/sub-kitchen/stats", headers=headers).status_code == 200
+    assert client.get("/v1/branch/sub-kitchen/inventory", headers=headers).status_code == 200
+    # Operate endpoints simply do not exist on the branch path — enforced by
+    # construction, not hidden.
+    assert client.post(
+        "/v1/branch/sub-kitchen/batch",
+        json={"product_id": sub_ctx["cake"].id, "quantity": 1}, headers=headers,
+    ).status_code == 404
+    # ...but the full station still operates at its own path.
+    assert client.post(
+        "/v1/sub-kitchen/batch",
+        json={"product_id": sub_ctx["cake"].id, "quantity": 1}, headers=headers,
+    ).status_code == 200
 
 
-def test_sell_floor_cannot_waste_or_86(client, sub_ctx, db, make_user):
-    mi = _publish_menu_item(db, sub_ctx["restaurant"].id, sub_ctx["cake"])
+def test_sell_floor_cannot_waste(client, sub_ctx, db, make_user):
     make_user(
         "cashier2@test.com", UserRole.BRANCH_STAFF, restaurant_id=sub_ctx["restaurant"].id,
         branch_id=sub_ctx["branch"].id, position=BranchPosition.CASHIER,
     )
     cashier = auth_headers(client, "cashier2@test.com")
     assert client.post(
-        "/v1/branch/sub-kitchen/waste",
+        "/v1/sub-kitchen/waste",
         json={"product_id": sub_ctx["base"].id, "quantity": 1, "movement_type": "WASTE"},
         headers=cashier,
-    ).status_code == 403
-    assert client.put(
-        f"/v1/branch/sub-kitchen/availability/{mi.id}",
-        json={"is_available": False}, headers=cashier,
     ).status_code == 403

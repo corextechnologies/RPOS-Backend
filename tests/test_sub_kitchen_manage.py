@@ -62,7 +62,7 @@ def test_products_endpoint_feeds_both_recipe_pickers(client, manage_ctx):
     against the wrong item instead of failing loudly.
     """
     chef = auth_headers(client, "chef@test.com")
-    resp = client.get("/v1/branch/sub-kitchen/products", headers=chef)
+    resp = client.get("/v1/sub-kitchen/products", headers=chef)
     assert resp.status_code == 200, resp.text
     by_id = {p["id"]: p for p in resp.json()["data"]}
 
@@ -96,7 +96,7 @@ def test_components_exclude_what_the_branch_has_never_stocked(
     ids = {
         p["id"]
         for p in client.get(
-            "/v1/branch/sub-kitchen/products?kind=RAW_MATERIAL", headers=chef
+            "/v1/sub-kitchen/products?kind=RAW_MATERIAL", headers=chef
         ).json()["data"]
     }
     assert flour.id not in ids                    # never held here
@@ -106,7 +106,7 @@ def test_components_exclude_what_the_branch_has_never_stocked(
     all_ids = {
         p["id"]
         for p in client.get(
-            "/v1/branch/sub-kitchen/products?kind=RAW_MATERIAL&all=true",
+            "/v1/sub-kitchen/products?kind=RAW_MATERIAL&all=true",
             headers=chef,
         ).json()["data"]
     }
@@ -123,7 +123,7 @@ def test_a_never_stocked_finished_good_is_still_offered(client, manage_ctx):
         ids = {
             p["id"]
             for p in client.get(
-                f"/v1/branch/sub-kitchen/products{query}", headers=chef
+                f"/v1/sub-kitchen/products{query}", headers=chef
             ).json()["data"]
         }
         assert manage_ctx["cake"].id in ids, query
@@ -144,7 +144,7 @@ def test_products_keep_a_component_that_is_currently_at_zero(
     ids = {
         p["id"]
         for p in client.get(
-            "/v1/branch/sub-kitchen/products", headers=chef
+            "/v1/sub-kitchen/products", headers=chef
         ).json()["data"]
     }
     assert manage_ctx["plaque"].id in ids
@@ -154,12 +154,12 @@ def test_products_filter_by_kind(client, manage_ctx):
     chef = auth_headers(client, "chef@test.com")
 
     made = client.get(
-        "/v1/branch/sub-kitchen/products?kind=FINISHED_GOOD", headers=chef
+        "/v1/sub-kitchen/products?kind=FINISHED_GOOD", headers=chef
     ).json()["data"]
     assert {p["id"] for p in made} == {manage_ctx["cake"].id}
 
     components = client.get(
-        "/v1/branch/sub-kitchen/products?kind=RAW_MATERIAL", headers=chef
+        "/v1/sub-kitchen/products?kind=RAW_MATERIAL", headers=chef
     ).json()["data"]
     ids = {p["id"] for p in components}
     assert {manage_ctx["base"].id, manage_ctx["plaque"].id}.issubset(ids)
@@ -175,7 +175,7 @@ def test_products_are_tenant_scoped_and_sell_floor_is_forbidden(
     ids = {
         p["id"]
         for p in client.get(
-            "/v1/branch/sub-kitchen/products", headers=chef
+            "/v1/sub-kitchen/products", headers=chef
         ).json()["data"]
     }
     assert foreign.id not in ids
@@ -187,7 +187,7 @@ def test_products_are_tenant_scoped_and_sell_floor_is_forbidden(
     )
     cashier = auth_headers(client, "cashier9@test.com")
     assert client.get(
-        "/v1/branch/sub-kitchen/products", headers=cashier
+        "/v1/sub-kitchen/products", headers=cashier
     ).status_code == 403
 
 
@@ -195,13 +195,13 @@ def test_ids_from_products_actually_publish_a_recipe(client, manage_ctx):
     """End to end: take ids straight from the picker and build a recipe."""
     chef = auth_headers(client, "chef@test.com")
     catalogue = client.get(
-        "/v1/branch/sub-kitchen/products", headers=chef
+        "/v1/sub-kitchen/products", headers=chef
     ).json()["data"]
     cake = next(p for p in catalogue if p["name"] == "Named Cake")
     base = next(p for p in catalogue if p["name"] == "Cake Base")
 
     resp = client.post(
-        "/v1/branch/sub-kitchen/recipes",
+        "/v1/sub-kitchen/recipes",
         json={
             "product_id": cake["id"],
             "yield_qty": 1,
@@ -218,7 +218,7 @@ def test_ids_from_products_actually_publish_a_recipe(client, manage_ctx):
 def test_chef_publishes_and_reads_a_recipe(client, manage_ctx):
     chef = auth_headers(client, "chef@test.com")
     resp = client.post(
-        "/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef
+        "/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
@@ -226,26 +226,26 @@ def test_chef_publishes_and_reads_a_recipe(client, manage_ctx):
     assert data["version"] == 1
     assert {c["component_name"] for c in data["components"]} == {"Cake Base", "Plaque"}
 
-    listed = client.get("/v1/branch/sub-kitchen/recipes", headers=chef)
+    listed = client.get("/v1/sub-kitchen/recipes", headers=chef)
     assert listed.status_code == 200
     assert any(r["id"] == data["id"] for r in listed.json()["data"])
 
-    got = client.get(f"/v1/branch/sub-kitchen/recipes/{data['id']}", headers=chef)
+    got = client.get(f"/v1/sub-kitchen/recipes/{data['id']}", headers=chef)
     assert got.status_code == 200 and got.json()["data"]["id"] == data["id"]
 
 
 def test_republishing_supersedes_the_previous_version(client, manage_ctx):
     chef = auth_headers(client, "chef@test.com")
     first = client.post(
-        "/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef
+        "/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef
     ).json()["data"]
     second = client.post(
-        "/v1/branch/sub-kitchen/recipes",
+        "/v1/sub-kitchen/recipes",
         json=_recipe_body(manage_ctx, yield_qty=2), headers=chef,
     ).json()["data"]
     assert second["version"] == first["version"] + 1
     # Only the newest stays active.
-    active = client.get("/v1/branch/sub-kitchen/recipes", headers=chef).json()["data"]
+    active = client.get("/v1/sub-kitchen/recipes", headers=chef).json()["data"]
     ids = {r["id"] for r in active}
     assert second["id"] in ids and first["id"] not in ids
 
@@ -253,14 +253,14 @@ def test_republishing_supersedes_the_previous_version(client, manage_ctx):
 def test_the_chefs_recipe_drives_ticket_completion(client, manage_ctx, db):
     """End to end: chef writes the recipe, then a prep job consumes exactly it."""
     chef = auth_headers(client, "chef@test.com")
-    client.post("/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
+    client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
 
     tid = client.post(
-        "/v1/branch/sub-kitchen/batch",
+        "/v1/sub-kitchen/batch",
         json={"product_id": manage_ctx["cake"].id, "quantity": 2}, headers=chef,
     ).json()["data"]["id"]
     done = client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef
+        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef
     )
     assert done.status_code == 200, done.text
     assert done.json()["data"]["recipe_id"] is not None
@@ -304,14 +304,14 @@ def test_each_station_lists_only_its_own_recipes(client, manage_ctx, make_produc
     # The chef publishes theirs.
     chef = auth_headers(client, "chef@test.com")
     cake = client.post(
-        "/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef
+        "/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef
     )
     assert cake.status_code == 200, cake.text
     assert cake.json()["data"]["made_at"] == "BRANCH"
 
     # Each station sees only its own.
     chef_list = client.get(
-        "/v1/branch/sub-kitchen/recipes", headers=chef
+        "/v1/sub-kitchen/recipes", headers=chef
     ).json()["data"]
     chef_products = {r_["product_id"] for r_ in chef_list}
     assert manage_ctx["cake"].id in chef_products
@@ -331,10 +331,10 @@ def test_sell_floor_cannot_write_recipes(client, manage_ctx, make_user):
     )
     cashier = auth_headers(client, "cashier@test.com")
     assert client.post(
-        "/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=cashier
+        "/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=cashier
     ).status_code == 403
     assert client.get(
-        "/v1/branch/sub-kitchen/recipes", headers=cashier
+        "/v1/sub-kitchen/recipes", headers=cashier
     ).status_code == 403
 
 
@@ -342,7 +342,7 @@ def test_sell_floor_cannot_write_recipes(client, manage_ctx, make_user):
 
 def test_stats_start_empty(client, manage_ctx):
     chef = auth_headers(client, "chef@test.com")
-    resp = client.get("/v1/branch/sub-kitchen/stats", headers=chef)
+    resp = client.get("/v1/sub-kitchen/stats", headers=chef)
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["items_prepped"] == 0
@@ -354,28 +354,28 @@ def test_stats_start_empty(client, manage_ctx):
 
 def test_stats_count_prepped_waste_and_open_work(client, manage_ctx, db):
     chef = auth_headers(client, "chef@test.com")
-    client.post("/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
+    client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
 
     # One completed batch of 3, one still open.
     done_id = client.post(
-        "/v1/branch/sub-kitchen/batch",
+        "/v1/sub-kitchen/batch",
         json={"product_id": manage_ctx["cake"].id, "quantity": 3}, headers=chef,
     ).json()["data"]["id"]
-    client.post(f"/v1/branch/sub-kitchen/tickets/{done_id}/complete", json={}, headers=chef)
+    client.post(f"/v1/sub-kitchen/tickets/{done_id}/complete", json={}, headers=chef)
     client.post(
-        "/v1/branch/sub-kitchen/batch",
+        "/v1/sub-kitchen/batch",
         json={"product_id": manage_ctx["cake"].id, "quantity": 1}, headers=chef,
     )
 
     # And some waste.
     client.post(
-        "/v1/branch/sub-kitchen/waste",
+        "/v1/sub-kitchen/waste",
         json={"product_id": manage_ctx["base"].id, "quantity": 2,
               "movement_type": "WASTE", "waste_reason": "PREP_ERROR"},
         headers=chef,
     )
 
-    data = client.get("/v1/branch/sub-kitchen/stats", headers=chef).json()["data"]
+    data = client.get("/v1/sub-kitchen/stats", headers=chef).json()["data"]
     assert data["items_prepped"] == 3
     assert data["tickets_completed"] == 1
     assert data["open_tickets"] == 1
@@ -388,27 +388,27 @@ def test_stats_count_prepped_waste_and_open_work(client, manage_ctx, db):
 def test_manager_sees_the_same_numbers(client, manage_ctx):
     """The manager's oversight view is this endpoint, not a separate screen."""
     chef = auth_headers(client, "chef@test.com")
-    client.post("/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
+    client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
     tid = client.post(
-        "/v1/branch/sub-kitchen/batch",
+        "/v1/sub-kitchen/batch",
         json={"product_id": manage_ctx["cake"].id, "quantity": 2}, headers=chef,
     ).json()["data"]["id"]
-    client.post(f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
+    client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
 
     mgr = auth_headers(client, "branch@test.com")
-    data = client.get("/v1/branch/sub-kitchen/stats", headers=mgr).json()["data"]
+    data = client.get("/v1/sub-kitchen/stats", headers=mgr).json()["data"]
     assert data["items_prepped"] == 2
     assert data["tickets_completed"] == 1
 
 
 def test_stats_are_branch_scoped(client, manage_ctx, make_branch, make_user):
     chef = auth_headers(client, "chef@test.com")
-    client.post("/v1/branch/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
+    client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
     tid = client.post(
-        "/v1/branch/sub-kitchen/batch",
+        "/v1/sub-kitchen/batch",
         json={"product_id": manage_ctx["cake"].id, "quantity": 5}, headers=chef,
     ).json()["data"]["id"]
-    client.post(f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
+    client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
 
     other_branch = make_branch(manage_ctx["restaurant"].id, name="B2")
     make_user(
@@ -417,6 +417,6 @@ def test_stats_are_branch_scoped(client, manage_ctx, make_branch, make_user):
         position=BranchPosition.CHEF,
     )
     other = auth_headers(client, "chef2@test.com")
-    data = client.get("/v1/branch/sub-kitchen/stats", headers=other).json()["data"]
+    data = client.get("/v1/sub-kitchen/stats", headers=other).json()["data"]
     assert data["items_prepped"] == 0
     assert data["open_tickets"] == 0

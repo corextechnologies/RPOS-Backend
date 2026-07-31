@@ -288,6 +288,16 @@ def test_manual_86_blocks_the_item_and_its_combo(client, sell_ctx, make_user):
     assert combo.json()["error"]["code"] == "item_unavailable"
 
 
+def test_pos_availability_payload_stays_lean(client, sell_ctx, make_user):
+    """The device poll is called every few seconds and the device already caches
+    the menu, so its rows carry ids only — no product_name. Pinned so the
+    sub-kitchen's name-carrying variant of the same service never fattens this."""
+    headers = _pos_headers(client, sell_ctx, make_user)
+    rows = client.get("/v1/pos/availability", headers=headers).json()["data"]
+    assert rows, "expected at least one availability row"
+    assert set(rows[0]) == {"menu_item_id", "is_available", "reason", "on_hand"}
+
+
 def test_out_of_stock_greys_out_automatically(client, sell_ctx, make_user, db):
     """Nobody marks anything: an empty product is simply not sellable, and the
     salesperson can see that before the customer is promised it."""
