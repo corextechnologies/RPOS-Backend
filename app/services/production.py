@@ -20,58 +20,13 @@ from app.models.production_enums import ProductionLineRole
 from app.models.recipe import Recipe, RecipeComponent
 from app.models.request_enums import LocationType
 from app.models.user import User
-from app.schemas.branch import (
-    ProductionRunCreate,
-    ProductionRunLineOut,
-    ProductionRunOut,
-)
+from app.schemas.branch import ProductionRunLineOut, ProductionRunOut
 from app.services.audit import AuditService
 from app.services.inventory import InventoryService, insufficient_stock_error
 from app.services.units import convert, round_qty
 
 
 class ProductionService:
-    @staticmethod
-    def create_run(
-        db: Session,
-        actor: User,
-        location_type: LocationType,
-        location_id: int,
-        body: ProductionRunCreate,
-    ) -> ProductionRun:
-        inputs = [ln for ln in body.lines if ln.role == ProductionLineRole.INPUT]
-        outputs = [ln for ln in body.lines if ln.role == ProductionLineRole.OUTPUT]
-        if not inputs or not outputs:
-            raise ConflictError(
-                "A production run needs at least one input and one output.",
-                code="invalid_production_run",
-            )
-
-        product_ids = [line.product_id for line in body.lines]
-        rows = (
-            db.execute(select(Product).where(Product.id.in_(product_ids)))
-            .scalars()
-            .all()
-        )
-        found = {p.id: p for p in rows}
-        for pid in product_ids:
-            product = found.get(pid)
-            if product is None or product.restaurant_id != actor.restaurant_id:
-                raise NotFoundError("One or more products not found.")
-
-        occurred_at = body.occurred_at or datetime.now(timezone.utc)
-        return ProductionService._run(
-            db,
-            actor=actor,
-            location_type=location_type,
-            location_id=location_id,
-            occurred_at=occurred_at,
-            note=body.note,
-            inputs=[(l.product_id, (l.batch_code or "").strip(), l.quantity) for l in inputs],
-            outputs=[(l.product_id, (l.batch_code or "").strip(), l.quantity, l.expiry_date) for l in outputs],
-            recipe_id=None,
-        )
-
     @staticmethod
     def produce_at_kitchen(
         db: Session, actor: User, kitchen_id: int, body, *, commit: bool = True

@@ -160,26 +160,10 @@ class BranchOrderOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# --- P5-R: sub-kitchen (branch production log) ---
-
-class ProductionRunLineIn(BaseModel):
-    product_id: int
-    role: ProductionLineRole
-    quantity: Quantity = Field(gt=0)
-    batch_code: str | None = Field(default=None, max_length=100)
-    expiry_date: date | None = None
-
-
-class ProductionRunCreate(BaseModel):
-    """One prep/shaping run: what was used (INPUT) and what it became (OUTPUT).
-
-    Quantities are stated explicitly — there is no recipe/BOM until POS-5.
-    """
-
-    lines: list[ProductionRunLineIn] = Field(min_length=2)
-    occurred_at: datetime | None = None
-    note: str | None = Field(default=None, max_length=500)
-
+# --- Production run reads (kitchen production + prep-ticket completion) ---
+# The hand-logged branch create flow (ProductionRunCreate / ProductionRunLineIn)
+# was retired once the sub-kitchen prep board replaced it; only the read shapes
+# remain, shared by the kitchen endpoints.
 
 class ProductionRunLineOut(BaseModel):
     id: int
