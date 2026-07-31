@@ -132,6 +132,50 @@ class PrepService:
             return PrepService._load(db, ticket.id)
         return ticket
 
+    @staticmethod
+    def cancel_open_for_order(
+        db: Session, actor: User, order_id: int, *, commit: bool = False
+    ) -> int:
+        """Cancel a voided/refunded order's still-open prep tickets.
+
+        A cancelled order's dish must not keep being finished — the chef should
+        not work a plate nobody is paying for. Only OPEN tickets are touched: a
+        COMPLETED one already went to the customer and stays as history. The rest
+        flip to CANCELLED (kept, not deleted) so the board reflects what happened.
+
+        Called from the void/refund path with commit=False, so the cancellation
+        lands in the same transaction as the void. Returns how many were cancelled.
+        """
+        now = datetime.now(timezone.utc)
+        rows = (
+            db.execute(
+                select(PrepTicket).where(
+                    PrepTicket.order_id == order_id,
+                    PrepTicket.source == PrepSource.ORDER,
+                    PrepTicket.status.in_(OPEN_STATUSES),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for ticket in rows:
+            ticket.status = PrepStatus.CANCELLED
+            ticket.cancelled_at = now
+        if rows:
+            db.flush()
+            AuditService.record(
+                db,
+                actor=actor,
+                action="branch.prep.cancel_for_order",
+                entity_type="order",
+                entity_id=order_id,
+                restaurant_id=actor.restaurant_id,
+                payload={"cancelled_tickets": len(rows)},
+            )
+        if commit:
+            db.commit()
+        return len(rows)
+
     # ---- reads ------------------------------------------------------------
 
     @staticmethod

@@ -369,11 +369,13 @@ class PosOrderService:
         Does not commit — the caller owns the transaction. Returns the
         FlaggedReason set by settlement, or None.
         """
-        # Which lines need finishing at the sub-kitchen? Those bypass finished-good
-        # deduction (they are made fresh, never held as stock) and instead spawn a
-        # prep ticket. `needs_prep` is a per-line flag set at order time — migration
-        # 0039_order_line_needs_prep moved it off the menu item onto the order line —
-        # so no menu lookup is needed.
+        # A line flagged for sub-kitchen finishing STILL deducts stock: the item
+        # exists — the kitchen baked it and shipped it — and the sub-kitchen
+        # decorates it rather than conjuring it (a name on the cake). So a flagged
+        # line both deducts like any sale AND spawns a prep ticket for the
+        # finishing. `needs_prep` is a per-line flag set at order time — migration
+        # 0039_order_line_needs_prep moved it off the menu item onto the order line
+        # — so no menu lookup is needed.
         qty_by_product: dict[int, int] = {}
         prep_lines = []
         for line in order.lines:
@@ -382,7 +384,6 @@ class PosOrderService:
                 continue
             if line.needs_prep:
                 prep_lines.append(line)
-                continue
             qty_by_product[line.product_id] = (
                 qty_by_product.get(line.product_id, 0) + line.quantity
             )
@@ -477,9 +478,11 @@ class PosOrderService:
         Idempotent (a re-void is a no-op) so an offline-originated void replays
         safely once the device reconnects. Money stays a SEPARATE concern: a paid
         order must be refunded first via the existing refund flow, never rewritten
-        here. Two deliberate post-MVP limitations, documented: made-to-order prep
-        tickets are not cancelled, and a STOCK_OVERSELL order's (partial/absent)
-        deduction is not reversed (adding it back would invent inventory).
+        here. A voided order's still-open sub-kitchen prep tickets are cancelled
+        (a chef must not keep finishing a plate nobody is paying for); a completed
+        ticket already went out and is left as history. One deliberate post-MVP
+        limitation remains: a STOCK_OVERSELL order's (partial/absent) deduction is
+        not reversed (adding it back would invent inventory).
         """
         order = PosOrderService.get(db, session, order_id)
         if order.status == OrderStatus.VOID:
@@ -557,6 +560,9 @@ class PosOrderService:
                 line.void_reason_code = reason
                 line.voided_by_id = session.user.id
             order.status = OrderStatus.VOID
+
+            # Stop the sub-kitchen finishing a dish nobody is paying for.
+            PrepService.cancel_open_for_order(db, session.user, order.id, commit=False)
 
             db.flush()
             AuditService.record(

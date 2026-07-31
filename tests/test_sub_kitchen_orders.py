@@ -84,7 +84,7 @@ def prep_order_ctx(db, restaurant_setup, make_product, make_user, client):
     return {
         **restaurant_setup, "branch": branch, "burger": burger, "cake": cake,
         "icing": icing, "burger_item": burger_item, "cake_item": cake_item,
-        "pos_headers": pos_headers,
+        "pos_headers": pos_headers, "device_uid": device_uid,
     }
 
 
@@ -112,7 +112,7 @@ def _send(client, ctx, order_id):
 
 def _board(client):
     chef = auth_headers(client, "chef@test.com")
-    return client.get("/v1/branch/sub-kitchen/board", headers=chef).json()
+    return client.get("/v1/sub-kitchen/board", headers=chef).json()
 
 
 # ---- the order-taker decides, per line -------------------------------------
@@ -212,7 +212,7 @@ def test_completing_an_order_ticket_moves_no_stock_by_default(
     chef = auth_headers(client, "chef@test.com")
     tid = _board(client)["data"][0]["id"]
     done = client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef
+        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef
     )
     assert done.status_code == 200, done.text
     assert done.json()["data"]["status"] == "COMPLETED"
@@ -235,7 +235,7 @@ def test_the_chef_may_log_what_the_finishing_used(client, prep_order_ctx, db):
     chef = auth_headers(client, "chef@test.com")
     tid = _board(client)["data"][0]["id"]
     done = client.post(
-        f"/v1/branch/sub-kitchen/tickets/{tid}/complete",
+        f"/v1/sub-kitchen/tickets/{tid}/complete",
         json={"inputs": [{"product_id": prep_order_ctx["icing"].id, "quantity": 2}]},
         headers=chef,
     )
@@ -243,3 +243,69 @@ def test_the_chef_may_log_what_the_finishing_used(client, prep_order_ctx, db):
 
     assert _stock(db, prep_order_ctx, prep_order_ctx["icing"]) == 48   # 50 - 2
     assert _stock(db, prep_order_ctx, prep_order_ctx["cake"]) == cake_before
+
+
+# ---- voiding an order cancels its open prep tickets -------------------------
+
+def test_voiding_an_order_cancels_its_open_prep_ticket(client, prep_order_ctx, db):
+    """A cancelled order's dish must not keep being finished. Void → the order's
+    still-open ORDER ticket flips to CANCELLED and drops off the open board."""
+    created = _order(
+        client, prep_order_ctx,
+        [{"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+          "needs_prep": True, "note": "Happy Birthday Ali"}],
+    ).json()["data"]
+    assert _send(client, prep_order_ctx, created["id"]).status_code == 200
+
+    board = _board(client)
+    assert board["meta"]["total"] == 1
+    tid = board["data"][0]["id"]
+
+    # The branch manager voids the sent order from the POS (holds VOID_AFTER_SEND).
+    mgr = client.post(
+        "/v1/pos/session/login",
+        json={"email": "branch@test.com", "password": "Pass@1234",
+              "device_uid": prep_order_ctx["device_uid"]},
+    )
+    mgr_headers = {"Authorization": f"Bearer {mgr.json()['data']['access_token']}"}
+    voided = client.post(
+        f"/v1/pos/orders/{created['id']}/void",
+        json={"reason_code": "CUSTOMER_CHANGED_MIND"}, headers=mgr_headers,
+    )
+    assert voided.status_code == 200, voided.text
+
+    # The ticket is gone from the open board...
+    assert _board(client)["meta"]["total"] == 0
+    # ...and kept as history in CANCELLED, not deleted.
+    chef = auth_headers(client, "chef@test.com")
+    detail = client.get(f"/v1/sub-kitchen/tickets/{tid}", headers=chef)
+    assert detail.status_code == 200
+    assert detail.json()["data"]["status"] == "CANCELLED"
+
+
+def test_voiding_does_not_touch_an_already_completed_ticket(client, prep_order_ctx, db):
+    """A completed ticket already went to the customer — a later void leaves it."""
+    created = _order(
+        client, prep_order_ctx,
+        [{"menu_item_id": prep_order_ctx["cake_item"], "quantity": 1,
+          "needs_prep": True, "note": "For Sara"}],
+    ).json()["data"]
+    _send(client, prep_order_ctx, created["id"])
+
+    chef = auth_headers(client, "chef@test.com")
+    tid = _board(client)["data"][0]["id"]
+    client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
+
+    mgr = client.post(
+        "/v1/pos/session/login",
+        json={"email": "branch@test.com", "password": "Pass@1234",
+              "device_uid": prep_order_ctx["device_uid"]},
+    )
+    mgr_headers = {"Authorization": f"Bearer {mgr.json()['data']['access_token']}"}
+    client.post(
+        f"/v1/pos/orders/{created['id']}/void",
+        json={"reason_code": "CUSTOMER_CHANGED_MIND"}, headers=mgr_headers,
+    )
+    # Still COMPLETED — not rewritten to CANCELLED.
+    detail = client.get(f"/v1/sub-kitchen/tickets/{tid}", headers=chef)
+    assert detail.json()["data"]["status"] == "COMPLETED"
