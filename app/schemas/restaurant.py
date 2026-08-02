@@ -20,6 +20,9 @@ class RestaurantCreate(BaseModel):
     plan_amount: Decimal | None = None
     # Ignored on create — server sets today + 1 month when a plan is provided.
     next_billing_date: date | None = None
+    # Whether the tenant runs a central/cloud kitchen. Super-Admin-only. Defaults
+    # true so an omitted value keeps the kitchen (matches the model's default).
+    has_central_kitchen: bool = True
     # Controls paid/unpaid on today's signup invoice (not whether invoices exist).
     payment_received: bool = False
 
@@ -55,6 +58,10 @@ class RestaurantUpdate(BaseModel):
     plan_amount: Decimal | None = None
     branch_limit: int | None = None
     next_billing_date: date | None = None
+    # Super-Admin-only kitchen mode. Flipping true -> false is guarded in
+    # update_restaurant (409 kitchen_in_use if the kitchen is still in use);
+    # enabling is unconditional. Deliberately absent from AdminRestaurantUpdate.
+    has_central_kitchen: bool | None = None
 
 
 class AdminRestaurantUpdate(BaseModel):
@@ -92,6 +99,9 @@ class RestaurantOut(BaseModel):
     address: str | None = None
     logo_url: str | None = None
     public_slug: str | None = None
+    # Defaults true so any legacy row (or non-ORM construction) reads as having a
+    # kitchen — mirrors the frontend, which treats a missing value as true.
+    has_central_kitchen: bool = True
 
 
 class RestaurantCreateResult(BaseModel):

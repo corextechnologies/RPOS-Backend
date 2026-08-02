@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 from app.services.audit import AuditService
 
@@ -22,6 +22,14 @@ from app.core.security import hash_password
 from app.db.session import get_db
 from app.deps.auth import require_role
 from app.models.enums import RestaurantStatus, UserRole
+from app.models.location import Kitchen
+from app.models.request import Request
+from app.models.request_enums import (
+    BranchToAdminStatus,
+    KitchenToAdminStatus,
+    KitchenToWarehouseStatus,
+    RequestType,
+)
 from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.restaurant import (
@@ -75,6 +83,83 @@ def _record_audit(
     )
 
 
+# Request types whose workflow routes through the central kitchen, mapped to the
+# statuses that mean "closed" for that type. A request of one of these types NOT
+# in its closed set is still-in-flight kitchen work. (KITCHEN_TO_ADMIN's
+# ALLOCATED/DISPATCHED are mid-workflow, so they count as open, not closed.)
+_KITCHEN_BOUND_CLOSED_STATUSES: dict[RequestType, set[str]] = {
+    RequestType.KITCHEN_TO_WAREHOUSE: {
+        KitchenToWarehouseStatus.RECEIVED.value,
+    },
+    RequestType.KITCHEN_TO_ADMIN: {
+        KitchenToAdminStatus.RECEIVED.value,
+        KitchenToAdminStatus.REJECTED.value,
+    },
+    RequestType.BRANCH_TO_ADMIN: {
+        BranchToAdminStatus.RECEIVED.value,
+        BranchToAdminStatus.REJECTED.value,
+    },
+}
+
+
+def _assert_kitchen_not_in_use(db: Session, restaurant_id: int) -> None:
+    """Block disabling a central kitchen while it's still in use.
+
+    Raises 409 (code ``kitchen_in_use``) if the restaurant still has any kitchen
+    location, any KITCHEN_MANAGER/KITCHEN_STAFF user, or any open kitchen-bound
+    request. The frontend shows the message and reverts the toggle.
+    """
+    has_kitchen = db.execute(
+        select(Kitchen.id)
+        .where(Kitchen.restaurant_id == restaurant_id)
+        .limit(1)
+    ).first()
+    if has_kitchen is not None:
+        raise ConflictError(
+            "Remove this restaurant's kitchen locations and kitchen staff "
+            "before disabling its central kitchen.",
+            code="kitchen_in_use",
+        )
+
+    has_kitchen_staff = db.execute(
+        select(User.id)
+        .where(
+            User.restaurant_id == restaurant_id,
+            User.role.in_([UserRole.KITCHEN_MANAGER, UserRole.KITCHEN_STAFF]),
+        )
+        .limit(1)
+    ).first()
+    if has_kitchen_staff is not None:
+        raise ConflictError(
+            "Remove this restaurant's kitchen locations and kitchen staff "
+            "before disabling its central kitchen.",
+            code="kitchen_in_use",
+        )
+
+    open_request = db.execute(
+        select(Request.id)
+        .where(
+            Request.restaurant_id == restaurant_id,
+            or_(
+                *[
+                    and_(
+                        Request.request_type == request_type,
+                        Request.status.notin_(closed),
+                    )
+                    for request_type, closed in _KITCHEN_BOUND_CLOSED_STATUSES.items()
+                ]
+            ),
+        )
+        .limit(1)
+    ).first()
+    if open_request is not None:
+        raise ConflictError(
+            "This restaurant still has open kitchen requests. Close or complete "
+            "them before disabling its central kitchen.",
+            code="kitchen_in_use",
+        )
+
+
 @router.post("/restaurants")
 def create_restaurant(
     body: RestaurantCreate,
@@ -103,6 +188,7 @@ def create_restaurant(
                 plan_tier=body.plan_tier,
             ),
             status=RestaurantStatus.ACTIVE,
+            has_central_kitchen=body.has_central_kitchen,
             # Generated once, at creation — stable for the life of the QR code.
             public_slug=generate_unique_slug(db, body.name),
         )
@@ -198,6 +284,10 @@ def update_restaurant(
 ):
     restaurant = _get_restaurant(db, restaurant_id)
     changes = body.model_dump(exclude_unset=True)
+    # Guard the disable transition (true -> false) only. Enabling is unconditional;
+    # an unchanged or absent value never trips the guard.
+    if changes.get("has_central_kitchen") is False and restaurant.has_central_kitchen:
+        _assert_kitchen_not_in_use(db, restaurant.id)
     for field, value in changes.items():
         setattr(restaurant, field, value)
     _record_audit(db, "restaurant.update", restaurant.id, current)  # affects billing

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, Integer, Numeric, String, Enum as SAEnum
+from sqlalchemy import Boolean, Date, Integer, Numeric, String, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -42,3 +42,12 @@ class Restaurant(Base, PKMixin, TimestampMixin):
     address: Mapped[str | None] = mapped_column(String(500))
     logo_url: Mapped[str | None] = mapped_column(String(1024))
     public_slug: Mapped[str | None] = mapped_column(String(255), unique=True)
+
+    # Whether this tenant runs a central/cloud kitchen. Set by the Super Admin at
+    # create/edit. Existing tenants backfill to true (keep their kitchen), so the
+    # flag is backward-compatible. Disabling it is guarded — see
+    # app/api/v1/super_admin.py update_restaurant — a tenant can't drop out of
+    # kitchen mode while it still has kitchen locations, staff, or open requests.
+    has_central_kitchen: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
