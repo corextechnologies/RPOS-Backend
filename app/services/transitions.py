@@ -118,6 +118,30 @@ ALLOWED_TRANSITIONS: dict[RequestType, dict[str, set[str]]] = {
     },
 }
 
+# BRANCH_TO_ADMIN for a kitchen-off tenant: there is no kitchen to forward to, so
+# the kitchen production leg (FORWARDED_TO_KITCHEN -> IN_PRODUCTION -> PRODUCED) is
+# removed. Admin approves and dispatches straight from a warehouse; the branch
+# receives. Selected by request restaurant's has_central_kitchen (see
+# validate_transition). REJECTED/RECEIVED stay terminal.
+_BRANCH_TO_ADMIN_NO_KITCHEN_TRANSITIONS: dict[str, set[str]] = {
+    BranchToAdminStatus.PENDING.value: {
+        BranchToAdminStatus.APPROVED.value,
+        BranchToAdminStatus.REJECTED.value,
+        BranchToAdminStatus.PARTIALLY_APPROVED.value,
+    },
+    BranchToAdminStatus.APPROVED.value: {
+        BranchToAdminStatus.DISPATCHED.value,
+    },
+    BranchToAdminStatus.PARTIALLY_APPROVED.value: {
+        BranchToAdminStatus.DISPATCHED.value,
+    },
+    BranchToAdminStatus.DISPATCHED.value: {
+        BranchToAdminStatus.RECEIVED.value,
+    },
+    BranchToAdminStatus.REJECTED.value: set(),
+    BranchToAdminStatus.RECEIVED.value: set(),
+}
+
 # Who may *create* each request type.
 CREATE_ROLES: dict[RequestType, set[UserRole]] = {
     RequestType.KITCHEN_TO_WAREHOUSE: {UserRole.KITCHEN_MANAGER},
@@ -167,6 +191,14 @@ TRANSITION_ROLES: dict[RequestType, dict[str, set[UserRole]]] = {
     },
 }
 
+# Kitchen-off overrides: with no kitchen, Admin owns the dispatch step that a
+# KITCHEN_MANAGER performs in the normal flow. Only the differing statuses are
+# listed; everything else falls back to TRANSITION_ROLES[BRANCH_TO_ADMIN].
+_BRANCH_TO_ADMIN_NO_KITCHEN_ROLES: dict[str, set[UserRole]] = {
+    BranchToAdminStatus.DISPATCHED.value: {UserRole.ADMIN},
+}
+
+
 PARTIAL_APPROVAL_TYPES: set[RequestType] = {
     RequestType.KITCHEN_TO_WAREHOUSE,
     RequestType.WAREHOUSE_TO_ADMIN_PO,
@@ -193,10 +225,24 @@ def supports_partial_approval(request_type: RequestType) -> bool:
     return request_type in PARTIAL_APPROVAL_TYPES
 
 
+def _transitions_for(
+    request_type: RequestType, *, has_central_kitchen: bool
+) -> dict[str, set[str]]:
+    if request_type == RequestType.BRANCH_TO_ADMIN and not has_central_kitchen:
+        return _BRANCH_TO_ADMIN_NO_KITCHEN_TRANSITIONS
+    return ALLOWED_TRANSITIONS.get(request_type, {})
+
+
 def validate_transition(
-    request_type: RequestType, from_status: str, to_status: str
+    request_type: RequestType,
+    from_status: str,
+    to_status: str,
+    *,
+    has_central_kitchen: bool = True,
 ) -> None:
-    type_map = ALLOWED_TRANSITIONS.get(request_type, {})
+    type_map = _transitions_for(
+        request_type, has_central_kitchen=has_central_kitchen
+    )
     allowed = type_map.get(from_status, set())
     if to_status not in allowed:
         raise ConflictError(
@@ -210,8 +256,15 @@ def roles_allowed_to_create(request_type: RequestType) -> set[UserRole]:
 
 
 def roles_allowed_to_transition(
-    request_type: RequestType, to_status: str
+    request_type: RequestType,
+    to_status: str,
+    *,
+    has_central_kitchen: bool = True,
 ) -> set[UserRole]:
+    if request_type == RequestType.BRANCH_TO_ADMIN and not has_central_kitchen:
+        override = _BRANCH_TO_ADMIN_NO_KITCHEN_ROLES.get(to_status)
+        if override is not None:
+            return override
     return TRANSITION_ROLES.get(request_type, {}).get(to_status, set())
 
 
@@ -221,8 +274,14 @@ def assert_role_can_create(actor_role: UserRole, request_type: RequestType) -> N
 
 
 def assert_role_can_transition(
-    actor_role: UserRole, request_type: RequestType, to_status: str
+    actor_role: UserRole,
+    request_type: RequestType,
+    to_status: str,
+    *,
+    has_central_kitchen: bool = True,
 ) -> None:
-    allowed = roles_allowed_to_transition(request_type, to_status)
+    allowed = roles_allowed_to_transition(
+        request_type, to_status, has_central_kitchen=has_central_kitchen
+    )
     if actor_role not in allowed:
         raise ForbiddenError("You are not allowed to perform this transition.")

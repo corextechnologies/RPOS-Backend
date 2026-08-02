@@ -12,6 +12,7 @@ from app.deps.request_scoping import user_can_view_request, visible_requests
 from app.models.inventory import StockMovement, StockMovementType
 from app.models.location import Branch, Kitchen, Warehouse
 from app.models.product import Product
+from app.models.restaurant import Restaurant
 from app.models.request import Request, RequestAllocation, RequestLineItem
 from app.models.request_enums import (
     INITIAL_STATUS,
@@ -53,6 +54,17 @@ _LOCATION_MODELS = {
 def _approved_quantity(line: RequestLineItem) -> int:
     qty = line.quantity_approved
     return line.quantity_requested if qty is None else qty
+
+
+def _tenant_has_central_kitchen(db: Session, restaurant_id: int) -> bool:
+    """Whether the request's tenant runs a central kitchen.
+
+    Drives the BRANCH_TO_ADMIN state machine: kitchen-off tenants skip the kitchen
+    production leg and dispatch from a warehouse. A missing row/flag defaults to
+    True (kitchen-on), matching the model default.
+    """
+    restaurant = db.get(Restaurant, restaurant_id)
+    return bool(getattr(restaurant, "has_central_kitchen", True)) if restaurant else True
 
 
 def _require_location(
@@ -243,25 +255,47 @@ def _warehouse_receives_po(
         )
 
 
-def _kitchen_dispatches_to_branch(
+def _dispatches_to_branch(
     db: Session, *, actor: User, request: Request, body: RequestTransition
 ) -> None:
-    """BRANCH_TO_ADMIN -> DISPATCHED: the producing kitchen's stock leaves.
+    """BRANCH_TO_ADMIN -> DISPATCHED: the fulfilling location's stock leaves.
 
-    The branch is credited later, on RECEIVED.
+    Kitchen tenants dispatch from the producing kitchen (the request's target,
+    set at create or when Admin forwards). Kitchen-off tenants have no kitchen, so
+    Admin dispatches from a warehouse named in the transition body — recorded as
+    the request's WAREHOUSE target by _apply_routing_target before this runs. The
+    branch is credited later, on RECEIVED, replaying whichever batches left here.
     """
-    kitchen_id = _require_location(
-        request,
-        which="target",
-        expected=LocationType.KITCHEN,
-        code="missing_kitchen_target",
-    )
+    target_type = request.target_location_type
+    if target_type == LocationType.WAREHOUSE:
+        location_id = _require_location(
+            request,
+            which="target",
+            expected=LocationType.WAREHOUSE,
+            code="missing_warehouse_target",
+        )
+    elif target_type == LocationType.KITCHEN:
+        location_id = _require_location(
+            request,
+            which="target",
+            expected=LocationType.KITCHEN,
+            code="missing_kitchen_target",
+        )
+    else:
+        # Neither a kitchen (normal flow) nor a warehouse (kitchen-off flow) is
+        # set — Admin must name a source warehouse when dispatching without a
+        # kitchen. Reported against the warehouse since that's the missing input.
+        raise ConflictError(
+            f"Request #{request.id} has no dispatch source. Provide a warehouse "
+            f"target to dispatch it.",
+            code="missing_warehouse_target",
+        )
     _dispatch_from(
         db,
         actor=actor,
         request=request,
-        location_type=LocationType.KITCHEN,
-        location_id=kitchen_id,
+        location_type=target_type,
+        location_id=location_id,
     )
 
 
@@ -410,7 +444,7 @@ _INVENTORY_SIDE_EFFECTS = {
     (
         RequestType.BRANCH_TO_ADMIN,
         BranchToAdminStatus.DISPATCHED.value,
-    ): _kitchen_dispatches_to_branch,
+    ): _dispatches_to_branch,
     (
         RequestType.BRANCH_TO_ADMIN,
         BranchToAdminStatus.RECEIVED.value,
@@ -620,8 +654,19 @@ class RequestService:
         from_status = request.status
         to_status = body.to_status
 
-        validate_transition(request.request_type, from_status, to_status)
-        assert_role_can_transition(actor.role, request.request_type, to_status)
+        has_central_kitchen = _tenant_has_central_kitchen(db, request.restaurant_id)
+        validate_transition(
+            request.request_type,
+            from_status,
+            to_status,
+            has_central_kitchen=has_central_kitchen,
+        )
+        assert_role_can_transition(
+            actor.role,
+            request.request_type,
+            to_status,
+            has_central_kitchen=has_central_kitchen,
+        )
 
         RequestService._apply_line_approvals(request, body, to_status)
         RequestService._apply_line_receipts(request, body, to_status)

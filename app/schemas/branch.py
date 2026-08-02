@@ -194,13 +194,15 @@ class ProductionRunOut(BaseModel):
 
 
 class BranchRequestCreate(BaseModel):
-    """A branch requests product from Admin, naming the target kitchen.
+    """A branch requests product from Admin, optionally naming a target kitchen.
 
-    The kitchen is set as the request's target so the shared engine routes the
-    whole workflow to that kitchen (and only that kitchen sees it once forwarded).
+    When a kitchen is named it becomes the request's target, so the shared engine
+    routes the whole workflow to that kitchen (and only that kitchen sees it once
+    forwarded). A kitchen-off tenant's branch omits it: the request is created
+    with an open (null) target and Admin fulfils it from a warehouse instead.
     """
 
-    kitchen_id: int
+    kitchen_id: int | None = None
     lines: list[RequestLineCreate] = Field(min_length=1)
     notes: str | None = None
     #: Offline-replay anchor (mirrors PosOrderCreate.local_id).

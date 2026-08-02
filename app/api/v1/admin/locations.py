@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import ConflictError
 from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.auth import require_role
@@ -31,6 +32,17 @@ def create_kitchen(
     current: User = Depends(require_role(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
+    # A kitchen-off tenant may not create kitchens (F4). Guarding here keeps the
+    # disable-guard's invariant true: a kitchen-off restaurant has no kitchens.
+    restaurant = current.restaurant
+    if restaurant is not None and getattr(
+        restaurant, "has_central_kitchen", True
+    ) is False:
+        raise ConflictError(
+            "This restaurant's central kitchen is disabled; enable it before "
+            "adding a kitchen.",
+            code="central_kitchen_disabled",
+        )
     kitchen = LocationService.create_kitchen(db, current, body)
     return ok(LocationService.to_out(kitchen).model_dump(mode="json"))
 

@@ -18,7 +18,11 @@ from app.core.security import (
     verify_password,
 )
 from app.db.session import get_db
-from app.deps.auth import enforce_not_halted, get_current_user
+from app.deps.auth import (
+    enforce_kitchen_enabled,
+    enforce_not_halted,
+    get_current_user,
+)
 from app.models.enums import UserRole
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
@@ -68,6 +72,8 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         raise AuthError("User is inactive.")
     # Halted restaurants are blocked at login, not just in the UI.
     enforce_not_halted(user, db)
+    # A kitchen-off tenant's kitchen users are denied here too.
+    enforce_kitchen_enabled(user)
     return ok(_issue_tokens(db, user))
 
 
@@ -89,6 +95,7 @@ def refresh(body: RefreshRequest, db: Session = Depends(get_db)):
     if user is None or not user.is_active:
         raise AuthError("User not found or inactive.")
     enforce_not_halted(user, db)
+    enforce_kitchen_enabled(user)
 
     # Rotate: revoke the presented token, issue a fresh pair.
     record.revoked = True

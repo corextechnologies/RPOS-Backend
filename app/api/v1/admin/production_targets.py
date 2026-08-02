@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.responses import ok
 from app.db.session import get_db
-from app.deps.auth import require_role
+from app.deps.auth import require_central_kitchen_enabled, require_role
 from app.models.enums import UserRole
 from app.models.location import Kitchen
 from app.models.product import Product
@@ -28,7 +28,14 @@ from app.schemas.production_target import (
 from app.services.notifications import NotificationService
 from app.services.production_targets import ProductionTargetService
 
-router = APIRouter(dependencies=[Depends(require_role(UserRole.ADMIN))])
+# Production targets are keyed to a kitchen, so the whole group is 403'd for a
+# kitchen-off tenant (F4.5).
+router = APIRouter(
+    dependencies=[
+        Depends(require_role(UserRole.ADMIN)),
+        Depends(require_central_kitchen_enabled),
+    ]
+)
 
 
 def _to_out(target: ProductionTarget) -> dict:

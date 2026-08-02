@@ -19,6 +19,9 @@ from app.models.user import User
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+_KITCHEN_ROLES = {UserRole.KITCHEN_MANAGER, UserRole.KITCHEN_STAFF}
+
+
 def enforce_not_halted(user: User, db: Session) -> None:
     """Block non-super-admin users of a halted restaurant.
 
@@ -36,6 +39,25 @@ def enforce_not_halted(user: User, db: Session) -> None:
         )
 
 
+def enforce_kitchen_enabled(user: User) -> None:
+    """Deny kitchen-role users of a tenant that has turned its central kitchen off.
+
+    Mirrors the halt check: enforced everywhere HALTED is (login, refresh, and
+    every authenticated request), so a KITCHEN_MANAGER/KITCHEN_STAFF token can't
+    reach any endpoint once its restaurant runs kitchen-off. The disable guard on
+    the restaurant already forbids turning the kitchen off while kitchen staff
+    exist, so this is defence-in-depth against an inconsistent state.
+    """
+    if user.role not in _KITCHEN_ROLES or user.restaurant is None:
+        return
+    # Absent flag (legacy / mid-migration) defaults to enabled, matching the model.
+    if getattr(user.restaurant, "has_central_kitchen", True) is False:
+        raise ForbiddenError(
+            "This restaurant's central kitchen is disabled.",
+            code="central_kitchen_disabled",
+        )
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
@@ -50,7 +72,28 @@ def get_current_user(
     if user is None or not user.is_active:
         raise AuthError("User not found or inactive.")
     enforce_not_halted(user, db)
+    enforce_kitchen_enabled(user)
     return user
+
+
+def require_central_kitchen_enabled(
+    current: User = Depends(get_current_user),
+) -> User:
+    """Router guard: 403 the whole kitchen domain for a kitchen-off tenant.
+
+    Kitchen-role users are already stopped at get_current_user; this backs the
+    frontend's route guards for any other caller (e.g. a mis-scoped token) so a
+    direct API call can't bypass the hidden kitchen surfaces.
+    """
+    restaurant = current.restaurant
+    if restaurant is not None and getattr(
+        restaurant, "has_central_kitchen", True
+    ) is False:
+        raise ForbiddenError(
+            "This restaurant's central kitchen is disabled.",
+            code="central_kitchen_disabled",
+        )
+    return current
 
 
 def require_role(*roles: UserRole):

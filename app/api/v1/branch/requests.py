@@ -45,12 +45,18 @@ def create_branch_request(
     db: Session = Depends(get_db),
 ):
     branch_id = require_actor_branch_id(current)
+    # A named kitchen becomes the routing target; omitted (kitchen-off tenant, or
+    # a branch with no kitchens) leaves the target open — Admin fulfils from a
+    # warehouse. A bad kitchen_id still 404s via RequestService location validation.
+    target_kitchen_type = (
+        LocationType.KITCHEN if body.kitchen_id is not None else None
+    )
     create_body = RequestCreate(
         request_type=RequestType.BRANCH_TO_ADMIN,
         local_id=body.local_id,
         source_location_type=LocationType.BRANCH,
         source_location_id=branch_id,
-        target_location_type=LocationType.KITCHEN,
+        target_location_type=target_kitchen_type,
         target_location_id=body.kitchen_id,
         notes=body.notes,
         lines=[
