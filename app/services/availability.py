@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotFoundError
@@ -52,11 +52,21 @@ class ItemState:
 class AvailabilityService:
     @staticmethod
     def _on_hand_map(db: Session, restaurant_id: int, branch_id: int) -> dict[int, int]:
+        # Expired lots are physically present but NOT sellable, so an item whose
+        # only stock is past its expiry greys out like a genuine 0-on-hand item.
+        # This mirrors the dispatchable-stock rule (see _dispatchable_conditions
+        # in inventory.py): expiry NULL or still in date. Keeping the two in step
+        # means the sale gate and this availability read never disagree.
+        today = datetime.now(timezone.utc).date()
         rows = db.execute(
             select(InventoryItem.product_id, InventoryItem.quantity).where(
                 InventoryItem.restaurant_id == restaurant_id,
                 InventoryItem.location_type == LocationType.BRANCH,
                 InventoryItem.location_id == branch_id,
+                or_(
+                    InventoryItem.expiry_date.is_(None),
+                    InventoryItem.expiry_date >= today,
+                ),
             )
         ).all()
         totals: dict[int, int] = {}

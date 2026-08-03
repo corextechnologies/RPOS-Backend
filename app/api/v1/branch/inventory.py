@@ -12,6 +12,8 @@ manager-only (WASTE_LOG) — it writes stock off.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -38,14 +40,18 @@ _BRANCH = require_role(UserRole.BRANCH_MANAGER, UserRole.BRANCH_STAFF)
 router = APIRouter(dependencies=[Depends(_BRANCH)])
 
 
-def _item_out(item, product) -> dict:
+def _item_out(item, product, *, quantity=None, today: date | None = None) -> dict:
+    today = today or date.today()
+    qty = item.quantity if quantity is None else quantity
+    expired = item.expiry_date is not None and item.expiry_date < today
     return InventoryItemOut(
         id=item.id,
         product_id=item.product_id,
         product=ProductPublicOut.model_validate(product),
-        quantity=item.quantity,
+        quantity=qty,
         batch_code=item.batch_code,
         expiry_date=item.expiry_date,
+        is_expired=expired,
         location_type=item.location_type.value,
         location_id=item.location_id,
     ).model_dump(mode="json")
@@ -63,7 +69,36 @@ def list_inventory(
         location_type=LocationType.BRANCH,
         location_id=branch_id,
     )
-    return ok([_item_out(item, product) for item, product in rows])
+    # Branch finished goods carry no batch code, so a lot is identified by
+    # (product, expiry) alone. Collapse rows on that key — same product + same
+    # expiry is already one row in the ledger, but this also folds any legacy
+    # batched rows into a single displayed line. Different expiries are NEVER
+    # merged: each is a distinct lot FEFO must be able to sell/waste in order.
+    # Emptied lots (quantity 0) are dropped rather than shown.
+    today = date.today()
+    grouped: dict[tuple[int, date | None], dict] = {}
+    for item, product in rows:
+        if item.quantity <= 0:
+            continue
+        key = (item.product_id, item.expiry_date)
+        entry = grouped.get(key)
+        if entry is None:
+            grouped[key] = {"item": item, "product": product, "quantity": item.quantity}
+        else:
+            entry["quantity"] += item.quantity
+    out = [
+        _item_out(e["item"], e["product"], quantity=e["quantity"], today=today)
+        for e in grouped.values()
+    ]
+    # Stable, useful order: soonest expiry first (undated last), then product.
+    out.sort(
+        key=lambda r: (
+            r["expiry_date"] is None,
+            r["expiry_date"] or "",
+            r["product_id"],
+        )
+    )
+    return ok(out)
 
 
 @router.get("/inventory/near-expiry")
@@ -95,7 +130,11 @@ def waste_stock(
             code="invalid_movement_type",
         )
     branch_id = require_actor_branch_id(current)
-    item = InventoryService.mark_waste_or_expiry(
+    # Branch stock is product-level (no batch code), so a waste names only the
+    # product. Spread it across the branch's lots earliest-expiry-first, expired
+    # lots included — that is how expired stock actually gets cleared. May touch
+    # more than one lot, so the response is the list of affected rows.
+    touched = InventoryService.mark_waste_or_expiry_fefo(
         db,
         actor=current,
         location_type=LocationType.BRANCH,
@@ -103,14 +142,17 @@ def waste_stock(
         product_id=body.product_id,
         quantity=body.quantity,
         movement_type=body.movement_type,
-        batch_code=body.batch_code,
         notes=body.notes,
         waste_reason=body.waste_reason,
     )
     db.commit()
-    db.refresh(item)
-    product = db.get(Product, item.product_id)
-    return ok(_item_out(item, product))
+    today = date.today()
+    result = []
+    for item in touched:
+        db.refresh(item)
+        product = db.get(Product, item.product_id)
+        result.append(_item_out(item, product, today=today))
+    return ok(result)
 
 
 @router.get("/waste")

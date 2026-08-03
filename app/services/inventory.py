@@ -225,6 +225,109 @@ class InventoryService:
         )
 
     @staticmethod
+    def mark_waste_or_expiry_fefo(
+        db: Session,
+        *,
+        actor: User,
+        location_type: LocationType,
+        location_id: int,
+        product_id: int,
+        quantity: int,
+        movement_type: StockMovementType,
+        notes: str | None = None,
+        waste_reason: WasteReason | None = None,
+    ) -> list[InventoryItem]:
+        """Waste `quantity` of a product across its lots, earliest-expiry-first.
+
+        The branch tracks finished goods by product, not batch, so a waste names
+        no lot. This spreads the write across the location's lots the way FEFO
+        dispatch does — soonest expiry first — but, UNLIKE dispatch, it INCLUDES
+        already-expired lots: wasting is exactly how expired stock is cleared, so
+        those lots must be reachable. Undated lots (no expiry) are consumed last.
+        One WASTE/EXPIRY StockMovement is written per lot touched, each targeting
+        the lot's exact (batch_code, expiry_date) so it never collides with a
+        sibling lot of the same product.
+        """
+        if movement_type not in {StockMovementType.WASTE, StockMovementType.EXPIRY}:
+            raise ConflictError(
+                "movement_type must be WASTE or EXPIRY.",
+                code="invalid_movement_type",
+            )
+        if quantity <= 0:
+            raise ConflictError(
+                "Waste/expiry quantity must be positive.",
+                code="invalid_quantity",
+            )
+        restaurant_id = InventoryService._require_restaurant(actor)
+        InventoryService._validate_location(
+            db, restaurant_id, location_type, location_id
+        )
+        InventoryService._validate_product(db, restaurant_id, product_id)
+
+        # Lock every on-hand lot for this product/location up front, in the order
+        # we consume them, so a concurrent waste/sale serializes behind us rather
+        # than reading the same on-hand twice. Expired lots are deliberately in
+        # scope (see docstring) — no expiry_date >= today guard here.
+        usable = (
+            db.execute(
+                select(InventoryItem)
+                .where(
+                    InventoryItem.restaurant_id == restaurant_id,
+                    InventoryItem.location_type == location_type,
+                    InventoryItem.location_id == location_id,
+                    InventoryItem.product_id == product_id,
+                    InventoryItem.quantity > 0,
+                )
+                .order_by(
+                    # Dated lots (expiry NOT NULL) before undated ones, then
+                    # soonest expiry first, then a stable id tiebreak.
+                    InventoryItem.expiry_date.is_(None),
+                    InventoryItem.expiry_date.asc(),
+                    InventoryItem.id.asc(),
+                )
+                .with_for_update()
+            )
+            .scalars()
+            .all()
+        )
+
+        available = sum(r.quantity for r in usable)
+        if available < quantity:
+            product = db.get(Product, product_id)
+            raise insufficient_stock_error(
+                product_id=product_id,
+                product_name=product.name if product else None,
+                location_type=location_type,
+                location_id=location_id,
+                requested=quantity,
+                available=available,
+            )
+
+        remaining = quantity
+        touched: list[InventoryItem] = []
+        for row in usable:
+            if remaining <= 0:
+                break
+            take = min(row.quantity, remaining)
+            item = InventoryService._apply_delta(
+                db,
+                actor=actor,
+                location_type=location_type,
+                location_id=location_id,
+                product_id=product_id,
+                quantity_delta=-take,
+                movement_type=movement_type,
+                batch_code=row.batch_code or None,
+                expiry_date=row.expiry_date,
+                notes=notes,
+                waste_reason=waste_reason,
+                allow_create=False,
+            )
+            touched.append(item)
+            remaining -= take
+        return touched
+
+    @staticmethod
     def apply_dispatch(
         db: Session,
         *,

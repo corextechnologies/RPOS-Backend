@@ -141,6 +141,12 @@ def _receive_into(
         .scalars()
         .all()
     )
+    # A branch tracks finished goods by product, not batch, so a branch credit
+    # drops the source batch code and keys the lot on (product, expiry) only.
+    # This keeps same-product-same-expiry receipts collapsing into one row
+    # instead of splitting by whichever batch the kitchen happened to dispatch.
+    # Kitchen/warehouse destinations keep the source batch — they track batches.
+    drop_batch = location_type == LocationType.BRANCH
     if dispatched:
         for mv in dispatched:
             qty = -mv.quantity_delta
@@ -153,7 +159,7 @@ def _receive_into(
                 location_id=location_id,
                 product_id=mv.product_id,
                 quantity=qty,
-                batch_code=mv.batch_code or None,
+                batch_code=None if drop_batch else (mv.batch_code or None),
                 expiry_date=mv.expiry_date,
                 request_id=request.id,
                 notes=f"Receipt for request #{request.id}",

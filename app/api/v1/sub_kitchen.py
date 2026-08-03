@@ -147,7 +147,12 @@ def log_waste(
             "movement_type must be WASTE or EXPIRY.", code="invalid_movement_type"
         )
     branch_id = require_actor_branch_id(current)
-    item = InventoryService.mark_waste_or_expiry(
+    # Branch/sub-kitchen stock is product-level (no batch code), and a product can
+    # hold several lots that differ only by expiry. Waste it earliest-expiry-first
+    # across those lots (expired included) rather than probing a single row — a
+    # bare (product, empty-batch) lookup would be ambiguous once more than one
+    # expiry exists.
+    InventoryService.mark_waste_or_expiry_fefo(
         db,
         actor=current,
         location_type=LocationType.BRANCH,
@@ -155,19 +160,23 @@ def log_waste(
         product_id=body.product_id,
         quantity=body.quantity,
         movement_type=body.movement_type,
-        batch_code=body.batch_code,
         notes=body.notes,
         waste_reason=body.waste_reason,
     )
     db.commit()
-    db.refresh(item)
+    on_hand = InventoryService.on_hand(
+        db,
+        restaurant_id=current.restaurant_id,
+        location_type=LocationType.BRANCH,
+        location_id=branch_id,
+        product_id=body.product_id,
+    )
     return ok(
         {
-            "product_id": item.product_id,
-            "batch_code": item.batch_code,
+            "product_id": body.product_id,
             "movement_type": body.movement_type.value,
             "waste_reason": body.waste_reason.value if body.waste_reason else None,
-            "on_hand": item.quantity,
+            "on_hand": on_hand,
         }
     )
 

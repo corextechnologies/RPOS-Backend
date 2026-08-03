@@ -320,6 +320,39 @@ def test_out_of_stock_greys_out_automatically(client, sell_ctx, make_user, db):
     assert resp.json()["error"]["code"] == "item_unavailable"
 
 
+def test_expired_stock_is_not_sellable(client, sell_ctx, make_user, db):
+    """Drain the fresh Cola, then add a lot that is already past its expiry:
+    physically present, but expired stock is not sellable, so the item greys out
+    exactly like a genuine 0-on-hand item."""
+    from datetime import date, timedelta
+
+    headers = _pos_headers(client, sell_ctx, make_user)
+    # Remove all in-date Cola.
+    InventoryService.apply_dispatch(
+        db, actor=sell_ctx["branch_mgr"], location_type=LocationType.BRANCH,
+        location_id=sell_ctx["branch"].id,
+        product_id=sell_ctx["products"]["Cola"].id, quantity=100,
+    )
+    # Add stock that is already expired.
+    InventoryService.receive_stock(
+        db, actor=sell_ctx["branch_mgr"], location_type=LocationType.BRANCH,
+        location_id=sell_ctx["branch"].id,
+        product_id=sell_ctx["products"]["Cola"].id, quantity=50,
+        expiry_date=date.today() - timedelta(days=1),
+    )
+    db.flush()
+
+    avail = client.get("/v1/pos/availability", headers=headers).json()["data"]
+    cola = next(a for a in avail if a["menu_item_id"] == sell_ctx["cola"])
+    assert cola["is_available"] is False
+    assert cola["reason"] == "Out of stock"
+
+    resp = _create(client, headers, sell_ctx,
+                   [{"menu_item_id": sell_ctx["cola"], "quantity": 1}])
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "item_unavailable"
+
+
 def test_staff_cannot_86_an_item(client, sell_ctx, make_user):
     _pos_headers(client, sell_ctx, make_user)
     staff = auth_headers(client, "cashier@test.com")

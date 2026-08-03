@@ -203,6 +203,9 @@ class InventoryItemOut(BaseModel):
     quantity: Quantity
     batch_code: str
     expiry_date: date | None = None
+    #: True when expiry_date is in the past. Set by reads that care (branch);
+    #: defaults False elsewhere. Expired stock stays visible but is not sellable.
+    is_expired: bool = False
     location_type: str
     location_id: int
 

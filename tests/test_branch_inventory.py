@@ -90,12 +90,15 @@ def test_waste_reduces_branch_stock(client, branch_stock):
             "product_id": branch_stock["product"].id,
             "quantity": 10,
             "movement_type": "WASTE",
-            "batch_code": "B-1",
         },
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["quantity"] == 40
+    # Branch waste is product-level FEFO now: the response is the list of lots it
+    # touched. One lot here, left with 40 on hand.
+    data = resp.json()["data"]
+    assert isinstance(data, list)
+    assert sum(row["quantity"] for row in data) == 40
 
 
 def test_waste_rejects_more_than_on_hand(client, branch_stock):
