@@ -297,6 +297,27 @@ def list_recipes(
     return ok([RecipeService.to_out(db, r).model_dump(mode="json") for r in rows])
 
 
+# Declared BEFORE /recipes/{recipe_id}: "kitchen" must not be parsed as an id.
+@router.get("/recipes/kitchen")
+def list_kitchen_recipes(
+    current: User = Depends(require_capability(Capability.PREP_READ)),
+    db: Session = Depends(get_db),
+):
+    """Read-only reference: what the CENTRAL kitchen makes each item from.
+
+    The chef cannot edit these — authoring stays with the kitchen — but seeing
+    them lets the station build the same item here: the batch-prep flow explodes
+    whichever active recipe a product has, kitchen- or branch-made
+    (ProductionService._explode_recipe is made_at-agnostic). Kept as its own list,
+    separate from the station's own recipes above, so the two never blur together.
+    A build still consumes the recipe's components from THIS branch's stock, so
+    they must be on hand here.
+    """
+    require_actor_branch_id(current)
+    rows = RecipeService.list_active(db, current, made_at=LocationType.KITCHEN)
+    return ok([RecipeService.to_out(db, r).model_dump(mode="json") for r in rows])
+
+
 @router.get("/recipes/{recipe_id}")
 def get_recipe(
     recipe_id: int,
