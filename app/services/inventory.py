@@ -234,6 +234,7 @@ class InventoryService:
         product_id: int,
         quantity: int,
         movement_type: StockMovementType,
+        batch_code: str | None = None,
         notes: str | None = None,
         waste_reason: WasteReason | None = None,
     ) -> list[InventoryItem]:
@@ -247,6 +248,13 @@ class InventoryService:
         One WASTE/EXPIRY StockMovement is written per lot touched, each targeting
         the lot's exact (batch_code, expiry_date) so it never collides with a
         sibling lot of the same product.
+
+        `batch_code` narrows the draw-down to a single batch bucket (the kitchen
+        holds batched raw materials, so a waste there is scoped to the batch the
+        UI selected — the empty string is the no-batch bucket its finished goods
+        live in). Left as None (branch/sub-kitchen), it spans every batch of the
+        product. Either way, a bucket holding more than one expiry lot no longer
+        breaks the old single-row lookup — the reason this path exists.
         """
         if movement_type not in {StockMovementType.WASTE, StockMovementType.EXPIRY}:
             raise ConflictError(
@@ -268,16 +276,19 @@ class InventoryService:
         # we consume them, so a concurrent waste/sale serializes behind us rather
         # than reading the same on-hand twice. Expired lots are deliberately in
         # scope (see docstring) — no expiry_date >= today guard here.
+        conditions = [
+            InventoryItem.restaurant_id == restaurant_id,
+            InventoryItem.location_type == location_type,
+            InventoryItem.location_id == location_id,
+            InventoryItem.product_id == product_id,
+            InventoryItem.quantity > 0,
+        ]
+        if batch_code is not None:
+            conditions.append(InventoryItem.batch_code == batch_code.strip())
         usable = (
             db.execute(
                 select(InventoryItem)
-                .where(
-                    InventoryItem.restaurant_id == restaurant_id,
-                    InventoryItem.location_type == location_type,
-                    InventoryItem.location_id == location_id,
-                    InventoryItem.product_id == product_id,
-                    InventoryItem.quantity > 0,
-                )
+                .where(*conditions)
                 .order_by(
                     # Dated lots (expiry NOT NULL) before undated ones, then
                     # soonest expiry first, then a stable id tiebreak.

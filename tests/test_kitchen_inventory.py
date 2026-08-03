@@ -71,7 +71,11 @@ def test_waste_records_reason_and_decrements(client, db, kitchen_ready):
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["quantity"] == 15
+    # Waste now returns the list of lots it touched (FEFO across expiry). One lot
+    # here, left with 15 on hand.
+    data = resp.json()["data"]
+    assert isinstance(data, list)
+    assert sum(r["quantity"] for r in data) == 15
 
     movement = db.execute(
         select(StockMovement).where(

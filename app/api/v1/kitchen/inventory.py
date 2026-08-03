@@ -86,7 +86,12 @@ def waste_stock(
             code="invalid_movement_type",
         )
     kitchen_id = require_actor_kitchen_id(current)
-    item = InventoryService.mark_waste_or_expiry(
+    # FEFO across the product's lots (earliest expiry first, expired included).
+    # A finished good like buns has no batch code, so it can hold several lots
+    # that differ only by expiry; the old single-row lookup crashed on that
+    # (MultipleResultsFound). batch_code scopes the draw-down to the batch the UI
+    # picked (empty = the no-batch bucket), preserving batched-raw-material waste.
+    touched = InventoryService.mark_waste_or_expiry_fefo(
         db,
         actor=current,
         location_type=LocationType.KITCHEN,
@@ -99,9 +104,12 @@ def waste_stock(
         waste_reason=body.waste_reason,
     )
     db.commit()
-    db.refresh(item)
-    product = db.get(Product, item.product_id)
-    return ok(_item_out(item, product))
+    result = []
+    for item in touched:
+        db.refresh(item)
+        product = db.get(Product, item.product_id)
+        result.append(_item_out(item, product))
+    return ok(result)
 
 
 @router.get("/stock/waste")
