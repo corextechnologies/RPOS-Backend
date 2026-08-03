@@ -142,6 +142,22 @@ _BRANCH_TO_ADMIN_NO_KITCHEN_TRANSITIONS: dict[str, set[str]] = {
     BranchToAdminStatus.RECEIVED.value: set(),
 }
 
+# BRANCH_TO_ADMIN, kitchen tenant, request is resale-only (every line is a
+# product the kitchen does NOT make — a bottled Coke, packaged goods). The
+# kitchen holds these as stock and just ships them, so it may jump
+# FORWARDED_TO_KITCHEN -> DISPATCHED, skipping the pointless production leg. The
+# normal production path stays open too; only the direct edge is added. Mixed
+# requests (any finished good) and any line whose kind can't be read never reach
+# here — see _is_resale_only in requests.py — so they keep the full flow.
+_BRANCH_TO_ADMIN_RESALE_ONLY_TRANSITIONS: dict[str, set[str]] = {
+    **ALLOWED_TRANSITIONS[RequestType.BRANCH_TO_ADMIN],
+    BranchToAdminStatus.FORWARDED_TO_KITCHEN.value: {
+        BranchToAdminStatus.IN_PRODUCTION.value,
+        BranchToAdminStatus.DISPATCHED.value,
+    },
+}
+
+
 # Who may *create* each request type.
 CREATE_ROLES: dict[RequestType, set[UserRole]] = {
     RequestType.KITCHEN_TO_WAREHOUSE: {UserRole.KITCHEN_MANAGER},
@@ -226,10 +242,16 @@ def supports_partial_approval(request_type: RequestType) -> bool:
 
 
 def _transitions_for(
-    request_type: RequestType, *, has_central_kitchen: bool
+    request_type: RequestType,
+    *,
+    has_central_kitchen: bool,
+    resale_only: bool = False,
 ) -> dict[str, set[str]]:
-    if request_type == RequestType.BRANCH_TO_ADMIN and not has_central_kitchen:
-        return _BRANCH_TO_ADMIN_NO_KITCHEN_TRANSITIONS
+    if request_type == RequestType.BRANCH_TO_ADMIN:
+        if not has_central_kitchen:
+            return _BRANCH_TO_ADMIN_NO_KITCHEN_TRANSITIONS
+        if resale_only:
+            return _BRANCH_TO_ADMIN_RESALE_ONLY_TRANSITIONS
     return ALLOWED_TRANSITIONS.get(request_type, {})
 
 
@@ -239,9 +261,12 @@ def validate_transition(
     to_status: str,
     *,
     has_central_kitchen: bool = True,
+    resale_only: bool = False,
 ) -> None:
     type_map = _transitions_for(
-        request_type, has_central_kitchen=has_central_kitchen
+        request_type,
+        has_central_kitchen=has_central_kitchen,
+        resale_only=resale_only,
     )
     allowed = type_map.get(from_status, set())
     if to_status not in allowed:

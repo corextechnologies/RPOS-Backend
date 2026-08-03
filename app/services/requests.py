@@ -11,7 +11,7 @@ from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.deps.request_scoping import user_can_view_request, visible_requests
 from app.models.inventory import StockMovement, StockMovementType
 from app.models.location import Branch, Kitchen, Warehouse
-from app.models.product import Product
+from app.models.product import Product, ProductKind
 from app.models.restaurant import Restaurant
 from app.models.request import Request, RequestAllocation, RequestLineItem
 from app.models.request_enums import (
@@ -65,6 +65,31 @@ def _tenant_has_central_kitchen(db: Session, restaurant_id: int) -> bool:
     """
     restaurant = db.get(Restaurant, restaurant_id)
     return bool(getattr(restaurant, "has_central_kitchen", True)) if restaurant else True
+
+
+def _is_resale_only(db: Session, request: Request) -> bool:
+    """True when every line of a BRANCH_TO_ADMIN request is a RESALE product —
+    something the kitchen stocks and ships untouched, never produces.
+
+    Such a request may skip the kitchen's production leg (see the resale-only
+    transition table). The bar is deliberately strict: an empty request, a line
+    whose product can't be found, or any non-RESALE line (a FINISHED_GOOD the
+    kitchen makes, or a RAW_MATERIAL) all return False, so anything but a pure
+    resale cart keeps the full IN_PRODUCTION -> PRODUCED -> DISPATCHED flow.
+    """
+    if request.request_type != RequestType.BRANCH_TO_ADMIN:
+        return False
+    lines = request.line_items
+    if not lines:
+        return False
+    kinds = dict(
+        db.execute(
+            select(Product.id, Product.kind).where(
+                Product.id.in_([l.product_id for l in lines])
+            )
+        ).all()
+    )
+    return all(kinds.get(l.product_id) == ProductKind.RESALE for l in lines)
 
 
 def _require_location(
@@ -661,11 +686,13 @@ class RequestService:
         to_status = body.to_status
 
         has_central_kitchen = _tenant_has_central_kitchen(db, request.restaurant_id)
+        resale_only = _is_resale_only(db, request)
         validate_transition(
             request.request_type,
             from_status,
             to_status,
             has_central_kitchen=has_central_kitchen,
+            resale_only=resale_only,
         )
         assert_role_can_transition(
             actor.role,
