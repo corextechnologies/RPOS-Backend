@@ -10,6 +10,7 @@ from app.api.v1.branch import (
     orders,
     printing,
     requests,
+    restaurant,
     sub_kitchen_oversight,
     users,
 )
@@ -19,6 +20,7 @@ router.include_router(users.router)
 router.include_router(devices.router)
 router.include_router(requests.router)
 router.include_router(kitchens.router)
+router.include_router(restaurant.router)
 router.include_router(deliveries.router)
 router.include_router(inventory.router)
 router.include_router(orders.router)

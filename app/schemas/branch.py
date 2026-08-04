@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 from app.schemas.quantity import Quantity
 
 from pydantic import BaseModel, Field
@@ -11,6 +12,7 @@ from app.models.enums import BranchPosition, UserRole
 from app.models.inventory import StockMovementType, WasteReason
 from app.models.production_enums import ProductionLineRole
 from app.schemas.request import RequestLineCreate
+from app.schemas.restaurant import resolve_production_mode
 
 
 # Field order matches the form: name, personal image, email, phone, address,
@@ -218,6 +220,27 @@ class KitchenPickerOut(BaseModel):
     restaurant_id: int
 
     model_config = {"from_attributes": True}
+
+
+class RestaurantProductionModeOut(BaseModel):
+    """What a branch needs to know about where finished goods get made.
+
+    Deliberately NOT the full RestaurantOut: plan/billing fields are Admin-only,
+    same principle as cost_price staying out of every non-Admin product read.
+    """
+
+    has_central_kitchen: bool
+    production_mode: Literal["central_kitchen", "branch_sub_kitchen"]
+    production_guidance: str
+
+    @classmethod
+    def from_restaurant(cls, restaurant) -> "RestaurantProductionModeOut":
+        mode, guidance = resolve_production_mode(restaurant.has_central_kitchen)
+        return cls(
+            has_central_kitchen=restaurant.has_central_kitchen,
+            production_mode=mode,
+            production_guidance=guidance,
+        )
 
 
 class DeliveryOut(BaseModel):

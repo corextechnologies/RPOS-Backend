@@ -2,10 +2,36 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
 
 from app.models.enums import RestaurantStatus
+
+_CENTRAL_KITCHEN_GUIDANCE = (
+    "Finished goods are produced at a central kitchen (recipes with "
+    "made_at=KITCHEN), then dispatched to branches via BRANCH_TO_ADMIN requests."
+)
+_BRANCH_SUB_KITCHEN_GUIDANCE = (
+    "This restaurant has no central kitchen. Branches receive raw materials "
+    "from the warehouse (BRANCH_TO_ADMIN requests, dispatched by Admin) and "
+    "produce finished goods locally via the branch prep board — see "
+    "/sub-kitchen/recipes and /sub-kitchen/batch."
+)
+
+
+def resolve_production_mode(
+    has_central_kitchen: bool,
+) -> tuple[Literal["central_kitchen", "branch_sub_kitchen"], str]:
+    """(production_mode, production_guidance) for a restaurant's kitchen flag.
+
+    Single source of truth for both RestaurantOut (Admin/Super Admin reads) and
+    the branch-facing RestaurantProductionModeOut (app/schemas/branch.py) — the
+    two guidance strings must never drift apart from each other.
+    """
+    if has_central_kitchen:
+        return "central_kitchen", _CENTRAL_KITCHEN_GUIDANCE
+    return "branch_sub_kitchen", _BRANCH_SUB_KITCHEN_GUIDANCE
 
 
 class RestaurantCreate(BaseModel):
@@ -102,6 +128,21 @@ class RestaurantOut(BaseModel):
     # Defaults true so any legacy row (or non-ORM construction) reads as having a
     # kitchen — mirrors the frontend, which treats a missing value as true.
     has_central_kitchen: bool = True
+    # Derived from has_central_kitchen, not stored — tells API consumers WHERE
+    # this tenant's finished goods get made, since a kitchen-less restaurant's
+    # production path (branch sub-kitchen) isn't otherwise discoverable from a
+    # bare boolean. Set in _apply_production_mode below.
+    production_mode: Literal["central_kitchen", "branch_sub_kitchen"] = (
+        "central_kitchen"
+    )
+    production_guidance: str = _CENTRAL_KITCHEN_GUIDANCE
+
+    @model_validator(mode="after")
+    def _apply_production_mode(self) -> "RestaurantOut":
+        self.production_mode, self.production_guidance = resolve_production_mode(
+            self.has_central_kitchen
+        )
+        return self
 
 
 class RestaurantCreateResult(BaseModel):
