@@ -11,8 +11,20 @@ import pytest
 from app.models.enums import BranchPosition, UserRole
 from app.models.product import ProductKind
 from app.models.request_enums import LocationType
+from app.schemas.prep import PrepBatchCreate
 from app.services.inventory import InventoryService
+from app.services.prep import PrepService
 from tests.conftest import auth_headers
+
+
+def _seed_batch(db, ctx, product_id, *, quantity=2):
+    """Seed a BATCH prep ticket via the service (the create endpoint is retired)
+    and return its id."""
+    ticket = PrepService.create_batch_ticket(
+        db, ctx["chef"], ctx["branch"].id,
+        PrepBatchCreate(product_id=product_id, quantity=quantity),
+    )
+    return ticket.id
 
 
 @pytest.fixture
@@ -25,7 +37,7 @@ def manage_ctx(db, restaurant_setup, make_product, make_user):
     base = make_product(r.id, name="Cake Base", sku="BASE-D", kind=ProductKind.RAW_MATERIAL)
     plaque = make_product(r.id, name="Plaque", sku="PLQ-D", kind=ProductKind.RAW_MATERIAL)
 
-    make_user(
+    chef = make_user(
         "chef@test.com", UserRole.BRANCH_STAFF, restaurant_id=r.id,
         created_by_id=restaurant_setup["branch_mgr"].id, branch_id=branch.id,
         position=BranchPosition.CHEF,
@@ -36,7 +48,7 @@ def manage_ctx(db, restaurant_setup, make_product, make_user):
             location_id=branch.id, product_id=product.id, quantity=qty,
         )
     db.flush()
-    return {**restaurant_setup, "branch": branch, "cake": cake,
+    return {**restaurant_setup, "branch": branch, "chef": chef, "cake": cake,
             "base": base, "plaque": plaque}
 
 
@@ -255,10 +267,7 @@ def test_the_chefs_recipe_drives_ticket_completion(client, manage_ctx, db):
     chef = auth_headers(client, "chef@test.com")
     client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
 
-    tid = client.post(
-        "/v1/sub-kitchen/batch",
-        json={"product_id": manage_ctx["cake"].id, "quantity": 2}, headers=chef,
-    ).json()["data"]["id"]
+    tid = _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=2)
     done = client.post(
         f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef
     )
@@ -357,15 +366,9 @@ def test_stats_count_prepped_waste_and_open_work(client, manage_ctx, db):
     client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
 
     # One completed batch of 3, one still open.
-    done_id = client.post(
-        "/v1/sub-kitchen/batch",
-        json={"product_id": manage_ctx["cake"].id, "quantity": 3}, headers=chef,
-    ).json()["data"]["id"]
+    done_id = _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=3)
     client.post(f"/v1/sub-kitchen/tickets/{done_id}/complete", json={}, headers=chef)
-    client.post(
-        "/v1/sub-kitchen/batch",
-        json={"product_id": manage_ctx["cake"].id, "quantity": 1}, headers=chef,
-    )
+    _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=1)
 
     # And some waste.
     client.post(
@@ -385,14 +388,11 @@ def test_stats_count_prepped_waste_and_open_work(client, manage_ctx, db):
     assert data["tickets_created"]["QUEUED"] == 1
 
 
-def test_manager_sees_the_same_numbers(client, manage_ctx):
+def test_manager_sees_the_same_numbers(client, manage_ctx, db):
     """The manager's oversight view is this endpoint, not a separate screen."""
     chef = auth_headers(client, "chef@test.com")
     client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
-    tid = client.post(
-        "/v1/sub-kitchen/batch",
-        json={"product_id": manage_ctx["cake"].id, "quantity": 2}, headers=chef,
-    ).json()["data"]["id"]
+    tid = _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=2)
     client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
 
     mgr = auth_headers(client, "branch@test.com")
@@ -401,13 +401,10 @@ def test_manager_sees_the_same_numbers(client, manage_ctx):
     assert data["tickets_completed"] == 1
 
 
-def test_stats_are_branch_scoped(client, manage_ctx, make_branch, make_user):
+def test_stats_are_branch_scoped(client, manage_ctx, make_branch, make_user, db):
     chef = auth_headers(client, "chef@test.com")
     client.post("/v1/sub-kitchen/recipes", json=_recipe_body(manage_ctx), headers=chef)
-    tid = client.post(
-        "/v1/sub-kitchen/batch",
-        json={"product_id": manage_ctx["cake"].id, "quantity": 5}, headers=chef,
-    ).json()["data"]["id"]
+    tid = _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=5)
     client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
 
     other_branch = make_branch(manage_ctx["restaurant"].id, name="B2")

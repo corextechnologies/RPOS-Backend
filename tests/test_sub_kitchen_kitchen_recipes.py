@@ -6,7 +6,9 @@ import pytest
 from app.models.enums import BranchPosition, UserRole
 from app.models.product import ProductKind
 from app.models.request_enums import LocationType
+from app.schemas.prep import PrepBatchCreate
 from app.services.inventory import InventoryService
+from app.services.prep import PrepService
 from tests.conftest import auth_headers
 
 
@@ -29,7 +31,7 @@ def kr_ctx(db, restaurant_setup, make_product, make_user):
                         kind=ProductKind.RAW_MATERIAL)
     plaque = make_product(r.id, name="Plaque", sku="PLQ-K",
                           kind=ProductKind.RAW_MATERIAL)
-    make_user(
+    chef = make_user(
         "chef@test.com", UserRole.BRANCH_STAFF, restaurant_id=r.id,
         created_by_id=restaurant_setup["branch_mgr"].id, branch_id=branch.id,
         position=BranchPosition.CHEF,
@@ -43,7 +45,7 @@ def kr_ctx(db, restaurant_setup, make_product, make_user):
             product_id=product.id, quantity=qty,
         )
     db.flush()
-    return {**restaurant_setup, "branch": branch, "cake": cake,
+    return {**restaurant_setup, "branch": branch, "chef": chef, "cake": cake,
             "base": base, "plaque": plaque}
 
 
@@ -86,19 +88,22 @@ def test_kitchen_recipes_are_readable_but_absent_from_own_list(client, kr_ctx):
 
 
 def test_chef_can_build_using_a_kitchen_recipe(client, kr_ctx, db):
-    """No branch recipe exists — only the kitchen's. The chef builds the cake
-    anyway, and the components come off the branch's stock."""
+    """No branch recipe exists — only the kitchen's. A sub-kitchen ticket for the
+    cake still completes off that recipe, consuming the branch's components.
+
+    (Public batch creation is retired, so the ticket is seeded through the
+    service — the same path an existing ticket or an auto-created order ticket
+    takes; the point here is that a KITCHEN-made recipe drives the completion.)
+    """
     _publish_kitchen_recipe(client, kr_ctx)
     chef = auth_headers(client, "chef@test.com")
 
-    tid = client.post(
-        "/v1/sub-kitchen/batch",
-        json={"product_id": kr_ctx["cake"].id, "quantity": 2},
-        headers=chef,
-    ).json()["data"]["id"]
-
+    ticket = PrepService.create_batch_ticket(
+        db, kr_ctx["chef"], kr_ctx["branch"].id,
+        PrepBatchCreate(product_id=kr_ctx["cake"].id, quantity=2),
+    )
     done = client.post(
-        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef
+        f"/v1/sub-kitchen/tickets/{ticket.id}/complete", json={}, headers=chef
     )
     assert done.status_code == 200, done.text
     assert done.json()["data"]["status"] == "COMPLETED"

@@ -8,12 +8,15 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.exceptions import NotFoundError
 from app.models.enums import BranchPosition, UserRole
 from app.models.inventory import StockMovement, StockMovementType
 from app.models.product import ProductKind
 from app.models.recipe import Recipe, RecipeComponent
 from app.models.request_enums import LocationType
+from app.schemas.prep import PrepBatchCreate
 from app.services.inventory import InventoryService
+from app.services.prep import PrepService
 from tests.conftest import auth_headers
 
 
@@ -70,22 +73,29 @@ def _stock(db, restaurant_id, branch_id, product_id):
     return None
 
 
-def _new_batch(client, headers, product_id, **over):
+def _new_batch(db, ctx, product_id, **over):
+    """Seed a BATCH prep ticket via the service and return it.
+
+    The public create endpoint (POST /sub-kitchen/batch) was retired — the board
+    is made-to-order only — but the service method stays for existing tickets, so
+    tests seed through it to exercise the board lifecycle and batch completion.
+    """
     body = {"product_id": product_id, "quantity": 2}
     body.update(over)
-    return client.post("/v1/sub-kitchen/batch", json=body, headers=headers)
+    return PrepService.create_batch_ticket(
+        db, ctx["chef"], ctx["branch"].id, PrepBatchCreate(**body)
+    )
 
 
 # --- creation + board ------------------------------------------------------
 
-def test_chef_queues_a_batch_ticket_and_sees_it_on_the_board(client, sub_ctx):
+def test_batch_ticket_lands_on_the_board(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    resp = _new_batch(
-        client, headers, sub_ctx["cake"].id, quantity=3,
+    ticket = _new_batch(
+        db, sub_ctx, sub_ctx["cake"].id, quantity=3,
         customization_note="Happy Birthday Ali", note="rush",
     )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()["data"]
+    data = PrepService.to_out(ticket).model_dump(mode="json")
     assert data["status"] == "QUEUED"
     assert data["source"] == "BATCH"
     assert data["customization_note"] == "Happy Birthday Ali"
@@ -98,18 +108,20 @@ def test_chef_queues_a_batch_ticket_and_sees_it_on_the_board(client, sub_ctx):
     assert board.json()["data"][0]["id"] == data["id"]
 
 
-def test_batch_rejects_foreign_product(client, sub_ctx, make_restaurant, make_product):
+def test_batch_rejects_foreign_product(sub_ctx, make_restaurant, make_product, db):
     other = make_restaurant("Other")
     foreign = make_product(other.id, name="Foreign Cake", sku="FGN-1")
-    headers = auth_headers(client, "chef@test.com")
-    assert _new_batch(client, headers, foreign.id).status_code == 404
+    # The service (still the seam for existing tickets) rejects a cross-tenant
+    # product; the public create endpoint that used to 404 this is retired.
+    with pytest.raises(NotFoundError):
+        _new_batch(db, sub_ctx, foreign.id)
 
 
 # --- board lifecycle -------------------------------------------------------
 
-def test_status_advances_through_the_board(client, sub_ctx):
+def test_status_advances_through_the_board(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id).id
 
     def patch(status):
         return client.patch(
@@ -125,9 +137,9 @@ def test_status_advances_through_the_board(client, sub_ctx):
     assert ready.json()["data"]["ready_at"] is not None
 
 
-def test_illegal_status_jump_is_rejected(client, sub_ctx):
+def test_illegal_status_jump_is_rejected(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id).id
     # QUEUED -> READY is not a legal single hop.
     resp = client.patch(
         f"/v1/sub-kitchen/tickets/{tid}/status",
@@ -137,9 +149,9 @@ def test_illegal_status_jump_is_rejected(client, sub_ctx):
     assert resp.json()["error"]["code"] == "invalid_prep_transition"
 
 
-def test_completed_is_not_settable_via_status(client, sub_ctx):
+def test_completed_is_not_settable_via_status(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id).id
     resp = client.patch(
         f"/v1/sub-kitchen/tickets/{tid}/status",
         json={"status": "COMPLETED"}, headers=headers,
@@ -148,9 +160,9 @@ def test_completed_is_not_settable_via_status(client, sub_ctx):
     assert resp.json()["error"]["code"] == "use_complete_endpoint"
 
 
-def test_cancel_marks_ticket_cancelled(client, sub_ctx):
+def test_cancel_marks_ticket_cancelled(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id).id
     resp = client.post(f"/v1/sub-kitchen/tickets/{tid}/cancel", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "CANCELLED"
@@ -164,7 +176,7 @@ def test_complete_recipe_driven_consumes_components_and_credits_finished_good(
     client, sub_ctx, db
 ):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["cake"].id, quantity=2).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id, quantity=2).id
 
     resp = client.post(
         f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
@@ -190,7 +202,7 @@ def test_complete_recipe_driven_consumes_components_and_credits_finished_good(
 def test_complete_short_component_rolls_back_and_keeps_ticket_open(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
     # Only 10 bases on hand; ask for 999 cakes.
-    tid = _new_batch(client, headers, sub_ctx["cake"].id, quantity=999).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id, quantity=999).id
     resp = client.post(
         f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
     )
@@ -205,9 +217,9 @@ def test_complete_short_component_rolls_back_and_keeps_ticket_open(client, sub_c
     assert again.json()["data"]["status"] == "QUEUED"
 
 
-def test_complete_twice_is_rejected(client, sub_ctx):
+def test_complete_twice_is_rejected(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["cake"].id, quantity=1).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id, quantity=1).id
     first = client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers)
     assert first.status_code == 200
     second = client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers)
@@ -220,7 +232,7 @@ def test_complete_twice_is_rejected(client, sub_ctx):
 def test_complete_manual_inputs_for_a_no_recipe_item(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
     # Fruit Platter has no recipe: the chef states what was used.
-    tid = _new_batch(client, headers, sub_ctx["platter"].id, quantity=1).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["platter"].id, quantity=1).id
     resp = client.post(
         f"/v1/sub-kitchen/tickets/{tid}/complete",
         json={"inputs": [{"product_id": sub_ctx["fruit"].id, "quantity": 5}]},
@@ -234,9 +246,9 @@ def test_complete_manual_inputs_for_a_no_recipe_item(client, sub_ctx, db):
     assert _stock(db, r_id, b_id, sub_ctx["platter"].id) == 1   # produced
 
 
-def test_complete_no_recipe_no_inputs_is_rejected(client, sub_ctx):
+def test_complete_no_recipe_no_inputs_is_rejected(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["platter"].id, quantity=1).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["platter"].id, quantity=1).id
     resp = client.post(
         f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
     )
@@ -246,9 +258,14 @@ def test_complete_no_recipe_no_inputs_is_rejected(client, sub_ctx):
 
 # --- access control + scoping ----------------------------------------------
 
-def test_manager_may_also_operate_the_board(client, sub_ctx):
-    headers = auth_headers(client, "branch@test.com")  # branch manager
-    resp = _new_batch(client, headers, sub_ctx["cake"].id)
+def test_manager_may_also_operate_the_board(client, sub_ctx, db):
+    # The branch manager holds PREP_OPERATE too, so they can work the board.
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id).id
+    mgr = auth_headers(client, "branch@test.com")  # branch manager
+    resp = client.patch(
+        f"/v1/sub-kitchen/tickets/{tid}/status",
+        json={"status": "IN_PROGRESS"}, headers=mgr,
+    )
     assert resp.status_code == 200
 
 
@@ -259,15 +276,14 @@ def test_sell_floor_position_and_non_branch_are_forbidden(client, sub_ctx, make_
     )
     cashier = auth_headers(client, "cashier@test.com")
     assert client.get("/v1/sub-kitchen/board", headers=cashier).status_code == 403
-    assert _new_batch(client, cashier, sub_ctx["cake"].id).status_code == 403
 
     kitchen = auth_headers(client, "kitchen@test.com")
     assert client.get("/v1/sub-kitchen/board", headers=kitchen).status_code == 403
 
 
-def test_ticket_is_scoped_to_its_branch(client, sub_ctx, make_branch, make_user):
+def test_ticket_is_scoped_to_its_branch(client, sub_ctx, make_branch, make_user, db):
     headers = auth_headers(client, "chef@test.com")
-    tid = _new_batch(client, headers, sub_ctx["cake"].id).json()["data"]["id"]
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id).id
 
     other_branch = make_branch(sub_ctx["restaurant"].id, name="B2")
     make_user(
@@ -352,13 +368,17 @@ def test_branch_path_is_read_only_oversight(client, sub_ctx):
     # Operate endpoints simply do not exist on the branch path — enforced by
     # construction, not hidden.
     assert client.post(
-        "/v1/branch/sub-kitchen/batch",
-        json={"product_id": sub_ctx["cake"].id, "quantity": 1}, headers=headers,
+        "/v1/branch/sub-kitchen/waste",
+        json={"product_id": sub_ctx["base"].id, "quantity": 1,
+              "movement_type": "WASTE"},
+        headers=headers,
     ).status_code == 404
     # ...but the full station still operates at its own path.
     assert client.post(
-        "/v1/sub-kitchen/batch",
-        json={"product_id": sub_ctx["cake"].id, "quantity": 1}, headers=headers,
+        "/v1/sub-kitchen/waste",
+        json={"product_id": sub_ctx["base"].id, "quantity": 1,
+              "movement_type": "WASTE"},
+        headers=headers,
     ).status_code == 200
 
 

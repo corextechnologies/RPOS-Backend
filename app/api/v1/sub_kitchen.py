@@ -32,7 +32,7 @@ from app.schemas.admin import ProductPublicOut
 from app.schemas.branch import BranchWasteIn
 from app.schemas.kitchen_production import KitchenRecipeIn
 from app.schemas.warehouse import InventoryItemOut
-from app.schemas.prep import PrepBatchCreate, PrepComplete, PrepStatusUpdate
+from app.schemas.prep import PrepComplete, PrepStatusUpdate
 from app.services.inventory import InventoryService
 from app.services.prep import PrepService
 from app.services.products import ProductService
@@ -74,15 +74,13 @@ def get_ticket(
     return ok(PrepService.to_out(ticket).model_dump(mode="json"))
 
 
-@router.post("/batch")
-def create_batch(
-    body: PrepBatchCreate,
-    current: User = Depends(require_capability(Capability.PREP_OPERATE)),
-    db: Session = Depends(get_db),
-):
-    branch_id = require_actor_branch_id(current)
-    ticket = PrepService.create_batch_ticket(db, current, branch_id, body)
-    return ok(PrepService.to_out(ticket).model_dump(mode="json"))
+# Batch-prep creation was retired: the branch sub-kitchen is made-to-order only,
+# so the board is fed solely by auto-created ORDER tickets (PrepService
+# .create_order_ticket, from the POS send path). The public "create batch ticket"
+# endpoint (POST /sub-kitchen/batch) is gone — it now 404s. The rest of the board
+# lifecycle (list, get, status, complete, cancel) stays, so any batch tickets
+# already in flight still progress. PrepService.create_batch_ticket is kept for
+# that existing-ticket path and for tests that exercise batch completion.
 
 
 @router.patch("/tickets/{ticket_id}/status")
