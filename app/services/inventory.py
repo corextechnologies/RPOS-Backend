@@ -235,6 +235,7 @@ class InventoryService:
         quantity: int,
         movement_type: StockMovementType,
         batch_code: str | None = None,
+        expiry_date: date | None = None,
         notes: str | None = None,
         waste_reason: WasteReason | None = None,
     ) -> list[InventoryItem]:
@@ -255,6 +256,12 @@ class InventoryService:
         live in). Left as None (branch/sub-kitchen), it spans every batch of the
         product. Either way, a bucket holding more than one expiry lot no longer
         breaks the old single-row lookup — the reason this path exists.
+
+        `expiry_date` pins the draw-down to the ONE lot with that expiry (the
+        kitchen UI lists a waste button per dated lot, so a click means "this
+        lot"). With it set, the quantity must fit that lot alone — it never spills
+        into another expiry — so an over-ask returns insufficient_stock. Left None,
+        the write spreads across the product's lots earliest-first as before.
         """
         if movement_type not in {StockMovementType.WASTE, StockMovementType.EXPIRY}:
             raise ConflictError(
@@ -285,6 +292,8 @@ class InventoryService:
         ]
         if batch_code is not None:
             conditions.append(InventoryItem.batch_code == batch_code.strip())
+        if expiry_date is not None:
+            conditions.append(InventoryItem.expiry_date == expiry_date)
         usable = (
             db.execute(
                 select(InventoryItem)

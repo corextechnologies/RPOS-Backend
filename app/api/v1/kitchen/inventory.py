@@ -100,6 +100,7 @@ def waste_stock(
         quantity=body.quantity,
         movement_type=body.movement_type,
         batch_code=body.batch_code,
+        expiry_date=body.expiry_date,
         notes=body.notes,
         waste_reason=body.waste_reason,
     )
