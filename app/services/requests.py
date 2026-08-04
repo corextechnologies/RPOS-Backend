@@ -619,6 +619,35 @@ class RequestService:
         return list(rows), total
 
     @staticmethod
+    def status_summary(
+        db: Session, actor: User, *, request_type: RequestType
+    ) -> dict[str, int]:
+        """Counts of one request type by lifecycle bucket, in a single grouped
+        count — no rows fetched. Scoped to exactly what this caller can see, the
+        same visibility the list endpoint uses, so the numbers always agree.
+
+        `open` = anything not yet in a terminal state (not RECEIVED, not REJECTED)
+        — what the branch dashboard's "Open requests" tile shows.
+        """
+        base = visible_requests(db, actor).where(
+            Request.request_type == request_type
+        )
+        sub = base.subquery()
+        rows = db.execute(
+            select(sub.c.status, func.count()).group_by(sub.c.status)
+        ).all()
+        counts = {status: n for status, n in rows}
+        received = counts.get(BranchToAdminStatus.RECEIVED.value, 0)
+        rejected = counts.get(BranchToAdminStatus.REJECTED.value, 0)
+        total = sum(counts.values())
+        return {
+            "open": total - received - rejected,
+            "received": received,
+            "rejected": rejected,
+            "total": total,
+        }
+
+    @staticmethod
     def get_request(db: Session, actor: User, request_id: int) -> Request:
         request = RequestService._load_request(db, request_id)
         if not user_can_view_request(db, actor, request):
