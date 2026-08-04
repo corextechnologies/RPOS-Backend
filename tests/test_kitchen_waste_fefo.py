@@ -81,3 +81,48 @@ def test_waste_more_than_on_hand_still_rejected(client, buns_two_lots):
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "insufficient_stock"
+
+
+def test_expiry_date_targets_that_exact_lot(client, db, buns_two_lots):
+    """With expiry_date set, the write-off hits the lot the user clicked — NOT
+    the soonest one — even when the soonest still has stock."""
+    headers = auth_headers(client, "kitchen@test.com")
+    resp = client.post(
+        "/v1/kitchen/stock/waste",
+        json={
+            "product_id": buns_two_lots["buns"].id,
+            "quantity": 3,
+            "waste_reason": WasteReason.SPOILAGE.value,
+            "movement_type": "WASTE",
+            "expiry_date": buns_two_lots["later"].isoformat(),
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    lots = _lots(db, buns_two_lots)
+    assert lots[buns_two_lots["soon"]] == 2   # untouched — NOT the soonest-first
+    assert lots[buns_two_lots["later"]] == 2  # 5 - 3, the lot that was clicked
+
+
+def test_expiry_date_over_ask_does_not_spill(client, db, buns_two_lots):
+    """A named lot must fit the quantity on its own — no silent spill into the
+    other expiry. Over-asking the later lot (5 on hand) is insufficient_stock."""
+    headers = auth_headers(client, "kitchen@test.com")
+    resp = client.post(
+        "/v1/kitchen/stock/waste",
+        json={
+            "product_id": buns_two_lots["buns"].id,
+            "quantity": 6,  # later lot only holds 5
+            "waste_reason": WasteReason.SPOILAGE.value,
+            "movement_type": "WASTE",
+            "expiry_date": buns_two_lots["later"].isoformat(),
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "insufficient_stock"
+
+    lots = _lots(db, buns_two_lots)
+    assert lots[buns_two_lots["soon"]] == 2   # both lots untouched — no spill
+    assert lots[buns_two_lots["later"]] == 5

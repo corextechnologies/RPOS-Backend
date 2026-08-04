@@ -111,6 +111,24 @@ def list_branch_requests(
     return ok(data, meta={"total": total, "page": page, "page_size": page_size})
 
 
+# Declared BEFORE /{request_id}: "summary" must not be parsed as an id.
+@router.get("/summary")
+def branch_requests_summary(
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    """One indexed count feeding the dashboard's request tiles.
+
+    Returns {open, received, rejected, total} for this branch's requests, so the
+    dashboard replaces its three count-only list calls with a single one. `open`
+    is everything not yet RECEIVED or REJECTED. Same visibility as the list.
+    """
+    counts = RequestService.status_summary(
+        db, current, request_type=RequestType.BRANCH_TO_ADMIN
+    )
+    return ok(counts)
+
+
 @router.get("/{request_id}")
 def get_branch_request(
     request_id: int,

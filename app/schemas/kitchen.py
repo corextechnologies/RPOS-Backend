@@ -17,6 +17,9 @@ class KitchenWasteIn(BaseModel):
     waste_reason: WasteReason
     movement_type: StockMovementType = StockMovementType.WASTE
     batch_code: str | None = Field(default=None, max_length=100)
+    #: Optional. Pins the write-off to the lot with this exact expiry (the UI
+    #: lists a waste button per dated lot). Omit to clear soonest-expiry-first.
+    expiry_date: date | None = None
     notes: str | None = None
 
 
