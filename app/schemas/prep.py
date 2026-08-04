@@ -45,12 +45,12 @@ class PrepInputLine(BaseModel):
 
 
 class PrepComplete(BaseModel):
-    """Finish a ticket: consume components, produce the finished good.
+    """Finish a ticket by consuming exactly what the chef states was used.
 
-    Leave `inputs` empty to consume via the product's active recipe (the default).
-    Provide `inputs` to state components by hand — the fallback for one-off items
-    with no recipe, or a deliberate substitution. `batch_code` / `expiry_date`
-    override what the ticket was created with, for the produced finished good.
+    `inputs` lists the components consumed; each is deducted from branch stock.
+    Leave it empty for labour-only finishing (e.g. writing a name) — the job is
+    just marked done, no stock moves. `batch_code` / `expiry_date` only matter for
+    the rare batch ticket that credits a finished good.
     """
 
     inputs: list[PrepInputLine] = Field(default_factory=list)

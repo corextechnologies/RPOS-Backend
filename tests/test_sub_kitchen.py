@@ -1,18 +1,16 @@
-"""Slice A — branch sub-kitchen prep board.
+"""Branch sub-kitchen prep board.
 
-A branch CHEF works a board of finishing jobs. Batch prep is queued by hand;
-completing a ticket writes a BRANCH production run (components consumed, finished
-good produced) through the shared ledger, recipe-driven with a manual fallback.
+A branch CHEF works a board of finishing jobs. Completing a ticket writes a
+BRANCH production run through the shared ledger, consuming exactly the components
+the chef states at completion time (no recipes). An empty completion just records
+the work as done.
 """
-from decimal import Decimal
-
 import pytest
 
 from app.core.exceptions import NotFoundError
 from app.models.enums import BranchPosition, UserRole
 from app.models.inventory import StockMovement, StockMovementType
 from app.models.product import ProductKind
-from app.models.recipe import Recipe, RecipeComponent
 from app.models.request_enums import LocationType
 from app.schemas.prep import PrepBatchCreate
 from app.services.inventory import InventoryService
@@ -22,10 +20,8 @@ from tests.conftest import auth_headers
 
 @pytest.fixture
 def sub_ctx(db, restaurant_setup, make_product, make_user):
-    """A branch with a CHEF, a recipe-backed cake, and a no-recipe platter.
-
-    Branch holds the components: a cake base + a plaque (for the named cake), and
-    fruit (for the manual-completion platter).
+    """A branch with a CHEF, a finished-good cake and platter, and the components
+    the chef states at completion (a base + a plaque, and fruit), all in stock.
     """
     r = restaurant_setup["restaurant"]
     branch = restaurant_setup["home_branch"]
@@ -35,13 +31,6 @@ def sub_ctx(db, restaurant_setup, make_product, make_user):
     plaque = make_product(r.id, name="Message Plaque", sku="PLQ-1", kind=ProductKind.RAW_MATERIAL)
     platter = make_product(r.id, name="Fruit Platter", sku="PLAT-1")
     fruit = make_product(r.id, name="Fruit", sku="FRT-1", kind=ProductKind.RAW_MATERIAL)
-
-    # Active recipe: 1 named cake = 1 base + 1 plaque (all EACH, no unit maths).
-    recipe = Recipe(restaurant_id=r.id, product_id=cake.id, version=1, is_active=True, yield_qty=1)
-    db.add(recipe)
-    db.flush()
-    db.add(RecipeComponent(recipe_id=recipe.id, component_product_id=base.id, quantity=Decimal("1")))
-    db.add(RecipeComponent(recipe_id=recipe.id, component_product_id=plaque.id, quantity=Decimal("1")))
 
     chef = make_user(
         "chef@test.com", UserRole.BRANCH_STAFF, restaurant_id=r.id,
@@ -170,28 +159,32 @@ def test_cancel_marks_ticket_cancelled(client, sub_ctx, db):
     assert client.get("/v1/sub-kitchen/board", headers=headers).json()["meta"]["total"] == 0
 
 
-# --- completion: recipe-driven ---------------------------------------------
+# --- completion: manual inputs ---------------------------------------------
 
-def test_complete_recipe_driven_consumes_components_and_credits_finished_good(
+def test_complete_batch_consumes_stated_inputs_and_credits_finished_good(
     client, sub_ctx, db
 ):
+    """A batch ticket: the chef states what was used, those come off stock, and
+    the finished good is credited (batch builds sellable stock)."""
     headers = auth_headers(client, "chef@test.com")
     tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id, quantity=2).id
 
     resp = client.post(
-        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
+        f"/v1/sub-kitchen/tickets/{tid}/complete",
+        json={"inputs": [{"product_id": sub_ctx["base"].id, "quantity": 2},
+                         {"product_id": sub_ctx["plaque"].id, "quantity": 2}]},
+        headers=headers,
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["status"] == "COMPLETED"
     assert data["production_run_id"] is not None
-    assert data["recipe_id"] is not None
     assert data["completed_at"] is not None
 
     r_id, b_id = sub_ctx["restaurant"].id, sub_ctx["branch"].id
     assert _stock(db, r_id, b_id, sub_ctx["base"].id) == 8    # 10 - 2
     assert _stock(db, r_id, b_id, sub_ctx["plaque"].id) == 8  # 10 - 2
-    assert _stock(db, r_id, b_id, sub_ctx["cake"].id) == 2    # produced
+    assert _stock(db, r_id, b_id, sub_ctx["cake"].id) == 2    # credited (batch)
 
     moves = {(m.product_id, m.movement_type, m.quantity_delta)
              for m in db.query(StockMovement).all()}
@@ -201,18 +194,20 @@ def test_complete_recipe_driven_consumes_components_and_credits_finished_good(
 
 def test_complete_short_component_rolls_back_and_keeps_ticket_open(client, sub_ctx, db):
     headers = auth_headers(client, "chef@test.com")
-    # Only 10 bases on hand; ask for 999 cakes.
-    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id, quantity=999).id
+    tid = _new_batch(db, sub_ctx, sub_ctx["cake"].id, quantity=1).id
+    # The chef states more base than is on hand (10) — the whole completion rolls
+    # back, nothing moves, and the ticket stays open for a clean retry.
     resp = client.post(
-        f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
+        f"/v1/sub-kitchen/tickets/{tid}/complete",
+        json={"inputs": [{"product_id": sub_ctx["base"].id, "quantity": 999}]},
+        headers=headers,
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "insufficient_stock"
 
     r_id, b_id = sub_ctx["restaurant"].id, sub_ctx["branch"].id
     assert _stock(db, r_id, b_id, sub_ctx["base"].id) == 10   # untouched
-    assert _stock(db, r_id, b_id, sub_ctx["cake"].id) is None  # nothing produced
-    # Ticket is still open for a clean retry.
+    assert _stock(db, r_id, b_id, sub_ctx["cake"].id) is None  # nothing credited
     again = client.get(f"/v1/sub-kitchen/tickets/{tid}", headers=headers)
     assert again.json()["data"]["status"] == "QUEUED"
 
@@ -246,14 +241,18 @@ def test_complete_manual_inputs_for_a_no_recipe_item(client, sub_ctx, db):
     assert _stock(db, r_id, b_id, sub_ctx["platter"].id) == 1   # produced
 
 
-def test_complete_no_recipe_no_inputs_is_rejected(client, sub_ctx, db):
+def test_complete_no_inputs_records_done_without_moving_stock(client, sub_ctx, db):
+    """No components stated — completing just marks the job done (labour-only
+    finishing, e.g. writing a name). No stock movement is written."""
     headers = auth_headers(client, "chef@test.com")
     tid = _new_batch(db, sub_ctx, sub_ctx["platter"].id, quantity=1).id
+    before = db.query(StockMovement).count()
     resp = client.post(
         f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=headers
     )
-    assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "no_active_recipe"
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["status"] == "COMPLETED"
+    assert db.query(StockMovement).count() == before  # nothing moved
 
 
 # --- access control + scoping ----------------------------------------------

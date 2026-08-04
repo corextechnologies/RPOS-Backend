@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 TESTS = [
-    # New: the prep board, made-to-order auto-tickets, chef recipes + stats.
+    # The prep board, made-to-order auto-tickets, manual completion + stats.
     "tests/test_sub_kitchen.py",
     "tests/test_sub_kitchen_orders.py",
     "tests/test_sub_kitchen_manage.py",

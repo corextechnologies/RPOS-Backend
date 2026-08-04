@@ -39,7 +39,6 @@ from app.services.inventory import InventoryService
 from app.services.menu_proposals import MenuProposalService
 from app.services.prep import PrepService
 from app.services.products import ProductService
-from app.services.recipes import RecipeService
 from app.services.waste import WasteService
 
 # Blanket branch gate first (non-branch roles get the generic 403); the
@@ -216,16 +215,12 @@ def get_stats(
     return ok(PrepService.stats(db, current, branch_id, start=start, end=end))
 
 
-# --- Slice D: recipes, owned by the chef ------------------------------------
+# --- The component catalogue the completion popup picks from ----------------
 #
-# The recipe is the station's craft, not Admin's paperwork: the chef knows a
-# named cake is a base plus a plaque, and the chef is who consumes those
-# components. Admin only decides the item is made-to-order and prices it.
-#
-# Same RecipeService the central kitchen uses (recipes are restaurant-scoped, so
-# one product has one active recipe wherever it is made) — publishing a new
-# version supersedes the old rather than editing it, so completed prep runs keep
-# meaning what they meant.
+# When the chef finishes a made-to-order job they state exactly what was used
+# (POST /tickets/{id}/complete with `inputs`). This lists the products they can
+# pick — scoped to what the branch actually holds, so a chosen component can
+# always be deducted.
 
 
 @router.get("/products")
@@ -238,30 +233,18 @@ def list_products(
     current: User = Depends(require_capability(Capability.PREP_READ)),
     db: Session = Depends(get_db),
 ):
-    """The catalogue the chef writes recipes against.
+    """The components the chef picks when completing a job.
 
     COMPONENTS are scoped to what this branch has actually held, because a
-    sub-kitchen can only cook with what the central kitchen shipped it. The
+    sub-kitchen can only finish with what the central kitchen shipped it. The
     restaurant-wide catalogue would offer flour and chocolate that live at the
-    warehouse, and a recipe written against them can never run — every prep ticket
-    would die on insufficient_stock.
+    warehouse, and choosing one at completion would just die on
+    insufficient_stock. Pass `all=true` to drop the component filter.
 
-    FINISHED GOODS are not scoped that way: a made-to-order item is never held as
-    stock, so the same filter would hide exactly what the chef is writing the
-    recipe for. Pass `all=true` to drop the component filter too, for setting an
-    item up before its components have ever been delivered.
-
-    Serves both recipe pickers, and neither could be served before:
-
-      * "what am I making" — a FINISHED_GOOD, which the availability read cannot
-        list because it returns menu item keys, not products.
-      * "what is it made of" — RAW_MATERIALs like a message plaque, which never
-        appear on a menu at all.
-
-    Returns the real `id` — the `product_id` the recipe endpoints expect. A menu
-    item's id is a different table's key and must never be sent here: the two are
-    both small integers, so a mixed-up id resolves to a *different real product*
-    and silently writes the recipe against the wrong item rather than failing.
+    Returns the real product `id` — the `product_id` the completion `inputs`
+    expect. A menu item's id is a different table's key and must never be sent
+    here: both are small integers, so a mixed-up id resolves to a *different real
+    product* and would deduct the wrong stock rather than failing.
 
     Never exposes cost_price, like every other non-Admin product read.
     """
