@@ -17,7 +17,11 @@ from app.deps.auth import require_role
 from app.models.enums import UserRole
 from app.models.menu_enums import MenuProposalStatus
 from app.models.user import User
-from app.schemas.menu_proposal import MenuProposalApprove, MenuProposalReject
+from app.schemas.menu_proposal import (
+    MenuProposalApprove,
+    MenuProposalMarkPublished,
+    MenuProposalReject,
+)
 from app.services.menu_proposals import MenuProposalService
 
 router = APIRouter(prefix="/menu", dependencies=[Depends(require_role(UserRole.ADMIN))])
@@ -56,3 +60,14 @@ def reject_proposal(
 ):
     proposal = MenuProposalService.reject(db, current, proposal_id, body)
     return ok(MenuProposalService.to_out(proposal).model_dump(mode="json"))
+
+
+@router.post("/proposals/mark-published")
+def mark_published(
+    body: MenuProposalMarkPublished,
+    current: User = Depends(_ADMIN),
+    db: Session = Depends(get_db),
+):
+    """Stamp approved proposals as live, right after publishing them to the menu."""
+    count = MenuProposalService.mark_published(db, current, body.ids)
+    return ok({"published": count})

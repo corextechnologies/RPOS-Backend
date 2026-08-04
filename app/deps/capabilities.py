@@ -66,14 +66,16 @@ _SELL_FLOOR = frozenset(
     }
 )
 
-# The sub-kitchen operator: reads and works the prep board, and reads inventory
-# to see components on hand. Deliberately NOT part of the sell floor — a chef
-# takes no orders and no cash — so this is its own small set, not _SELL_FLOOR.
+# The sub-kitchen operator: reads and works the prep board, reads inventory to
+# see components on hand, and proposes dishes for the menu (name + category) that
+# Admin then prices and publishes. Deliberately NOT part of the sell floor — a
+# chef takes no orders and no cash — so this is its own small set, not _SELL_FLOOR.
 _PREP_STATION = frozenset(
     {
         Capability.PREP_READ,
         Capability.PREP_OPERATE,
         Capability.INVENTORY_READ,
+        Capability.MENU_PROPOSE,
     }
 )
 

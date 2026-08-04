@@ -24,6 +24,7 @@ from app.deps.capabilities import Capability, require_capability
 from app.deps.rbac import require_actor_branch_id
 from app.models.enums import UserRole
 from app.models.inventory import StockMovementType
+from app.models.menu_enums import MenuProposalStatus
 from app.models.prep_enums import PrepStatus
 from app.models.product import ProductKind
 from app.models.request_enums import LocationType
@@ -31,9 +32,11 @@ from app.models.user import User
 from app.schemas.admin import ProductPublicOut
 from app.schemas.branch import BranchWasteIn
 from app.schemas.kitchen_production import KitchenRecipeIn
+from app.schemas.menu_proposal import MenuProposalCreate
 from app.schemas.warehouse import InventoryItemOut
 from app.schemas.prep import PrepComplete, PrepStatusUpdate
 from app.services.inventory import InventoryService
+from app.services.menu_proposals import MenuProposalService
 from app.services.prep import PrepService
 from app.services.products import ProductService
 from app.services.recipes import RecipeService
@@ -325,6 +328,50 @@ def get_recipe(
     require_actor_branch_id(current)
     recipe = RecipeService.get(db, current, recipe_id)
     return ok(RecipeService.to_out(db, recipe).model_dump(mode="json"))
+
+
+# --- Menu proposals: the chef suggests a dish for the menu -------------------
+#
+# The chef knows what the station can make, so the chef is who proposes it — just
+# a name and a category. Admin prices it, creates the product, and publishes it to
+# the live menu (see app/api/v1/admin/menu.py). Gated on MENU_PROPOSE, which the
+# CHEF position now holds.
+
+
+@router.post("/menu-proposals")
+def propose_menu_item(
+    body: MenuProposalCreate,
+    current: User = Depends(require_capability(Capability.MENU_PROPOSE)),
+    db: Session = Depends(get_db),
+):
+    """Suggest a dish for the menu — its name and category. Admin prices it."""
+    branch_id = require_actor_branch_id(current)
+    proposal = MenuProposalService.create(db, current, branch_id, body)
+    return ok(MenuProposalService.to_out(proposal).model_dump(mode="json"))
+
+
+@router.get("/menu-proposals")
+def list_menu_proposals(
+    status: MenuProposalStatus | None = Query(default=None),
+    current: User = Depends(require_capability(Capability.PREP_READ)),
+    db: Session = Depends(get_db),
+):
+    """This station's own proposals and where each stands with Admin."""
+    branch_id = require_actor_branch_id(current)
+    rows = MenuProposalService.list(db, current, status=status, branch_id=branch_id)
+    return ok([MenuProposalService.to_out(p).model_dump(mode="json") for p in rows])
+
+
+@router.delete("/menu-proposals/{proposal_id}", status_code=200)
+def withdraw_menu_proposal(
+    proposal_id: int,
+    current: User = Depends(require_capability(Capability.MENU_PROPOSE)),
+    db: Session = Depends(get_db),
+):
+    """Withdraw a still-pending proposal."""
+    branch_id = require_actor_branch_id(current)
+    MenuProposalService.withdraw(db, current, branch_id, proposal_id)
+    return ok({"id": proposal_id, "withdrawn": True})
 
 
 # --- Branch stock, surfaced inside the sub-kitchen portal -------------------

@@ -46,56 +46,23 @@ class MenuProposalService:
     def create(
         db: Session, actor: User, branch_id: int, body: MenuProposalCreate
     ) -> MenuItemProposal:
-        """A branch proposes a dish. Validates the product source up front."""
-        currency = MenuProposalService._currency(db, branch_id)
+        """A sub-kitchen chef proposes a dish: just a name and a category.
 
-        if body.product_id is not None:
-            product = db.get(Product, body.product_id)
-            if product is None or product.restaurant_id != actor.restaurant_id:
-                raise NotFoundError("Product not found.")
-            if product.kind is not ProductKind.FINISHED_GOOD:
-                raise ConflictError(
-                    f"'{product.name}' is {product.kind.value}. Only a "
-                    "FINISHED_GOOD (something the sub-kitchen makes) can be "
-                    "proposed for the menu here.",
-                    code="product_not_finished_good",
-                    details={"product_id": product.id, "kind": product.kind.value},
-                )
-        else:
-            # New product to be created on approval — fail fast on a dup SKU so the
-            # branch fixes it now rather than the admin hitting it at approval.
-            sku = (body.new_product_sku or "").strip() or None
-            if sku is not None:
-                dup = db.execute(
-                    select(Product).where(
-                        Product.restaurant_id == actor.restaurant_id,
-                        Product.sku == sku,
-                    )
-                ).scalar_one_or_none()
-                if dup is not None:
-                    raise ConflictError(
-                        "A product with this SKU already exists.",
-                        code="duplicate_sku",
-                    )
-
+        No price and no product yet — Admin sets the price and creates the
+        FINISHED_GOOD product (from the dish name) when adding it to the menu.
+        `proposed_price_minor` is stored as 0 as a placeholder until then.
+        """
+        name = body.name.strip()
         proposal = MenuItemProposal(
             restaurant_id=actor.restaurant_id,
             branch_id=branch_id,
             status=MenuProposalStatus.PENDING,
-            name=body.name.strip(),
+            name=name,
             category=body.category,
-            proposed_price_minor=to_minor(body.price, currency),
-            image_url=body.image_url,
-            description=body.description,
-            calories=body.calories,
-            prep_time_minutes=body.prep_time_minutes,
-            made_to_order=body.made_to_order,
-            product_id=body.product_id,
-            new_product_name=(body.new_product_name or None),
-            new_product_sku=((body.new_product_sku or "").strip() or None),
-            new_product_stock_unit=(
-                body.new_product_stock_unit if body.product_id is None else None
-            ),
+            proposed_price_minor=0,  # placeholder; Admin sets the real price
+            made_to_order=True,  # a sub-kitchen dish is finished to order
+            product_id=None,  # created from the name on approval
+            new_product_name=name,
             note=body.note,
             proposed_by_id=actor.id,
         )
@@ -167,11 +134,17 @@ class MenuProposalService:
         MenuProposalService._assert_pending(proposal)
         currency = MenuProposalService._currency(db, proposal.branch_id)
 
-        final_price = (
-            body.price
-            if body.price is not None
-            else to_decimal(proposal.proposed_price_minor, currency)
-        )
+        # The chef proposes a name only, so a price is required to add it to the
+        # menu (unless one was somehow already recorded).
+        if body.price is not None:
+            final_price = body.price
+        elif proposal.proposed_price_minor > 0:
+            final_price = to_decimal(proposal.proposed_price_minor, currency)
+        else:
+            raise ConflictError(
+                "Set a price to add this dish to the menu.",
+                code="price_required",
+            )
 
         # Resolve the FINISHED_GOOD product — create it (unpriced) if the branch
         # proposed a brand-new dish. create_product commits its own row; the price
@@ -251,6 +224,46 @@ class MenuProposalService:
         )
         db.commit()
         return MenuProposalService._load(db, proposal.id)
+
+    @staticmethod
+    def mark_published(db: Session, admin: User, ids: list[int]) -> int:
+        """Stamp approved proposals as now live on the menu.
+
+        Called by the admin surface right after it publishes the approved dishes
+        onto a new menu version, so the review queue can tell "approved, publish
+        next" apart from "already on the menu". Idempotent: only APPROVED, still
+        unpublished, restaurant-scoped rows are touched.
+        """
+        if not ids:
+            return 0
+        rows = (
+            db.execute(
+                select(MenuItemProposal).where(
+                    MenuItemProposal.id.in_(ids),
+                    MenuItemProposal.restaurant_id == admin.restaurant_id,
+                    MenuItemProposal.status == MenuProposalStatus.APPROVED,
+                    MenuItemProposal.published_at.is_(None),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        for r in rows:
+            r.published_at = now
+        if rows:
+            db.flush()
+            AuditService.record(
+                db,
+                actor=admin,
+                action="menu.proposal.published",
+                entity_type=_ENTITY,
+                entity_id=rows[0].id,
+                restaurant_id=admin.restaurant_id,
+                payload={"count": len(rows), "ids": [r.id for r in rows]},
+            )
+        db.commit()
+        return len(rows)
 
     @staticmethod
     def withdraw(
