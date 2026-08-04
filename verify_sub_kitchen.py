@@ -6,12 +6,12 @@ import subprocess
 import sys
 
 TESTS = [
-    # New: the prep board, made-to-order auto-tickets, chef recipes + stats.
+    # The prep board, made-to-order auto-tickets, manual completion + stats.
     "tests/test_sub_kitchen.py",
     "tests/test_sub_kitchen_orders.py",
     "tests/test_sub_kitchen_manage.py",
-    # Regression on the shared recipe + production path the board reuses (the
-    # chef now writes recipes through it, and prep completion writes runs).
+    # Regression on the shared production path the board reuses (prep completion
+    # writes runs). The central kitchen still owns recipes; unaffected here.
     "tests/test_kitchen_production.py",
     # Regression on the capability/position layer the CHEF position extends.
     "tests/test_branch_positions.py",

@@ -289,19 +289,18 @@ class PrepService:
         ticket_id: int,
         body: PrepComplete,
     ) -> PrepTicket:
-        """Finish a ticket. What that moves depends on why the ticket exists.
+        """Finish a ticket by consuming exactly what the chef says was used.
 
-        BATCH — prep ahead of a rush. Consumes components (from the product's
-        recipe, or from hand-entered `inputs`) and credits the finished good to
-        branch stock, because nobody has bought it yet.
+        The sub-kitchen has no recipes: completion is manual. `inputs` lists the
+        components the finishing consumed (icing, a plaque) and those come off
+        branch stock; completing with no inputs simply records the work as done
+        (labour-only finishing, e.g. writing a name).
 
         ORDER — finishing something a customer already bought. The item itself
-        came off stock when the order was SENT, so this must not touch it again:
-        exploding the recipe here would deduct the base and the plaque on top of
-        the cake that was already sold, and crediting an output would put a
-        phantom cake back on the shelf. It consumes only what the chef says the
-        finishing used (icing, a plaque) and credits nothing; completing with no
-        inputs simply records the work as done.
+        came off stock when the order was SENT, so nothing is credited here.
+
+        BATCH — retired creation path; kept only so any in-flight batch ticket
+        still credits its finished good when completed with inputs.
 
         The production run and the ticket update commit together — a short
         component rolls back both, leaving the ticket open for a clean retry.
@@ -321,20 +320,20 @@ class PrepService:
             body.expiry_date if body.expiry_date is not None else ticket.expiry_date
         )
         # Only a BATCH ticket builds sellable stock; an ORDER ticket's item was
-        # already sold and deducted (see the docstring).
+        # already sold and deducted (see the docstring). Batch creation is retired,
+        # so in practice this is always False — kept for any in-flight batch ticket.
         credit_output = ticket.source is PrepSource.BATCH
-        recipe_driven = ticket.source is PrepSource.BATCH and not body.inputs
 
         try:
             run = None
-            if not recipe_driven and not body.inputs:
-                # An ORDER ticket completed without stating any extras: the
-                # finishing consumed nothing worth recording, so there is no
-                # movement to write. Marking the work done is the whole effect.
+            if not body.inputs:
+                # No components stated: the finishing consumed nothing worth
+                # recording (labour-only). Marking the work done is the whole
+                # effect — no stock movement.
                 pass
-            elif body.inputs:
-                # Manual path: the sub-chef states exactly what was used. Validate
-                # every component belongs to the restaurant before touching stock.
+            else:
+                # The chef states exactly what was used. Validate every component
+                # belongs to the restaurant before touching stock.
                 pids = [ln.product_id for ln in body.inputs] + [ticket.product_id]
                 rows = (
                     db.execute(select(Product).where(Product.id.in_(pids)))
@@ -367,21 +366,6 @@ class PrepService:
                     inputs=inputs,
                     outputs=outputs,
                     recipe_id=None,
-                    commit=False,
-                )
-            else:
-                # Recipe path: explode the finished good's active recipe.
-                run = ProductionService.produce_from_recipe(
-                    db,
-                    actor,
-                    LocationType.BRANCH,
-                    branch_id,
-                    product_id=ticket.product_id,
-                    quantity=ticket.quantity,
-                    batch_code=out_batch,
-                    expiry_date=out_expiry,
-                    note=f"Prep ticket #{ticket.id}",
-                    credit_output=credit_output,
                     commit=False,
                 )
 
