@@ -10,6 +10,11 @@ TESTS = [
     "tests/test_sub_kitchen.py",
     "tests/test_sub_kitchen_orders.py",
     "tests/test_sub_kitchen_manage.py",
+    # The front half of the no-cloud-kitchen flow: item-level made-to-order that
+    # defaults order lines, branch-proposes-menu, and admin finished-good create.
+    "tests/test_made_to_order.py",
+    "tests/test_menu_proposals.py",
+    "tests/test_admin_products.py",
     # Regression on the shared recipe + production path the board reuses (the
     # chef now writes recipes through it, and prep completion writes runs).
     "tests/test_kitchen_production.py",

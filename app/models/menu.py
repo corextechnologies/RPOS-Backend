@@ -86,6 +86,15 @@ class MenuItem(Base, PKMixin, TimestampMixin):
     is_combo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Authoring-time DEFAULT for "send this dish to the branch sub-kitchen to be
+    # finished/made". It only seeds the order line's `needs_prep` — the order-taker
+    # can still override per line (a plain cake vs a personalised one). Deducting
+    # stock is unchanged: a made-to-order line still comes off stock like any sale
+    # (the base was baked and shipped), the sub-kitchen finishes it. Distinct from
+    # 0037's old flag, which skipped the deduction; see migration 0047.
+    made_to_order: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     menu_version: Mapped[MenuVersion] = relationship(

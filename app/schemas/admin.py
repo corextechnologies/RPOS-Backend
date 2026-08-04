@@ -185,5 +185,19 @@ def product_to_public(product) -> dict:
     return ProductPublicOut.model_validate(product).model_dump(mode="json")
 
 
+class AdminFinishedGoodIn(BaseModel):
+    """Admin introduces a FINISHED_GOOD the branch sub-kitchen makes.
+
+    For a restaurant with no central kitchen there is no KITCHEN_MANAGER to add
+    finished goods, so Admin does it here. No `kind` field — this endpoint only
+    ever creates a FINISHED_GOOD, and the product is created unpriced (Admin
+    prices it afterwards via the pricing routes).
+    """
+
+    name: str = Field(min_length=1, max_length=255)
+    sku: str | None = Field(default=None, max_length=100)
+    stock_unit: StockUnit = StockUnit.EACH
+
+
 # Re-export for admin request action routes.
 AdminRequestAction = RequestTransition

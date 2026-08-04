@@ -15,6 +15,21 @@ class MenuVersionStatus(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
+class MenuProposalStatus(str, enum.Enum):
+    """A branch's proposed menu item, awaiting Admin review.
+
+    A branch manager can add a dish to the menu, but only Admin makes the menu
+    live. A proposal is the hand-off: the branch submits the dish, Admin sets the
+    final price and either APPROVES it (it becomes ready to publish onto the live
+    menu) or REJECTS it with a reason. PENDING is the only editable/withdrawable
+    state; APPROVED/REJECTED are terminal.
+    """
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 class OrderStatus(str, enum.Enum):
     DRAFT = "DRAFT"          # being built on the device
     PARKED = "PARKED"        # held; the customer stepped away

@@ -156,7 +156,15 @@ class PosOrderService:
                     "modifiers": mods,
                     "parent_no": None,
                     "note": entry.note,
-                    "needs_prep": entry.needs_prep,
+                    # A line inherits the menu item's made-to-order default unless
+                    # the order-taker overrode it explicitly (True/False) on the
+                    # line. `None` = inherit, so a dish marked made-to-order routes
+                    # to the sub-kitchen with nothing for the order-taker to set.
+                    "needs_prep": (
+                        entry.needs_prep
+                        if entry.needs_prep is not None
+                        else bool(item.made_to_order)
+                    ),
                 }
             )
 

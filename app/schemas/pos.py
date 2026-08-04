@@ -181,6 +181,9 @@ class MenuItemIn(BaseModel):
     calories: int | None = Field(default=None, ge=0)
     prep_time_minutes: int | None = Field(default=None, ge=0)
     is_combo: bool = False
+    #: Default for "the branch sub-kitchen finishes/makes this dish". Seeds each
+    #: order line's `needs_prep`; the order-taker can still override per line.
+    made_to_order: bool = False
     sort_order: int = 0
     component_item_ids: list[int] = Field(default_factory=list)
     modifier_group_ids: list[int] = Field(default_factory=list)
@@ -218,7 +221,12 @@ class PosOrderLineIn(BaseModel):
     #: cake, a dietary swap). Set by whoever takes the order, per line — the same
     #: product is sold plain to one customer and personalised for the next. Pair
     #: it with `note`, which becomes the instruction on the chef's prep card.
-    needs_prep: bool = False
+    #:
+    #: `None` (the default) means "inherit the menu item's `made_to_order`": a
+    #: dish marked made-to-order routes to the sub-kitchen without the order-taker
+    #: touching anything. Send an explicit `true`/`false` to override that default
+    #: for this one line.
+    needs_prep: bool | None = None
 
 
 class PosOrderCreate(BaseModel):

@@ -45,6 +45,9 @@ class Capability(str, enum.Enum):
     SHIFT_CLOSE = "SHIFT_CLOSE"
     # Manager-held.
     WASTE_LOG = "WASTE_LOG"
+    # Propose a dish for the menu (branch → admin). The branch manager adds it;
+    # only Admin publishes it live. Manager-held (see _ALL_BRANCH_CAPS).
+    MENU_PROPOSE = "MENU_PROPOSE"
     BRANCH_REQUEST_CREATE = "BRANCH_REQUEST_CREATE"
     VOID_AFTER_SEND = "VOID_AFTER_SEND"
     DISCOUNT_OVER_LIMIT = "DISCOUNT_OVER_LIMIT"

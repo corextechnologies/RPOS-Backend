@@ -25,6 +25,7 @@ from app.models.reorder_level import ReorderLevel  # noqa: F401
 from app.models.sales import SalesRecord  # noqa: F401
 from app.models.customer import Customer  # noqa: F401
 from app.models.menu_enums import (  # noqa: F401
+    MenuProposalStatus,
     MenuVersionStatus,
     OrderStatus,
     VoidState,
@@ -38,6 +39,7 @@ from app.models.menu import (  # noqa: F401
     ModifierGroup,
     ModifierOption,
 )
+from app.models.menu_proposal import MenuItemProposal  # noqa: F401
 from app.models.order import Order, OrderLine, OrderLineModifier  # noqa: F401
 from app.models.production_enums import ProductionLineRole  # noqa: F401
 from app.models.production import ProductionRun, ProductionRunLine  # noqa: F401

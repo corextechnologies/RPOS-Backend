@@ -116,6 +116,7 @@ class MenuService:
             prep_time_minutes=body.prep_time_minutes,
             price_minor=to_minor(body.price, version.currency),
             is_combo=body.is_combo,
+            made_to_order=body.made_to_order,
             sort_order=body.sort_order,
         )
         db.add(item)
