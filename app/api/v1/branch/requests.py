@@ -17,6 +17,7 @@ from app.deps.auth import require_role
 from app.deps.rbac import require_actor_branch_id
 from app.models.enums import UserRole
 from app.models.request_enums import BranchToAdminStatus, LocationType, RequestType
+from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.branch import BranchRequestCreate
 from app.schemas.request import (
@@ -45,19 +46,39 @@ def create_branch_request(
     db: Session = Depends(get_db),
 ):
     branch_id = require_actor_branch_id(current)
-    # A named kitchen becomes the routing target; omitted (kitchen-off tenant, or
-    # a branch with no kitchens) leaves the target open — Admin fulfils from a
-    # warehouse. A bad kitchen_id still 404s via RequestService location validation.
-    target_kitchen_type = (
-        LocationType.KITCHEN if body.kitchen_id is not None else None
-    )
+    # Route the target by what the branch named. A warehouse (kitchen-off tenant)
+    # makes this a warehouse-fulfilled request — the warehouse manager approves
+    # and dispatches, Admin stays out. A kitchen (kitchen tenant) routes the
+    # production workflow there. A bad id 404s via RequestService validation.
+    #
+    # A kitchen-off tenant MUST name a warehouse: without a target the request is
+    # an orphan (no warehouse manager can see it, and Admin can't act on it), so
+    # reject it up front — the exact parity with a kitchen request, which also
+    # requires its fulfilling warehouse at create time.
+    restaurant = db.get(Restaurant, current.restaurant_id)
+    has_central_kitchen = getattr(restaurant, "has_central_kitchen", True)
+    if body.warehouse_id is not None:
+        target_type = LocationType.WAREHOUSE
+        target_id = body.warehouse_id
+    elif body.kitchen_id is not None:
+        target_type = LocationType.KITCHEN
+        target_id = body.kitchen_id
+    elif not has_central_kitchen:
+        raise ConflictError(
+            "This restaurant has no central kitchen — name a warehouse to "
+            "fulfil this request.",
+            code="warehouse_required",
+        )
+    else:
+        target_type = None
+        target_id = None
     create_body = RequestCreate(
         request_type=RequestType.BRANCH_TO_ADMIN,
         local_id=body.local_id,
         source_location_type=LocationType.BRANCH,
         source_location_id=branch_id,
-        target_location_type=target_kitchen_type,
-        target_location_id=body.kitchen_id,
+        target_location_type=target_type,
+        target_location_id=target_id,
         notes=body.notes,
         lines=[
             RequestLineCreate(

@@ -10,6 +10,7 @@ from app.models.request import Request
 from app.models.request_enums import (
     BranchToAdminStatus,
     KitchenToAdminStatus,
+    LocationType,
     RequestType,
     WarehouseToAdminStatus,
 )
@@ -130,6 +131,13 @@ class NotificationService:
                 db, request.restaurant_id, UserRole.ADMIN
             )
         if request.request_type == RequestType.BRANCH_TO_ADMIN:
+            # Kitchen-off tenant: the branch named a warehouse to fulfil it, so
+            # that warehouse's manager acts on it (not Admin), mirroring
+            # KITCHEN_TO_WAREHOUSE. Kitchen tenant (or open target): Admin routes.
+            if request.target_location_type == LocationType.WAREHOUSE:
+                return NotificationService._warehouse_managers_at(
+                    db, request.restaurant_id, request.target_location_id
+                )
             return NotificationService._users_with_role(
                 db, request.restaurant_id, UserRole.ADMIN
             )
@@ -255,6 +263,20 @@ class NotificationService:
             User.is_active.is_(True),
             User.restaurant_id == restaurant_id,
             User.kitchen_id == kitchen_id,
+        )
+        return list(db.execute(stmt).scalars().all())
+
+    @staticmethod
+    def _warehouse_managers_at(
+        db: Session, restaurant_id: int, warehouse_id: int | None
+    ) -> list[User]:
+        if warehouse_id is None:
+            return []
+        stmt = select(User).where(
+            User.role == UserRole.WAREHOUSE_MANAGER,
+            User.is_active.is_(True),
+            User.restaurant_id == restaurant_id,
+            User.warehouse_id == warehouse_id,
         )
         return list(db.execute(stmt).scalars().all())
 

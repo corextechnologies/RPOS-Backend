@@ -17,7 +17,12 @@ from tests.conftest import auth_headers
 
 @pytest.fixture
 def kitchen_off(make_restaurant, make_user, make_branch, make_warehouse, db):
-    """A kitchen-off tenant: admin + branch (with manager) + warehouse, no kitchen."""
+    """A kitchen-off tenant: admin + branch (mgr) + warehouse (mgr), no kitchen.
+
+    A kitchen-off branch's request is fulfilled directly by the warehouse
+    manager (approve -> dispatch), exactly like a kitchen->warehouse request;
+    Admin is out of the loop. So the fixture carries a warehouse manager too.
+    """
     restaurant = make_restaurant("NoKitchen Co")
     restaurant.has_central_kitchen = False
     db.flush()
@@ -29,12 +34,16 @@ def kitchen_off(make_restaurant, make_user, make_branch, make_warehouse, db):
                            restaurant_id=restaurant.id, created_by_id=admin.id,
                            branch_id=branch.id)
     warehouse = make_warehouse(restaurant.id, name="Off Warehouse")
+    warehouse_mgr = make_user("warehouse@test.com", UserRole.WAREHOUSE_MANAGER,
+                              restaurant_id=restaurant.id, created_by_id=admin.id,
+                              warehouse_id=warehouse.id)
     return {
         "restaurant": restaurant,
         "admin": admin,
         "branch": branch,
         "branch_mgr": branch_mgr,
         "warehouse": warehouse,
+        "warehouse_mgr": warehouse_mgr,
     }
 
 
@@ -117,23 +126,28 @@ def test_production_targets_403_for_kitchen_off(client, kitchen_off):
     assert resp.json()["error"]["code"] == "central_kitchen_disabled"
 
 
-# ===== F5.1 — branch requests without a kitchen ===========================
+# ===== F5.1 — kitchen-off branch requests name a warehouse ================
 
-def test_branch_request_without_kitchen_id(client, kitchen_off, make_product):
+def test_branch_request_names_warehouse(client, kitchen_off, make_product):
+    """A kitchen-off branch names a warehouse, not a kitchen; the request is
+    created targeting that warehouse (fulfilled by the warehouse manager)."""
     product = make_product(kitchen_off["restaurant"].id, name="Widget", sku="W-1")
     branch = auth_headers(client, "branch@test.com")
     resp = client.post(
         "/v1/branch/requests",
-        json={"lines": [{"product_id": product.id, "quantity_requested": 5}]},
+        json={
+            "warehouse_id": kitchen_off["warehouse"].id,
+            "lines": [{"product_id": product.id, "quantity_requested": 5}],
+        },
         headers=branch,
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["request_type"] == "BRANCH_TO_ADMIN"
     assert data["status"] == BranchToAdminStatus.PENDING.value
-    # Open target — no kitchen bound.
-    assert data["target_location_type"] is None
-    assert data["target_location_id"] is None
+    # Bound to the named warehouse — its manager fulfils it.
+    assert data["target_location_type"] == "WAREHOUSE"
+    assert data["target_location_id"] == kitchen_off["warehouse"].id
 
 
 def test_branch_request_with_bad_kitchen_id_404(client, kitchen_off, make_product):
@@ -162,46 +176,55 @@ def test_branch_kitchens_empty_for_kitchen_off(client, kitchen_off):
 def test_kitchen_off_branch_request_warehouse_fulfilment(
     client, db, kitchen_off, make_product
 ):
-    """approve -> dispatch (from warehouse) -> received, no kitchen forward."""
+    """Branch names a warehouse; the WAREHOUSE manager approves -> dispatches;
+    the branch receives. Admin is never in the loop (mirrors kitchen->warehouse).
+    """
     product = make_product(kitchen_off["restaurant"].id, name="Widget", sku="W-1")
     _seed_warehouse_stock(db, kitchen_off, product, qty=200)
     branch = auth_headers(client, "branch@test.com")
+    warehouse = auth_headers(client, "warehouse@test.com")
     admin = auth_headers(client, "admin@test.com")
 
-    # Branch raises a kitchen-less request.
+    # Branch raises a kitchen-less request, naming the fulfilling warehouse.
     created = client.post(
         "/v1/branch/requests",
-        json={"lines": [{"product_id": product.id, "quantity_requested": 50}]},
+        json={
+            "warehouse_id": kitchen_off["warehouse"].id,
+            "lines": [{"product_id": product.id, "quantity_requested": 50}],
+        },
         headers=branch,
     )
+    assert created.status_code == 200, created.text
     request_id = created.json()["data"]["id"]
+    assert created.json()["data"]["target_location_type"] == "WAREHOUSE"
 
-    # Admin approves.
-    resp = client.patch(
+    # The warehouse sees it in its branch-request inbox.
+    inbox = client.get("/v1/warehouse/requests/branch", headers=warehouse)
+    assert inbox.status_code == 200, inbox.text
+    assert request_id in [r["id"] for r in inbox.json()["data"]]
+
+    # Admin is out of the loop — it cannot approve.
+    admin_try = client.patch(
         f"/v1/admin/requests/{request_id}/status",
         json={"to_status": BranchToAdminStatus.APPROVED.value},
         headers=admin,
     )
+    assert admin_try.status_code == 403, admin_try.text
+
+    # Warehouse manager approves.
+    resp = client.patch(
+        f"/v1/warehouse/requests/{request_id}/status",
+        json={"to_status": BranchToAdminStatus.APPROVED.value},
+        headers=warehouse,
+    )
     assert resp.status_code == 200, resp.text
 
-    # Forwarding to a kitchen must be rejected — there is none.
-    forward = client.patch(
-        f"/v1/admin/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.FORWARDED_TO_KITCHEN.value},
-        headers=admin,
-    )
-    assert forward.status_code == 409, forward.text
-    assert forward.json()["error"]["code"] == "invalid_transition"
-
-    # Admin dispatches straight from the warehouse.
+    # Warehouse manager dispatches from its own stock (no body target needed —
+    # the warehouse was named at create).
     dispatch = client.patch(
-        f"/v1/admin/requests/{request_id}/status",
-        json={
-            "to_status": BranchToAdminStatus.DISPATCHED.value,
-            "target_location_type": "WAREHOUSE",
-            "target_location_id": kitchen_off["warehouse"].id,
-        },
-        headers=admin,
+        f"/v1/warehouse/requests/{request_id}/status",
+        json={"to_status": BranchToAdminStatus.DISPATCHED.value},
+        headers=warehouse,
     )
     assert dispatch.status_code == 200, dispatch.text
 
@@ -231,30 +254,18 @@ def test_kitchen_off_branch_request_warehouse_fulfilment(
     assert branch_stock is not None and branch_stock.quantity == 50
 
 
-def test_kitchen_off_dispatch_requires_warehouse_target(
+def test_kitchen_off_branch_request_requires_warehouse(
     client, db, kitchen_off, make_product
 ):
-    """Dispatching without naming a warehouse is a clean 409, not a 500."""
+    """A kitchen-off branch request must name a warehouse — otherwise it is an
+    orphan no one can fulfil, so it is rejected up front (409)."""
     product = make_product(kitchen_off["restaurant"].id, name="Widget", sku="W-1")
-    _seed_warehouse_stock(db, kitchen_off, product, qty=200)
     branch = auth_headers(client, "branch@test.com")
-    admin = auth_headers(client, "admin@test.com")
 
-    created = client.post(
+    resp = client.post(
         "/v1/branch/requests",
         json={"lines": [{"product_id": product.id, "quantity_requested": 50}]},
         headers=branch,
     )
-    request_id = created.json()["data"]["id"]
-    client.patch(
-        f"/v1/admin/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.APPROVED.value},
-        headers=admin,
-    )
-    resp = client.patch(
-        f"/v1/admin/requests/{request_id}/status",
-        json={"to_status": BranchToAdminStatus.DISPATCHED.value},
-        headers=admin,
-    )
     assert resp.status_code == 409, resp.text
-    assert resp.json()["error"]["code"] == "missing_warehouse_target"
+    assert resp.json()["error"]["code"] == "warehouse_required"

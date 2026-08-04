@@ -65,6 +65,15 @@ def visible_requests(db: Session, user: User) -> Select:
             or_(
                 Request.requester_id == user.id,
                 Request.request_type == RequestType.KITCHEN_TO_WAREHOUSE,
+                # A kitchen-off branch's raw-material request is fulfilled by the
+                # warehouse it names — visible to that warehouse's manager, same
+                # as a kitchen->warehouse request. Scoped to this warehouse so a
+                # request routed to another warehouse never leaks here.
+                (
+                    (Request.request_type == RequestType.BRANCH_TO_ADMIN)
+                    & (Request.target_location_type == LocationType.WAREHOUSE)
+                    & (Request.target_location_id == user.warehouse_id)
+                ),
             ),
         )
 

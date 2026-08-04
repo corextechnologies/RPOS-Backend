@@ -207,11 +207,17 @@ TRANSITION_ROLES: dict[RequestType, dict[str, set[UserRole]]] = {
     },
 }
 
-# Kitchen-off overrides: with no kitchen, Admin owns the dispatch step that a
-# KITCHEN_MANAGER performs in the normal flow. Only the differing statuses are
-# listed; everything else falls back to TRANSITION_ROLES[BRANCH_TO_ADMIN].
+# Kitchen-off overrides: with no central kitchen, a branch's raw-material request
+# is fulfilled directly by the WAREHOUSE, exactly like KITCHEN_TO_WAREHOUSE — the
+# branch names a warehouse at create, the warehouse manager approves and
+# dispatches from its stock, and the branch receives. Admin is out of this loop.
+# Only the differing statuses are listed; RECEIVED falls back to
+# TRANSITION_ROLES[BRANCH_TO_ADMIN] (BRANCH_MANAGER).
 _BRANCH_TO_ADMIN_NO_KITCHEN_ROLES: dict[str, set[UserRole]] = {
-    BranchToAdminStatus.DISPATCHED.value: {UserRole.ADMIN},
+    BranchToAdminStatus.APPROVED.value: {UserRole.WAREHOUSE_MANAGER},
+    BranchToAdminStatus.PARTIALLY_APPROVED.value: {UserRole.WAREHOUSE_MANAGER},
+    BranchToAdminStatus.REJECTED.value: {UserRole.WAREHOUSE_MANAGER},
+    BranchToAdminStatus.DISPATCHED.value: {UserRole.WAREHOUSE_MANAGER},
 }
 
 

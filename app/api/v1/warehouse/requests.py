@@ -24,6 +24,8 @@ router = APIRouter(
 _WAREHOUSE_REQUEST_TYPES = {
     RequestType.WAREHOUSE_TO_ADMIN_PO,
     RequestType.KITCHEN_TO_WAREHOUSE,
+    # A kitchen-off branch's raw-material request the warehouse fulfils directly.
+    RequestType.BRANCH_TO_ADMIN,
 }
 
 
@@ -86,6 +88,31 @@ def list_kitchen_requests(
 ):
     filters = RequestListFilters(
         request_type=RequestType.KITCHEN_TO_WAREHOUSE,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+    rows, total = RequestService.list_requests(db, current, filters)
+    data = [RequestService.to_out(r).model_dump(mode="json") for r in rows]
+    return ok(data, meta={"total": total, "page": page, "page_size": page_size})
+
+
+@router.get("/branch")
+def list_branch_requests(
+    status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    current: User = Depends(require_role(UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF)),
+    db: Session = Depends(get_db),
+):
+    """Kitchen-off branch raw-material requests targeting this warehouse.
+
+    Visibility is already scoped to the caller's warehouse (request_scoping), so
+    this only surfaces BRANCH_TO_ADMIN requests routed here — the warehouse
+    manager approves and dispatches them exactly like a kitchen request.
+    """
+    filters = RequestListFilters(
+        request_type=RequestType.BRANCH_TO_ADMIN,
         status=status,
         page=page,
         page_size=page_size,

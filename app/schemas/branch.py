@@ -196,15 +196,20 @@ class ProductionRunOut(BaseModel):
 
 
 class BranchRequestCreate(BaseModel):
-    """A branch requests product from Admin, optionally naming a target kitchen.
+    """A branch requests stock, naming the location that fulfils it.
 
-    When a kitchen is named it becomes the request's target, so the shared engine
-    routes the whole workflow to that kitchen (and only that kitchen sees it once
-    forwarded). A kitchen-off tenant's branch omits it: the request is created
-    with an open (null) target and Admin fulfils it from a warehouse instead.
+    Kitchen tenant: names a `kitchen_id` — the kitchen becomes the request's
+    target and the shared engine routes the whole workflow there (only that
+    kitchen sees it once forwarded).
+
+    Kitchen-off tenant: names a `warehouse_id` instead — the request targets that
+    warehouse and is fulfilled directly by its manager (approve → dispatch),
+    exactly like a KITCHEN_TO_WAREHOUSE request. Admin is not in this loop. Pass
+    exactly one of the two; naming neither leaves an open target (legacy fallback).
     """
 
     kitchen_id: int | None = None
+    warehouse_id: int | None = None
     lines: list[RequestLineCreate] = Field(min_length=1)
     notes: str | None = None
     #: Offline-replay anchor (mirrors PosOrderCreate.local_id).
@@ -213,6 +218,17 @@ class BranchRequestCreate(BaseModel):
 
 class KitchenPickerOut(BaseModel):
     """A kitchen a branch may name as the fulfiller of a stock request."""
+
+    id: int
+    name: str
+    location: str | None = None
+    restaurant_id: int
+
+    model_config = {"from_attributes": True}
+
+
+class WarehousePickerOut(BaseModel):
+    """A warehouse a kitchen-off branch may name as the fulfiller of a request."""
 
     id: int
     name: str
