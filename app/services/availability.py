@@ -28,6 +28,7 @@ from app.models.product import Product
 from app.models.request_enums import LocationType
 from app.models.user import User
 from app.services.audit import AuditService
+from app.services.tenant import has_central_kitchen
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,11 @@ class AvailabilityService:
         """Availability for every item on a menu version, at one branch."""
         on_hand = AvailabilityService._on_hand_map(db, restaurant_id, branch_id)
         manual = AvailabilityService._manual_map(db, branch_id)
+        # Kitchen-off tenant: a made-to-order dish is made fresh from raw materials
+        # per order, so it is sellable regardless of finished-good on-hand (still
+        # honouring a manual 86). The raw materials are drawn down when the chef
+        # completes the prep ticket, not gated here.
+        made_to_order_ok = not has_central_kitchen(db, restaurant_id)
 
         items = list(version.items)
         by_id = {i.id: i for i in items}
@@ -135,6 +141,11 @@ class AvailabilityService:
                     item.id, True, None, None, item.name, clears_at(item.id)
                 )
             qty = on_hand.get(item.product_id, 0)
+            if made_to_order_ok and getattr(item, "made_to_order", False):
+                # Made to order from raws — sellable even at zero finished stock.
+                return ItemState(
+                    item.id, True, None, qty, item.name, clears_at(item.id)
+                )
             if qty <= 0:
                 return ItemState(
                     item.id, False, "Out of stock", qty, item.name, clears_at(item.id)

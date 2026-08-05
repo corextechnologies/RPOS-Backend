@@ -13,6 +13,7 @@ TESTS = [
     # The front half of the no-cloud-kitchen flow: item-level made-to-order that
     # defaults order lines, branch-proposes-menu, and admin finished-good create.
     "tests/test_made_to_order.py",
+    "tests/test_made_to_order_raws.py",
     "tests/test_menu_proposals.py",
     "tests/test_admin_products.py",
     # Regression on the shared recipe + production path the board reuses (the

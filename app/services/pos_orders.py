@@ -41,6 +41,7 @@ from app.services.orders import settle_or_flag, settle_stock_and_sales
 from app.services.prep import PrepService
 from app.services.print_jobs import PrintJobService
 from app.services.printing import RoutingService
+from app.services.tenant import has_central_kitchen
 import app.pricing.packs  # noqa: F401  (registers the country packs)
 
 # An order can be edited while it is still on the device; once SENT the kitchen
@@ -384,6 +385,13 @@ class PosOrderService:
         # finishing. `needs_prep` is a per-line flag set at order time — migration
         # 0039_order_line_needs_prep moved it off the menu item onto the order line
         # — so no menu lookup is needed.
+        # Kitchen-off tenant: a made-to-order (needs_prep) line is made fresh from
+        # raw materials, never held as a finished good, so it deducts NO finished
+        # good here — its raw materials come off when the chef completes the prep
+        # ticket. A tenant WITH a central kitchen keeps the old behaviour: the
+        # finished good was baked and shipped, so a flagged line still deducts it
+        # and the sub-kitchen only decorates.
+        kitchen_off = not has_central_kitchen(db, order.restaurant_id)
         qty_by_product: dict[int, int] = {}
         prep_lines = []
         for line in order.lines:
@@ -392,6 +400,8 @@ class PosOrderService:
                 continue
             if line.needs_prep:
                 prep_lines.append(line)
+                if kitchen_off:
+                    continue
             qty_by_product[line.product_id] = (
                 qty_by_product.get(line.product_id, 0) + line.quantity
             )

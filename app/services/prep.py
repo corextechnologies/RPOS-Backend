@@ -25,11 +25,13 @@ from app.models.prep_enums import (
 )
 from app.models.product import Product
 from app.models.production import ProductionRun
+from app.models.recipe import Recipe
 from app.models.request_enums import LocationType
 from app.models.user import User
 from app.schemas.prep import PrepBatchCreate, PrepComplete, PrepTicketOut
 from app.services.audit import AuditService
 from app.services.production import ProductionService
+from app.services.tenant import has_central_kitchen
 
 
 class PrepService:
@@ -324,13 +326,41 @@ class PrepService:
         # so in practice this is always False — kept for any in-flight batch ticket.
         credit_output = ticket.source is PrepSource.BATCH
 
+        # Kitchen-off tenant: the dish was NOT deducted at sale (it is made fresh),
+        # so completing it explodes its recipe and draws the RAW MATERIALS off
+        # branch stock — the whole point of the make-to-order station. Only when the
+        # chef states no explicit components and a recipe exists; explicit inputs
+        # still override, and a dish with no recipe is labour-only (no movement).
+        auto_recipe = (
+            not body.inputs
+            and not has_central_kitchen(db, actor.restaurant_id)
+            and PrepService._has_active_recipe(db, ticket.product_id)
+        )
+
         try:
             run = None
-            if not body.inputs:
-                # No components stated: the finishing consumed nothing worth
-                # recording (labour-only). Marking the work done is the whole
-                # effect — no stock movement.
+            if not body.inputs and not auto_recipe:
+                # No components stated and nothing to explode: the finishing
+                # consumed nothing worth recording (labour-only). Marking the work
+                # done is the whole effect — no stock movement.
                 pass
+            elif auto_recipe:
+                # Explode the dish's active recipe, consuming its raw materials from
+                # THIS branch's stock. credit_output is False for an ORDER ticket, so
+                # no finished good is minted — the dish goes straight to the guest.
+                run = ProductionService.produce_from_recipe(
+                    db,
+                    actor,
+                    LocationType.BRANCH,
+                    branch_id,
+                    product_id=ticket.product_id,
+                    quantity=ticket.quantity,
+                    batch_code=out_batch,
+                    expiry_date=out_expiry,
+                    note=f"Prep ticket #{ticket.id}",
+                    credit_output=credit_output,
+                    commit=False,
+                )
             else:
                 # The chef states exactly what was used. Validate every component
                 # belongs to the restaurant before touching stock.
@@ -512,6 +542,18 @@ class PrepService:
         }
 
     # ---- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _has_active_recipe(db: Session, product_id: int) -> bool:
+        """Whether the dish has an active recipe to explode at completion."""
+        return (
+            db.execute(
+                select(Recipe.id)
+                .where(Recipe.product_id == product_id, Recipe.is_active.is_(True))
+                .limit(1)
+            ).first()
+            is not None
+        )
 
     @staticmethod
     def _load(db: Session, ticket_id: int) -> PrepTicket:

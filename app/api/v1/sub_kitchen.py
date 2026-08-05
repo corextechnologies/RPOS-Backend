@@ -39,6 +39,7 @@ from app.services.inventory import InventoryService
 from app.services.menu_proposals import MenuProposalService
 from app.services.prep import PrepService
 from app.services.products import ProductService
+from app.services.recipes import RecipeService
 from app.services.waste import WasteService
 
 # Blanket branch gate first (non-branch roles get the generic 403); the
