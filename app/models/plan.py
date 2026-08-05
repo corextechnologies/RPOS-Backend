@@ -138,6 +138,9 @@ class ForecastPlanLine(Base, PKMixin, TimestampMixin):
     maturity: Mapped[str | None] = mapped_column(String(24))
 
     plan: Mapped[ForecastPlan] = relationship("ForecastPlan", back_populates="lines")
+    #: Read-only convenience so a plan table can render without the caller
+    #: looking up a name per line. Same pattern as PrepTicket.product.
+    product: Mapped["object"] = relationship("Product", lazy="selectin")
 
     @property
     def is_overridden(self) -> bool:

@@ -235,6 +235,7 @@ def _plan_out(plan) -> dict:
             {
                 "id": line.id,
                 "product_id": line.product_id,
+                "product_name": getattr(line.product, "name", None),
                 "date": line.on_date.isoformat(),
                 "suggested_units": line.suggested_units,
                 "planned_units": line.planned_units,

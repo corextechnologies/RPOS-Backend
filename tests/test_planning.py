@@ -283,6 +283,8 @@ def test_admin_runs_the_whole_flow_over_http(client, plan_ctx, db):
     assert plan["overridden_lines"] == 0
 
     line = plan["lines"][0]
+    # A plan table has to render a name without N extra lookups.
+    assert line["product_name"] in {"Samosa", "Chai"}
     patched = client.patch(
         f"/v1/admin/plans/{plan['id']}/lines",
         json={"lines": [{"line_id": line["id"], "planned_units": 55,
