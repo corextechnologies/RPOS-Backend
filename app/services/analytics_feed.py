@@ -23,10 +23,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.inventory import StockMovement, StockMovementType
-from app.models.menu_enums import OrderStatus
+from app.models.location import Branch
 from app.models.order import Order, OrderLine
 from app.models.product import Product
 from app.models.request_enums import LocationType
+from app.services.business_day import business_date_sql
+from app.services.demand import not_refunded_condition, real_sale_conditions
 from app.services.units import round_qty
 
 MAX_WINDOW_DAYS = 400
@@ -46,10 +48,25 @@ class AnalyticsFeedService:
 
         Deliberately raw: no smoothing, no seasonality, no forecast. The branch
         produces facts; Phase 7 does the maths.
+
+        "Per-day" means the branch's own business day, not the calendar date —
+        see app/services/business_day.py. "Sold" means the shared demand rule in
+        app/services/demand.py, so this feed and the nightly rollup can never
+        disagree about what happened.
         """
+        branch = db.get(Branch, branch_id)
+        if branch is None or branch.restaurant_id != restaurant_id:
+            return []
+
+        bday = business_date_sql(
+            Order.occurred_at,
+            tz_name=branch.timezone,
+            cutoff_hour=branch.business_day_cutoff_hour,
+        ).label("day")
+
         rows = db.execute(
             select(
-                func.date_trunc("day", Order.occurred_at).label("day"),
+                bday,
                 OrderLine.product_id,
                 Product.name,
                 func.sum(OrderLine.quantity).label("units"),
@@ -60,16 +77,17 @@ class AnalyticsFeedService:
             .where(
                 Order.restaurant_id == restaurant_id,
                 Order.branch_id == branch_id,
-                Order.status == OrderStatus.SENT,
-                Order.occurred_at >= start,
-                Order.occurred_at < end + timedelta(days=1),
+                *real_sale_conditions(),
+                not_refunded_condition(),
+                bday >= start,
+                bday <= end,
             )
-            .group_by("day", OrderLine.product_id, Product.name)
-            .order_by("day", OrderLine.product_id)
+            .group_by(bday, OrderLine.product_id, Product.name)
+            .order_by(bday, OrderLine.product_id)
         ).all()
         return [
             {
-                "date": day.date().isoformat(),
+                "date": day.isoformat(),
                 "product_id": product_id,
                 "product_name": name,
                 "units": int(units or 0),

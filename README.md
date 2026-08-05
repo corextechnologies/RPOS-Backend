@@ -56,6 +56,44 @@ pytest                    # full suite
 > "relation does not exist" errors that move between runs. Keep `-pooler` in
 > `DATABASE_URL` for the app itself; only the test suite needs the direct host.
 
+## Daily sales rollup job (Phase 7, Stage 1)
+
+Builds `daily_product_sales` — the fact table forecasting reads — from order
+lines. Run nightly, after the branches have closed:
+
+```bash
+python -m app.jobs.daily_sales_rollup
+```
+
+```bash
+python -m app.jobs.daily_sales_rollup --days 30
+```
+
+Example cron (05:30 daily):
+
+```
+30 5 * * * cd /path/to/RPOS-Backend && .venv/bin/python -m app.jobs.daily_sales_rollup
+```
+
+Rebuilding is idempotent — re-running a date replaces its rows rather than
+doubling them — so a failed run is fixed by running it again, and a backfill may
+safely overlap the nightly run. Exits non-zero if any branch failed, while
+keeping the rows that did land.
+
+Two rules decide what it records, and both live in one place each:
+
+- **What counts as a sale** (`app/services/demand.py`): sent, not voided, not
+  refunded, and combo components counted as themselves rather than as the deal.
+- **Which day a sale belongs to** (`app/services/business_day.py`): the branch's
+  `business_day_cutoff_hour` (default 5am) in the branch's own timezone, so a
+  Friday-night rush served after midnight stays on Friday.
+
+The 5am default reproduces the previous UTC grouping exactly for a UTC+5 tenant,
+so switching to the explicit rule moved no existing number.
+
+> Needs `tzdata` (in `requirements.txt`). Windows ships no system timezone
+> database, and slim Linux images often drop theirs.
+
 ## Billing cycle job (Phase 8)
 
 Run daily via cron or manually:

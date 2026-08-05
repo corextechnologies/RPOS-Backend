@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -51,6 +51,18 @@ class Branch(Base, _TenantLocation):
     )
     currency: Mapped[str] = mapped_column(
         String(3), nullable=False, default="PKR", server_default="PKR"
+    )
+    # The hour (in this branch's own timezone) at which its business day rolls
+    # over. A branch open past midnight books its Friday-night rush after 00:00;
+    # counting that as Saturday makes Friday look weak and Saturday inflated, and
+    # day-of-week is the whole basis of the Phase 7 forecast.
+    #
+    # 5 is not an arbitrary default: sales were previously grouped by UTC, which
+    # for a UTC+5 tenant already broke the day at 05:00 local. Defaulting to 5
+    # keeps every existing number identical while making the rule explicit and
+    # correct for a branch in any other timezone. See app/services/business_day.py.
+    business_day_cutoff_hour: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default="5"
     )
 
 

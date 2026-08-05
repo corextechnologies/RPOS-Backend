@@ -11,6 +11,11 @@ bcrypt==4.0.1
 python-multipart==0.0.20
 email-validator==2.2.0
 
+# Timezone database for zoneinfo. Windows ships no system tz database at all, and
+# slim Linux images often drop theirs, so a branch's timezone (Asia/Karachi) can
+# only be resolved if this is installed — see app/services/business_day.py.
+tzdata==2026.1
+
 # Image storage (Cloudflare R2, S3-compatible) + shrinking on upload
 boto3==1.43.57
 botocore==1.43.57

@@ -90,3 +90,4 @@ from app.models.printing import (  # noqa: F401
     Station,
     StationCategoryMap,
 )
+from app.models.analytics import DailyProductSales  # noqa: F401
