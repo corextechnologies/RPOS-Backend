@@ -79,10 +79,12 @@ def get_ticket(
 # Batch-prep creation was retired: the branch sub-kitchen is made-to-order only,
 # so the board is fed solely by auto-created ORDER tickets (PrepService
 # .create_order_ticket, from the POS send path). The public "create batch ticket"
-# endpoint (POST /sub-kitchen/batch) is gone — it now 404s. The rest of the board
-# lifecycle (list, get, status, complete, cancel) stays, so any batch tickets
-# already in flight still progress. PrepService.create_batch_ticket is kept for
-# that existing-ticket path and for tests that exercise batch completion.
+# endpoint (POST /sub-kitchen/batch) is gone — it now 404s, and the service method
+# behind it has been deleted, so a BATCH ticket can no longer be created at all.
+# The rest of the board lifecycle (list, get, status, complete, cancel) stays
+# source-agnostic, so any BATCH ticket still in flight in an existing database
+# continues to progress and complete normally — including the finished-good credit
+# that only a BATCH ticket earns (see `complete`).
 
 
 @router.patch("/tickets/{ticket_id}/status")

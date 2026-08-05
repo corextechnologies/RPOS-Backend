@@ -9,24 +9,6 @@ from app.models.prep_enums import PrepSource, PrepStatus
 from app.schemas.quantity import Quantity
 
 
-class PrepBatchCreate(BaseModel):
-    """A sub-chef queues a batch-prep job (prep ahead of a rush).
-
-    The finished good and how many to make; components are resolved at completion
-    (from the recipe, or entered by hand then). Order-sourced tickets are created
-    by the order flow, not here.
-    """
-
-    product_id: int
-    quantity: Quantity = Field(gt=0)
-    batch_code: str | None = Field(default=None, max_length=100)
-    expiry_date: date | None = None
-    customization_note: str | None = Field(default=None, max_length=500)
-    note: str | None = Field(default=None, max_length=500)
-    priority: int = Field(default=0, ge=0)
-    due_at: datetime | None = None
-
-
 class PrepStatusUpdate(BaseModel):
     """Advance a ticket on the board (QUEUED/IN_PROGRESS/READY/CANCELLED).
 

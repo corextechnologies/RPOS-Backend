@@ -4,7 +4,11 @@ tab's headline numbers.
 The `/products` catalogue lists what the chef can pick as components when
 completing a job. The stats endpoint backs the branch portal's sub-kitchen tab
 for both the chef and the manager.
+
+Tickets are seeded the only way one can now exist — a flagged line rung up at the
+till — since batch creation is retired.
 """
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -12,29 +16,29 @@ import pytest
 from app.models.enums import BranchPosition, UserRole
 from app.models.product import ProductKind
 from app.models.request_enums import LocationType
-from app.schemas.prep import PrepBatchCreate
 from app.services.inventory import InventoryService
-from app.services.prep import PrepService
-from tests.conftest import auth_headers
-
-
-def _seed_batch(db, ctx, product_id, *, quantity=2):
-    """Seed a BATCH prep ticket via the service (the create endpoint is retired)
-    and return its id."""
-    ticket = PrepService.create_batch_ticket(
-        db, ctx["chef"], ctx["branch"].id,
-        PrepBatchCreate(product_id=product_id, quantity=quantity),
-    )
-    return ticket.id
+from tests.conftest import auth_headers, pair_terminal
 
 
 @pytest.fixture
-def manage_ctx(db, restaurant_setup, make_product, make_user):
-    """A branch with a chef, a finished good to write a recipe for, and stock."""
+def manage_ctx(db, restaurant_setup, make_product, make_user, client):
+    """A branch with a chef, a finished good to write a recipe for, and stock.
+
+    `cake` is deliberately never stocked — the made-to-order case the catalogue
+    must still offer. `cupcake` is the stocked, sellable item the stats tests ring
+    up to raise tickets, so the cake can stay unstocked.
+    """
     r = restaurant_setup["restaurant"]
     branch = restaurant_setup["home_branch"]
+    branch.code = "BR0001"
+    branch.country_code = "PK"
+    branch.province_code = "PRA"
+    branch.currency = "PKR"
+    db.flush()
 
     cake = make_product(r.id, name="Named Cake", sku="CAKE-D")
+    cupcake = make_product(r.id, name="Cupcake", sku="CUP-D",
+                           selling_price=Decimal("1.00"))
     base = make_product(r.id, name="Cake Base", sku="BASE-D", kind=ProductKind.RAW_MATERIAL)
     plaque = make_product(r.id, name="Plaque", sku="PLQ-D", kind=ProductKind.RAW_MATERIAL)
 
@@ -43,14 +47,66 @@ def manage_ctx(db, restaurant_setup, make_product, make_user):
         created_by_id=restaurant_setup["branch_mgr"].id, branch_id=branch.id,
         position=BranchPosition.CHEF,
     )
-    for product, qty in [(base, 20), (plaque, 20)]:
+    for product, qty in [(base, 20), (plaque, 20), (cupcake, 20)]:
         InventoryService.receive_stock(
             db, actor=restaurant_setup["branch_mgr"], location_type=LocationType.BRANCH,
             location_id=branch.id, product_id=product.id, quantity=qty,
         )
     db.flush()
+
+    admin = auth_headers(client, "admin@test.com")
+    vid = client.post(
+        "/v1/pos/menu/versions", json={"note": "v1"}, headers=admin
+    ).json()["data"]["id"]
+    item = client.post(
+        f"/v1/pos/menu/versions/{vid}/items",
+        json={"name": "Cupcake", "price": "500.00", "product_id": cupcake.id},
+        headers=admin,
+    )
+    assert item.status_code == 200, item.text
+    cupcake_item = item.json()["data"]["id"]
+    assert client.post(
+        f"/v1/pos/menu/versions/{vid}/publish", headers=admin
+    ).status_code == 200
+
+    device_uid = pair_terminal(
+        client, auth_headers(client, "branch@test.com"), code="T1", profile="COUNTER"
+    )
+    make_user(
+        "possell9@test.com", UserRole.BRANCH_STAFF, restaurant_id=r.id,
+        branch_id=branch.id, position=BranchPosition.CASHIER,
+    )
+    login = client.post(
+        "/v1/pos/session/login",
+        json={"email": "possell9@test.com", "password": "Pass@1234",
+              "device_uid": device_uid},
+    )
+    pos_headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+
     return {**restaurant_setup, "branch": branch, "chef": chef, "cake": cake,
-            "base": base, "plaque": plaque}
+            "cupcake": cupcake, "base": base, "plaque": plaque,
+            "cupcake_item": cupcake_item, "pos_headers": pos_headers}
+
+
+def _seed_ticket(client, ctx, *, quantity=2):
+    """Ring up a flagged line and return the prep ticket it raised."""
+    created = client.post(
+        "/v1/pos/orders",
+        json={"local_id": uuid.uuid4().hex,
+              "lines": [{"menu_item_id": ctx["cupcake_item"],
+                         "quantity": quantity, "needs_prep": True}]},
+        headers={**ctx["pos_headers"], "Idempotency-Key": uuid.uuid4().hex},
+    )
+    assert created.status_code == 200, created.text
+    order_id = created.json()["data"]["id"]
+    assert client.post(
+        f"/v1/pos/orders/{order_id}/send", headers=ctx["pos_headers"]
+    ).status_code == 200
+
+    chef = auth_headers(client, "chef@test.com")
+    board = client.get("/v1/sub-kitchen/board", headers=chef).json()["data"]
+    assert board, "the flagged line raised no ticket"
+    return max(t["id"] for t in board)
 
 
 # ---- the component catalogue the completion popup reads from ---------------
@@ -158,7 +214,9 @@ def test_products_filter_by_kind(client, manage_ctx):
     made = client.get(
         "/v1/sub-kitchen/products?kind=FINISHED_GOOD", headers=chef
     ).json()["data"]
-    assert {p["id"] for p in made} == {manage_ctx["cake"].id}
+    assert {p["id"] for p in made} == {
+        manage_ctx["cake"].id, manage_ctx["cupcake"].id
+    }
 
     components = client.get(
         "/v1/sub-kitchen/products?kind=RAW_MATERIAL", headers=chef
@@ -207,13 +265,13 @@ def test_stats_start_empty(client, manage_ctx):
     assert data["avg_order_to_ready_seconds"] is None
 
 
-def test_stats_count_prepped_waste_and_open_work(client, manage_ctx, db):
+def test_stats_count_prepped_waste_and_open_work(client, manage_ctx):
     chef = auth_headers(client, "chef@test.com")
 
-    # One completed batch of 3, one still open.
-    done_id = _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=3)
+    # One completed job of 3, one still open.
+    done_id = _seed_ticket(client, manage_ctx, quantity=3)
     client.post(f"/v1/sub-kitchen/tickets/{done_id}/complete", json={}, headers=chef)
-    _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=1)
+    _seed_ticket(client, manage_ctx, quantity=1)
 
     # And some waste.
     client.post(
@@ -233,10 +291,10 @@ def test_stats_count_prepped_waste_and_open_work(client, manage_ctx, db):
     assert data["tickets_created"]["QUEUED"] == 1
 
 
-def test_manager_sees_the_same_numbers(client, manage_ctx, db):
+def test_manager_sees_the_same_numbers(client, manage_ctx):
     """The manager's oversight view is this endpoint, not a separate screen."""
     chef = auth_headers(client, "chef@test.com")
-    tid = _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=2)
+    tid = _seed_ticket(client, manage_ctx, quantity=2)
     client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
 
     mgr = auth_headers(client, "branch@test.com")
@@ -245,9 +303,9 @@ def test_manager_sees_the_same_numbers(client, manage_ctx, db):
     assert data["tickets_completed"] == 1
 
 
-def test_stats_are_branch_scoped(client, manage_ctx, make_branch, make_user, db):
+def test_stats_are_branch_scoped(client, manage_ctx, make_branch, make_user):
     chef = auth_headers(client, "chef@test.com")
-    tid = _seed_batch(db, manage_ctx, manage_ctx["cake"].id, quantity=5)
+    tid = _seed_ticket(client, manage_ctx, quantity=5)
     client.post(f"/v1/sub-kitchen/tickets/{tid}/complete", json={}, headers=chef)
 
     other_branch = make_branch(manage_ctx["restaurant"].id, name="B2")

@@ -28,7 +28,7 @@ from app.models.production import ProductionRun
 from app.models.recipe import Recipe
 from app.models.request_enums import LocationType
 from app.models.user import User
-from app.schemas.prep import PrepBatchCreate, PrepComplete, PrepTicketOut
+from app.schemas.prep import PrepComplete, PrepTicketOut
 from app.services.audit import AuditService
 from app.services.production import ProductionService
 from app.services.tenant import has_central_kitchen
@@ -36,49 +36,6 @@ from app.services.tenant import has_central_kitchen
 
 class PrepService:
     # ---- creation ---------------------------------------------------------
-
-    @staticmethod
-    def create_batch_ticket(
-        db: Session, actor: User, branch_id: int, body: PrepBatchCreate
-    ) -> PrepTicket:
-        """Queue a batch-prep job (prep ahead of demand)."""
-        product = db.get(Product, body.product_id)
-        if product is None or product.restaurant_id != actor.restaurant_id:
-            raise NotFoundError("Product not found.")
-
-        ticket = PrepTicket(
-            restaurant_id=actor.restaurant_id,
-            branch_id=branch_id,
-            source=PrepSource.BATCH,
-            status=PrepStatus.QUEUED,
-            product_id=product.id,
-            quantity=body.quantity,
-            batch_code=(body.batch_code or "").strip(),
-            expiry_date=body.expiry_date,
-            customization_note=body.customization_note,
-            note=body.note,
-            priority=body.priority,
-            due_at=body.due_at,
-            created_by_id=actor.id,
-        )
-        db.add(ticket)
-        db.flush()
-        AuditService.record(
-            db,
-            actor=actor,
-            action="branch.prep.create",
-            entity_type="prep_ticket",
-            entity_id=ticket.id,
-            restaurant_id=actor.restaurant_id,
-            payload={
-                "branch_id": branch_id,
-                "product_id": product.id,
-                "quantity": str(body.quantity),
-                "source": PrepSource.BATCH.value,
-            },
-        )
-        db.commit()
-        return PrepService._load(db, ticket.id)
 
     @staticmethod
     def create_order_ticket(
