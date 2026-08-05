@@ -31,7 +31,6 @@ from app.models.request_enums import LocationType
 from app.models.user import User
 from app.schemas.admin import ProductPublicOut
 from app.schemas.branch import BranchWasteIn
-from app.schemas.kitchen_production import KitchenRecipeIn
 from app.schemas.menu_proposal import MenuProposalCreate
 from app.schemas.warehouse import InventoryItemOut
 from app.schemas.prep import PrepComplete, PrepStatusUpdate
@@ -266,59 +265,12 @@ def list_products(
     return ok([ProductService.to_public(p).model_dump(mode="json") for p in products])
 
 
-@router.post("/recipes")
-def publish_recipe(
-    body: KitchenRecipeIn,
-    current: User = Depends(require_capability(Capability.PREP_OPERATE)),
-    db: Session = Depends(get_db),
-):
-    """Say what a finished item is made of. A new version supersedes the old."""
-    require_actor_branch_id(current)
-    recipe = RecipeService.publish(db, current, body, made_at=LocationType.BRANCH)
-    return ok(RecipeService.to_out(db, recipe).model_dump(mode="json"))
-
-
-@router.get("/recipes")
-def list_recipes(
-    current: User = Depends(require_capability(Capability.PREP_READ)),
-    db: Session = Depends(get_db),
-):
-    """This station's own recipes — not the central kitchen's."""
-    require_actor_branch_id(current)
-    rows = RecipeService.list_active(db, current, made_at=LocationType.BRANCH)
-    return ok([RecipeService.to_out(db, r).model_dump(mode="json") for r in rows])
-
-
-# Declared BEFORE /recipes/{recipe_id}: "kitchen" must not be parsed as an id.
-@router.get("/recipes/kitchen")
-def list_kitchen_recipes(
-    current: User = Depends(require_capability(Capability.PREP_READ)),
-    db: Session = Depends(get_db),
-):
-    """Read-only reference: what the CENTRAL kitchen makes each item from.
-
-    The chef cannot edit these — authoring stays with the kitchen — but seeing
-    them lets the station build the same item here: the batch-prep flow explodes
-    whichever active recipe a product has, kitchen- or branch-made
-    (ProductionService._explode_recipe is made_at-agnostic). Kept as its own list,
-    separate from the station's own recipes above, so the two never blur together.
-    A build still consumes the recipe's components from THIS branch's stock, so
-    they must be on hand here.
-    """
-    require_actor_branch_id(current)
-    rows = RecipeService.list_active(db, current, made_at=LocationType.KITCHEN)
-    return ok([RecipeService.to_out(db, r).model_dump(mode="json") for r in rows])
-
-
-@router.get("/recipes/{recipe_id}")
-def get_recipe(
-    recipe_id: int,
-    current: User = Depends(require_capability(Capability.PREP_READ)),
-    db: Session = Depends(get_db),
-):
-    require_actor_branch_id(current)
-    recipe = RecipeService.get(db, current, recipe_id)
-    return ok(RecipeService.to_out(db, recipe).model_dump(mode="json"))
+# Recipes were removed from the sub-kitchen: a made-to-order job is finished by
+# the chef stating what was used at completion time (POST /tickets/{id}/complete
+# with `inputs`), not from a stored recipe. The recipe authoring/reference routes
+# that used to live here are gone — they 404. RecipeService still powers the
+# CENTRAL kitchen (app/api/v1/kitchen/production.py), which is untouched.
+# (A merge briefly resurrected these routes; re-removed here.)
 
 
 # --- Menu proposals: the chef suggests a dish for the menu -------------------
