@@ -20,12 +20,18 @@ from app.core.responses import ok
 from app.db.session import get_db
 from app.deps.auth import require_role
 from app.models.enums import UserRole
+from app.models.plan import ForecastPlanStatus
 from app.models.product import Product
 from app.models.user import User
-from app.schemas.forecast import ExpectedDailySalesUpdate
+from app.schemas.forecast import (
+    ExpectedDailySalesUpdate,
+    PlanCreate,
+    PlanOverrideRequest,
+)
 from app.services.audit import AuditService
 from app.services.forecast import ForecastService
 from app.services.normal_demand import get_normal_demand_engine
+from app.services.planning import PlanningService
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.ADMIN))])
 
@@ -210,6 +216,134 @@ def upcoming_events(
             within_days=within_days,
         )
     )
+
+
+def _plan_out(plan) -> dict:
+    return {
+        "id": plan.id,
+        "branch_id": plan.branch_id,
+        "starts_on": plan.starts_on.isoformat(),
+        "ends_on": plan.ends_on.isoformat(),
+        "status": plan.status.value,
+        "engine": plan.engine,
+        "note": plan.note,
+        "confirmed_at": (
+            plan.confirmed_at.isoformat() if plan.confirmed_at else None
+        ),
+        "overridden_lines": sum(1 for line in plan.lines if line.is_overridden),
+        "lines": [
+            {
+                "id": line.id,
+                "product_id": line.product_id,
+                "date": line.on_date.isoformat(),
+                "suggested_units": line.suggested_units,
+                "planned_units": line.planned_units,
+                "is_overridden": line.is_overridden,
+                "override_reason": line.override_reason,
+                # The breakdown as it was when the decision was made — sales
+                # history and the calendar both move, so recomputing it later
+                # would not reproduce what the Admin actually saw.
+                "breakdown": {
+                    "baseline": str(line.baseline) if line.baseline else None,
+                    "weekday_applied": (
+                        str(line.weekday_applied) if line.weekday_applied else None
+                    ),
+                    "event_multiplier": (
+                        str(line.event_multiplier) if line.event_multiplier else None
+                    ),
+                    "was_capped": line.was_capped,
+                    "maturity": line.maturity,
+                },
+            }
+            for line in sorted(plan.lines, key=lambda r: (r.on_date, r.product_id))
+        ],
+    }
+
+
+@router.post("/plans")
+def create_plan(
+    body: PlanCreate,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Run the forecast for a window and keep it as an editable draft.
+
+    Suggested and planned start equal — accepting is the default and overriding
+    is the exception, so the Admin has to disagree rather than having to agree.
+    """
+    plan = PlanningService.create_draft(
+        db,
+        actor=current,
+        branch_id=body.branch_id,
+        start=body.start,
+        end=body.end or body.start,
+        note=body.note,
+    )
+    return ok(_plan_out(plan))
+
+
+@router.get("/plans")
+def list_plans(
+    branch_id: int | None = Query(default=None),
+    status: ForecastPlanStatus | None = Query(default=None),
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    plans = PlanningService.list_plans(
+        db, restaurant_id=current.restaurant_id, branch_id=branch_id, status=status
+    )
+    return ok([_plan_out(p) for p in plans])
+
+
+@router.get("/plans/{plan_id}")
+def get_plan(
+    plan_id: int,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    plan = PlanningService.get_plan(
+        db, restaurant_id=current.restaurant_id, plan_id=plan_id
+    )
+    return ok(_plan_out(plan))
+
+
+@router.patch("/plans/{plan_id}/lines")
+def override_plan_lines(
+    plan_id: int,
+    body: PlanOverrideRequest,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Change planned quantities. Drafts only — a confirmed plan may already
+    have been acted on, so it is replaced rather than edited underneath."""
+    plan = PlanningService.override_lines(
+        db,
+        actor=current,
+        plan_id=plan_id,
+        entries=[line.model_dump() for line in body.lines],
+    )
+    return ok(_plan_out(plan))
+
+
+@router.post("/plans/{plan_id}/confirm")
+def confirm_plan(
+    plan_id: int,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Publish it. This is the moment a suggestion becomes a target."""
+    plan = PlanningService.confirm(db, actor=current, plan_id=plan_id)
+    return ok(_plan_out(plan))
+
+
+@router.post("/plans/{plan_id}/cancel")
+def cancel_plan(
+    plan_id: int,
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    plan = PlanningService.cancel(db, actor=current, plan_id=plan_id)
+    return ok(_plan_out(plan))
 
 
 @router.get("/forecast/normal-demand")

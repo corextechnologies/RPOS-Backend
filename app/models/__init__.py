@@ -92,6 +92,11 @@ from app.models.printing import (  # noqa: F401
 )
 from app.models.analytics import DailyProductSales  # noqa: F401
 from app.models.calendar_enums import EventSource, EventTag  # noqa: F401
+from app.models.plan import (  # noqa: F401
+    ForecastPlan,
+    ForecastPlanLine,
+    ForecastPlanStatus,
+)
 from app.models.calendar import (  # noqa: F401
     CalendarEvent,
     CalendarEventMultiplier,

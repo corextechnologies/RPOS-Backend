@@ -5,6 +5,7 @@ from app.api.v1.kitchen import (
     dispatch_notifications,
     inventory,
     locations,
+    planning,
     production,
     production_targets,
     requests,
@@ -29,3 +30,4 @@ router.include_router(production.router)
 router.include_router(production_targets.router)
 router.include_router(users.router)
 router.include_router(uploads.router)
+router.include_router(planning.router)

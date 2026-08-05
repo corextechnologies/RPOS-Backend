@@ -6,7 +6,7 @@ are stocked and consumed.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -22,6 +22,7 @@ from app.models.enums import UserRole
 from app.models.recipe import Recipe
 from app.models.user import User
 from app.services.analytics_feed import MAX_WINDOW_DAYS, AnalyticsFeedService
+from app.services.planning import PlanningService
 from app.services.pricing import PricingService
 
 router = APIRouter()
@@ -142,14 +143,39 @@ def inventory_snapshot(
 
 @router.get("/planning")
 def planning(
+    days: int = Query(default=7, ge=1, le=60),
     current: User = Depends(require_capability(Capability.INVENTORY_READ)),
     db: Session = Depends(get_db),
 ):
-    """Branch-scoped planning/forecast read.
+    """This branch's expected stock — read-only, and confirmed plans only.
 
-    Phase 7 does not exist yet, so this returns `ready: false` and an empty
-    series — the agreed contract, not zeros dressed up as a forecast. Wire
-    against it now; only the body changes when Phase 7 lands.
+    A branch never sees a raw forecast, and never sees anything the Admin has not
+    approved: a draft is the Admin thinking aloud, and showing it here would turn
+    an unfinished idea into an instruction. With nothing confirmed, this stays
+    `ready: false` rather than inventing zeros.
+
+    Read-only by construction, not by permission — there is no write route to
+    this data on the branch side at all. Any change goes back through the Admin.
     """
     branch_id = require_actor_branch_id(current)
-    return ok(AnalyticsFeedService.planning_stub(branch_id))
+    today = date.today()
+    rows = PlanningService.branch_expected_stock(
+        db,
+        restaurant_id=current.restaurant_id,
+        branch_id=branch_id,
+        start=today,
+        end=today + timedelta(days=days - 1),
+    )
+    if not rows:
+        return ok(AnalyticsFeedService.planning_stub(branch_id))
+    return ok(
+        {
+            "branch_id": branch_id,
+            "ready": True,
+            "reason": None,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "from": today.isoformat(),
+            "to": (today + timedelta(days=days - 1)).isoformat(),
+            "expected_stock": rows,
+        }
+    )
