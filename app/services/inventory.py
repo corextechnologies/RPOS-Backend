@@ -497,8 +497,8 @@ class InventoryService:
         quantity: int,
         batch_code: str | None = None,
         notes: str | None = None,
-    ) -> InventoryItem:
-        """Take a sold product off branch stock, 1:1.
+    ) -> list[InventoryItem]:
+        """Take a sold product off branch stock, earliest-expiry-first.
 
         A branch sells what it HOLDS. The kitchen makes burgers from raw
         materials and allocates finished burgers to the branch, so selling one
@@ -510,19 +510,22 @@ class InventoryService:
         live. Exploding it here would hunt for buns at a branch that has none and
         fail every sale with `insufficient_stock`.
 
-        The seam stays because it is still the single place a sale touches stock:
-        if a future branch assembles on site, that behaviour goes here and
-        nowhere else. Branch-side finishing today is an explicit, logged
-        sub-kitchen prep ticket instead — see /v1/sub-kitchen.
+        Branch finished goods carry no batch code, so a product can sit in several
+        lots that differ only by expiry. The deduction runs FEFO across those lots
+        — soonest expiry first, expired lots excluded (you cannot sell expired
+        stock) — instead of a single-row lookup, which raised MultipleResultsFound
+        the moment a product held more than one lot. `batch_code` is ignored:
+        branch stock is product-level. A shortfall still raises the same
+        `insufficient_stock` (409) the online send rejects on and the offline sync
+        flags as an oversell.
         """
-        return InventoryService.apply_dispatch(
+        return InventoryService.apply_dispatch_fefo(
             db,
             actor=actor,
             location_type=LocationType.BRANCH,
             location_id=branch_id,
             product_id=product_id,
             quantity=quantity,
-            batch_code=batch_code,
             notes=notes,
         )
 
