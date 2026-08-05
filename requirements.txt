@@ -16,6 +16,13 @@ email-validator==2.2.0
 # only be resolved if this is installed — see app/services/business_day.py.
 tzdata==2026.1
 
+# Hijri <-> Gregorian conversion for the Phase 7 event calendar. The Islamic
+# calendar drifts ~10-11 days earlier each Gregorian year, so Ramadan and both
+# Eids must be computed per year rather than stored as dates — see
+# app/services/hijri.py. Note it computes the tabular Umm al-Qura date; Pakistan
+# starts on a local moon sighting, so results are estimates the Admin confirms.
+hijridate==2.6.0
+
 # Image storage (Cloudflare R2, S3-compatible) + shrinking on upload
 boto3==1.43.57
 botocore==1.43.57

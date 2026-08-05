@@ -3,6 +3,7 @@ from fastapi import APIRouter
 
 from app.api.v1.admin import (
     billing,
+    calendar,
     inventory,
     locations,
     menu,
@@ -41,3 +42,7 @@ router.include_router(uploads.router)
 router.include_router(production_targets.router)
 router.include_router(menu.router)
 router.include_router(waste.router)
+# Phase 7 Stage 2. Registered after products/pricing: its only /products path
+# is the 3-segment /products/{id}/event-tags, which cannot shadow the literal
+# 2-segment /products/pricing, but keeping the order makes that obvious.
+router.include_router(calendar.router)

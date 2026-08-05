@@ -94,6 +94,59 @@ so switching to the explicit rule moved no existing number.
 > Needs `tzdata` (in `requirements.txt`). Windows ships no system timezone
 > database, and slim Linux images often drop theirs.
 
+## Event calendar (Phase 7, Stage 2)
+
+The rule-based half of forecasting: what is happening on a date, and how much it
+moves demand. Admin-only — Kitchen and Branch never see or edit it.
+
+- `POST /v1/admin/calendar/generate` `{ "year": 2026 }` — build that year's
+  national holidays and Hijri-computed events. Safe to re-run.
+- `GET  /v1/admin/calendar/events` — events in a window (default: next 90 days)
+- `POST /v1/admin/calendar/events` — add a one-off (a cricket final, a promo)
+- `PATCH /v1/admin/calendar/events/{id}` — edit, or confirm a lunar date
+- `DELETE /v1/admin/calendar/events/{id}` — manual events only
+- `GET  /v1/admin/calendar/tags` — the fixed tag list
+- `GET`/`PUT /v1/admin/products/{id}/event-tags` — tag a product
+- `GET`/`PUT /v1/admin/calendar/events/{id}/product-multipliers` — exact numbers
+  per product for one event (`PUT` merges; send `replace: true` to wipe the rest)
+- `DELETE /v1/admin/calendar/events/{id}/product-multipliers/{product_id}` —
+  drop a product's own number so it falls back to its tag
+
+**This layer stays rule-based permanently.** Ramadan happens once a year, so five
+years of history is five examples — too few for any statistical method to learn
+from. And the Hijri calendar drifts ~10–11 days earlier each Gregorian year
+(Ramadan starts 18 Feb in 2026, 8 Feb in 2027), so the dates cannot be hardcoded
+either. Hence: computed yearly, confirmed by a human.
+
+> ⚠️ **Lunar dates are estimates until confirmed.** `hijridate` computes the
+> tabular Umm al-Qura date, but Ramadan and both Eids begin in Pakistan on a
+> local moon sighting — the two routinely differ by a day. Generated lunar events
+> carry `is_estimated: true`; setting their dates via PATCH clears it, and a
+> later `generate` will not overwrite a confirmed date or a tuned multiplier.
+
+Three resolution rules, all judgement calls rather than arithmetic:
+
+- **A product's own number beats its tag.** Samosas may really run ×3.5 while
+  pakoras run ×3.1 — a tag forces both to one figure, so an exact per-product
+  number always wins. The tag is the fallback, and is not redundant: a dish added
+  in January has no history from last Ramadan however long the system has run, so
+  without it that dish would silently get no uplift at all — a normal-looking
+  forecast that sells out by 7pm every evening. After one Ramadan the system can
+  *propose* per-product numbers from what actually sold (`is_proposed`), for the
+  Admin to confirm rather than invent.
+- **Multipliers compound across events, and take the maximum within one event.**
+  A promo during Ramadan genuinely stacks (3.5 × 2.0). But a samosa tagged both
+  `SNACK` and `IFTAR_ITEM` must not be multiplied twice for the single fact that
+  it is Ramadan — it takes the larger.
+- **`weekly_factor_weight` belongs to the date, not the product.** It says how
+  much of the normal day-of-week pattern survives (0 = replaced, 1 = intact), and
+  applies to every product at the branch even one the event does not otherwise
+  move. Where events overlap, the lowest wins. Ramadan is ~0.3; a cricket final
+  is 1, because it adds on top of an already-busy Sunday.
+
+`GENERAL` is a wildcard tag: a multiplier on it applies to every product, so a
+whole-menu promo needs no tagging at all.
+
 ## Billing cycle job (Phase 8)
 
 Run daily via cron or manually:
