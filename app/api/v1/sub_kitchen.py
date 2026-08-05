@@ -241,6 +241,9 @@ def list_products(
     warehouse, and choosing one at completion would just die on
     insufficient_stock. Pass `all=true` to drop the component filter.
 
+    RESALE products are never returned — a bottled drink is sold as-is, never used
+    to finish a dish, so it is not a prep component.
+
     Returns the real product `id` — the `product_id` the completion `inputs`
     expect. A menu item's id is a different table's key and must never be sent
     here: both are small integers, so a mixed-up id resolves to a *different real
@@ -250,7 +253,12 @@ def list_products(
     """
     branch_id = require_actor_branch_id(current)
     if all:
-        products = ProductService.list_products(db, current, kind=kind)
+        # list_products is shared (warehouse/kitchen use it), so filter resale
+        # here rather than in the service.
+        products = [
+            p for p in ProductService.list_products(db, current, kind=kind)
+            if p.kind is not ProductKind.RESALE
+        ]
     else:
         products = ProductService.list_for_prep_station(
             db, current, branch_id, kind=kind

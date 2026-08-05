@@ -219,19 +219,16 @@ class ProductService:
         *,
         kind: ProductKind | None = None,
     ) -> list[Product]:
-        """The catalogue a branch sub-kitchen writes recipes against.
+        """The components the sub-kitchen picks when completing a prep job.
 
-        The two sides of a recipe need opposite rules, which is why this is not
-        simply list_stocked_at:
-
-          * COMPONENTS must be filtered to branch stock. The restaurant's whole
+        Rules:
+          * COMPONENTS are filtered to branch stock. The restaurant's whole
             catalogue offers flour and chocolate that live at the warehouse, and
-            a recipe written against them can never run — every prep ticket dies
-            on insufficient_stock.
-          * The FINISHED GOOD must NOT be. A made-to-order item is never held as
-            stock (that is the point of it), and a batch item the branch is about
-            to start making has none yet, so a stock filter would hide exactly the
-            things the chef is trying to write a recipe for.
+            picking one would just die on insufficient_stock at completion.
+          * FINISHED GOODS are not stock-filtered — a made-to-order item is never
+            held as stock, that is the point of it.
+          * RESALE is always excluded. A bottled drink is sold as-is; the prep
+            station never uses it to finish a dish, so it is not a component.
         """
         stocked = (
             select(InventoryItem.product_id)
@@ -253,6 +250,9 @@ class ProductService:
                 (Product.kind == ProductKind.FINISHED_GOOD)
                 | Product.id.in_(stocked)
             )
+        # Resale goods are never prep components — keep them out of the picker,
+        # even if the branch stocks them or a caller asks for kind=RESALE.
+        stmt = stmt.where(Product.kind != ProductKind.RESALE)
         return list(db.execute(stmt.order_by(Product.id)).scalars().all())
 
     @staticmethod
