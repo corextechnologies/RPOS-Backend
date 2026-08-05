@@ -3,7 +3,15 @@ from __future__ import annotations
 import enum
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Enum as SAEnum, ForeignKey, Integer, Numeric, String
+from sqlalchemy import (
+    Boolean,
+    Enum as SAEnum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -59,6 +67,13 @@ class Product(Base, PKMixin, TimestampMixin):
     """
 
     __tablename__ = "products"
+    __table_args__ = (
+        # Catalogue reads filter by category within a tenant. Created in migration
+        # 0012; declared here so the models and the migrations describe the same
+        # table. This sits alongside the plain restaurant_id index below rather
+        # than replacing it — both exist in the database.
+        Index("ix_products_restaurant_category", "restaurant_id", "category"),
+    )
 
     restaurant_id: Mapped[int] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True

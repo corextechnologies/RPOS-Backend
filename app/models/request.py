@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -33,22 +34,32 @@ class Request(Base, PKMixin, TimestampMixin):
         UniqueConstraint(
             "restaurant_id", "local_id", name="uq_request_restaurant_local_id"
         ),
+        # Every portal inbox is "this restaurant's requests, of this type, in this
+        # status" — so one composite serves them all, and its leftmost column also
+        # serves a bare restaurant_id lookup. Created in migration 0003; declared
+        # here so the models and the migrations describe the same table.
+        Index(
+            "ix_requests_restaurant_status_type",
+            "restaurant_id",
+            "status",
+            "request_type",
+        ),
     )
 
     restaurant_id: Mapped[int] = mapped_column(
-        ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False
     )
     # Offline-minted business-dedup anchor; NULL for online creates without one.
     local_id: Mapped[str | None] = mapped_column(String(64))
     request_type: Mapped[RequestType] = mapped_column(
-        _request_type_enum, nullable=False, index=True
+        _request_type_enum, nullable=False
     )
-    status: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
     requester_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=False, index=True
     )
     assignee_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
+        ForeignKey("users.id", ondelete="SET NULL")
     )
     source_location_type: Mapped[LocationType | None] = mapped_column(_location_type_enum)
     source_location_id: Mapped[int | None] = mapped_column(Integer)

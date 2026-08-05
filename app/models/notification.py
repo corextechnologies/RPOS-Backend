@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -8,12 +8,21 @@ from app.db.base import Base, PKMixin, TimestampMixin
 
 class Notification(Base, PKMixin, TimestampMixin):
     __tablename__ = "notifications"
+    __table_args__ = (
+        # The inbox query is "my unread ones, newest first" — one composite covers
+        # it, and its leftmost column also serves a bare user_id lookup. Created
+        # in migration 0003; declared here so the models and the migrations
+        # describe the same table.
+        Index(
+            "ix_notifications_user_read_created", "user_id", "is_read", "created_at"
+        ),
+    )
 
     restaurant_id: Mapped[int | None] = mapped_column(
-        ForeignKey("restaurants.id", ondelete="CASCADE"), index=True
+        ForeignKey("restaurants.id", ondelete="CASCADE")
     )
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)

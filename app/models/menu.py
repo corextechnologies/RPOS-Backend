@@ -222,8 +222,11 @@ class ItemAvailability(Base, PKMixin, TimestampMixin):
     )
     is_available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     reason: Mapped[str | None] = mapped_column(String(255))
+    # No index: nothing looks an 86 up by who set it — it is shown alongside the
+    # row, never searched on. Migration 0015 created none either, and the model
+    # asking for one it never got was the drift `alembic check` reported.
     marked_by_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), index=True
+        ForeignKey("users.id", ondelete="SET NULL")
     )
     # An 86 is usually "today", not "forever". Null = until someone clears it.
     auto_clear_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

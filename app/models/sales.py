@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TimestampMixin
@@ -18,6 +18,13 @@ class SalesRecord(Base, PKMixin, TimestampMixin):
     """
 
     __tablename__ = "sales_records"
+    __table_args__ = (
+        # One sales record per order. Expressed as a named constraint rather
+        # than a unique index because that is what migration 0015 created —
+        # the rule is identical either way, but the models and the migrations
+        # must describe the same table.
+        UniqueConstraint("order_id", name="uq_sales_records_order_id"),
+    )
 
     restaurant_id: Mapped[int] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
@@ -31,7 +38,7 @@ class SalesRecord(Base, PKMixin, TimestampMixin):
     # `orders` and repointed the FK — the column name lost the "branch_" prefix
     # because an order is no longer branch-portal-specific.)
     order_id: Mapped[int | None] = mapped_column(
-        ForeignKey("orders.id", ondelete="SET NULL"), unique=True, index=True
+        ForeignKey("orders.id", ondelete="SET NULL"), index=True
     )
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(
