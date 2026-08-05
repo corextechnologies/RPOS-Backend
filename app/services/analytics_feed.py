@@ -159,18 +159,24 @@ class AnalyticsFeedService:
 
     @staticmethod
     def planning_stub(branch_id: int) -> dict:
-        """The branch-scoped planning/forecast read.
+        """The branch-scoped planning read — still empty, now for a better reason.
 
-        Phase 7 does not exist yet. This returns the CONTRACT the frontend can
-        wire against today, with `ready: false` and an empty series — not zeros
-        dressed up as a forecast. When Phase 7 lands, only this body changes.
+        Forecasting exists as of Phase 7 Stage 4, but a branch must NOT be shown
+        it. The design is explicit: Kitchen and Branch never see a raw forecast,
+        and never see anything before the Admin has confirmed it. What lands here
+        is the Admin's CONFIRMED expected stock, which Stage 5 publishes.
+
+        So this stays `ready: false` — deliberately, not because nothing was
+        built. Wiring the raw forecast in here would leak an unapproved
+        suggestion to the branch as though it were an instruction.
         """
         return {
             "branch_id": branch_id,
             "ready": False,
-            "reason": "Phase 7 (Analysis & Forecasting) is not implemented yet. "
-                      "This endpoint is the agreed contract; the shape below is "
-                      "final and will fill in when Phase 7 lands.",
+            "reason": "Forecasting is running, but no plan has been confirmed for "
+                      "this branch yet. A branch sees expected stock only once "
+                      "the Admin approves it — the shape below is final and will "
+                      "fill in then.",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "horizon_days": 0,
             "forecast": [],   # [{date, product_id, predicted_units, confidence}]

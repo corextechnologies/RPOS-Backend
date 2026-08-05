@@ -1,8 +1,12 @@
-"""Admin routes for the learned half of forecasting (Phase 7, Stage 3).
+"""Admin routes for forecasting (Phase 7, Stages 3-4).
 
-Only one thing here for now: the day-one expected daily amount for a product.
-Everything else this layer produces is computed from real sales — nobody types
-a baseline or a weekday pattern.
+The Admin is the only role that sees any of this. A forecast is a suggestion
+they accept or override; Kitchen and Branch see nothing until a plan is
+confirmed, which is Stage 5.
+
+The only number anyone types here is a brand-new product's expected daily
+amount, and only until real sales replace it. Baselines, weekday patterns and
+event effects are all computed.
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from app.models.product import Product
 from app.models.user import User
 from app.schemas.forecast import ExpectedDailySalesUpdate
 from app.services.audit import AuditService
+from app.services.forecast import ForecastService
 from app.services.normal_demand import get_normal_demand_engine
 
 router = APIRouter(dependencies=[Depends(require_role(UserRole.ADMIN))])
@@ -61,8 +66,8 @@ def set_expected_daily_sales(
 ):
     """Set roughly how many of this sell in a day, for its first days on sale.
 
-    A seed, not a setting: real sales take over from it progressively and it
-    stops mattering within a couple of months. Send null to clear it.
+    A seed, not a setting: real sales take over progressively and after about
+    four weeks it stops counting at all. Send null to clear it.
     """
     product = _product(db, current, product_id)
     before = (
@@ -105,6 +110,108 @@ def set_expected_daily_sales(
     )
 
 
+def _line_out(line) -> dict:
+    """Output format (a): the number, its parts, and how far to trust it."""
+    return {
+        "product_id": line.product_id,
+        "product_name": line.product_name,
+        "date": line.on.isoformat(),
+        "suggested_units": line.suggested_units,
+        "units": str(line.units),
+        "breakdown": {
+            "baseline": str(line.baseline),
+            "weekday_factor": str(line.weekday_factor),
+            "weekday_applied": str(line.weekday_applied),
+            "event_multiplier": str(line.event_multiplier),
+            "before_cap": str(line.raw_units),
+            "was_capped": line.was_capped,
+        },
+        "confidence": {
+            "maturity": line.maturity,
+            "observed_days": line.observed_days,
+            "engine": line.engine,
+            "dates_estimated": line.is_estimated,
+        },
+        "events": [
+            {
+                "event_id": e.event_id,
+                "name": e.name,
+                "multiplier": str(e.multiplier),
+                "source": e.source,
+                "is_estimated": e.is_estimated,
+                "is_proposed": e.is_proposed,
+            }
+            for e in line.events
+        ],
+        "notes": line.notes,
+    }
+
+
+@router.get("/forecast")
+def forecast(
+    branch_id: int = Query(...),
+    start: date_type = Query(...),
+    end: date_type | None = Query(default=None),
+    product_id: int | None = Query(default=None),
+    include_all: bool = Query(default=False),
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """The forecast for a branch over a date range, with its reasoning.
+
+    A suggestion, never an instruction: nothing here reaches Kitchen or Branch
+    until a plan is confirmed (Stage 5).
+    """
+    lines = ForecastService.for_branch(
+        db,
+        restaurant_id=current.restaurant_id,
+        branch_id=branch_id,
+        start=start,
+        end=end or start,
+        product_ids=[product_id] if product_id is not None else None,
+        include_all=include_all,
+    )
+    return ok([_line_out(line) for line in lines])
+
+
+@router.get("/forecast/hot-products")
+def hot_products(
+    branch_id: int | None = Query(default=None),
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=10, ge=1, le=100),
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """What is selling most right now, by quantity. Omit branch_id for all."""
+    return ok(
+        ForecastService.hot_products(
+            db,
+            restaurant_id=current.restaurant_id,
+            branch_id=branch_id,
+            days=days,
+            limit=limit,
+        )
+    )
+
+
+@router.get("/forecast/upcoming-events")
+def upcoming_events(
+    branch_id: int | None = Query(default=None),
+    within_days: int = Query(default=14, ge=1, le=365),
+    current: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Events starting soon and what they are expected to do to demand."""
+    return ok(
+        ForecastService.upcoming_events(
+            db,
+            restaurant_id=current.restaurant_id,
+            branch_id=branch_id,
+            within_days=within_days,
+        )
+    )
+
+
 @router.get("/forecast/normal-demand")
 def normal_demand(
     branch_id: int = Query(...),
@@ -113,10 +220,11 @@ def normal_demand(
     current: User = Depends(require_role(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
-    """What a normal day looks like for these products, before events apply.
+    """What a normal day looks like for these products, BEFORE events apply.
 
-    Diagnostic for Stage 3 — the Admin-facing forecast screen arrives in Stage 4,
-    where this is multiplied by the event calendar and shown with its breakdown.
+    A diagnostic view: it shows the learned half on its own, which is what you
+    want when asking "is the baseline sensible?" rather than "what should we make
+    on Eid?". For the answer with events applied, use GET /admin/forecast.
     """
     if product_id is not None:
         product_ids = [_product(db, current, product_id).id]
