@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from app.api.v1.admin import (
     billing,
     calendar,
+    forecast,
     inventory,
     locations,
     menu,
@@ -46,3 +47,6 @@ router.include_router(waste.router)
 # is the 3-segment /products/{id}/event-tags, which cannot shadow the literal
 # 2-segment /products/pricing, but keeping the order makes that obvious.
 router.include_router(calendar.router)
+# Phase 7 Stage 3. Same /products/{id}/... shape as calendar's event-tags, so
+# the literal /products/pricing route keeps priority by being registered first.
+router.include_router(forecast.router)

@@ -90,6 +90,18 @@ class Product(Base, PKMixin, TimestampMixin):
     cost_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     selling_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     category: Mapped[str | None] = mapped_column(String(100))
+    # Phase 7: the day-one forecasting seed — roughly how many of this sell in a
+    # day, stated by the Admin when the product is created. There is no history to
+    # learn from on day one, and a forecast of zero would read as "expect no
+    # demand", which is a different claim from "we don't know yet".
+    #
+    # A seed, not a setting: from the first real sale the observed average takes
+    # over progressively, and after about four weeks of sales it stops counting
+    # at all. Null means no expectation was given.
+    # See app/services/normal_demand.py.
+    assumed_daily_units: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 3), nullable=True
+    )
     # 86-ing: an unavailable product cannot be sold. Restaurant-wide in Phase 5.1;
     # POS-1 adds branch-scoped availability on top.
     is_available: Mapped[bool] = mapped_column(
