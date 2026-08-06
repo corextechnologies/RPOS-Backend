@@ -48,6 +48,11 @@ class ItemState:
     #: When a manual 86 lapses on its own ("off sale until 6pm"). None = until
     #: someone puts it back.
     auto_clear_at: datetime | None = None
+    #: Structured cause when unavailable: "STOCK" (ran out) or "MANUAL" (taken
+    #: off sale). `reason` is the sentence a human reads; this is what code
+    #: branches on. Matching on the sentence would break the moment someone
+    #: reworded it — and the two mean very different things to a forecast.
+    blocked_by: str | None = None
 
 
 class AvailabilityService:
@@ -134,7 +139,7 @@ class AvailabilityService:
             if marked is not None and not marked.is_available:
                 return ItemState(
                     item.id, False, marked.reason or "Marked unavailable", None,
-                    item.name, marked.auto_clear_at,
+                    item.name, marked.auto_clear_at, "MANUAL",
                 )
             if item.product_id is None:
                 return ItemState(
@@ -148,7 +153,8 @@ class AvailabilityService:
                 )
             if qty <= 0:
                 return ItemState(
-                    item.id, False, "Out of stock", qty, item.name, clears_at(item.id)
+                    item.id, False, "Out of stock", qty, item.name,
+                    clears_at(item.id), "STOCK",
                 )
             return ItemState(
                 item.id, True, None, qty, item.name, clears_at(item.id)
@@ -167,7 +173,7 @@ class AvailabilityService:
             if marked is not None and not marked.is_available:
                 states[item.id] = ItemState(
                     item.id, False, marked.reason or "Marked unavailable", None,
-                    item.name, marked.auto_clear_at,
+                    item.name, marked.auto_clear_at, "MANUAL",
                 )
                 continue
             parts = combo_parts.get(item.id, [])
@@ -180,7 +186,10 @@ class AvailabilityService:
             if blocked:
                 states[item.id] = ItemState(
                     item.id, False, f"Unavailable: {', '.join(blocked)}", None,
-                    item.name, clears_at(item.id),
+                    # A deal that cannot be assembled because a component ran out
+                    # is a supply problem to the customer, whatever the component's
+                    # own cause was.
+                    item.name, clears_at(item.id), "STOCK",
                 )
             else:
                 states[item.id] = ItemState(

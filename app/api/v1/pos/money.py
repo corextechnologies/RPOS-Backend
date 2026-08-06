@@ -34,6 +34,7 @@ from app.schemas.pos import (
 from app.services.idempotency import IdempotencyService
 from app.services.payments import PaymentService, PricingQuoteService
 from app.services.shifts import ShiftService
+from app.services.refusals import RefusalService
 from app.services.sync import SyncService
 
 router = APIRouter()
@@ -269,8 +270,26 @@ def sync_batch(
     session: PosSession = Depends(get_pos_session),
     db: Session = Depends(get_db),
 ):
-    """Replay a device's offline queue. Per-element results, capped at 50."""
-    return ok(SyncService.replay(db, session, body.envelopes))
+    """Replay a device's offline queue. Per-element results, capped at 50.
+
+    Refusals ride in the same parcel as the orders rather than in a call of their
+    own, so one shift's orders and refusals arrive together and cannot get out of
+    step. A replayed queue cannot double-count them: each carries a device-minted
+    local_id, and one already seen for this branch is skipped.
+    """
+    result = SyncService.replay(db, session, body.envelopes)
+    if body.refusals:
+        recorded = RefusalService.record_from_sync(
+            db,
+            restaurant_id=session.user.restaurant_id,
+            branch_id=session.branch_id,
+            rows=body.refusals,
+            device_id=session.device.id if session.device else None,
+            actor_id=session.user.id,
+        )
+        db.commit()
+        result = {**result, "refusals_recorded": recorded}
+    return ok(result)
 
 
 @router.get("/orders/flagged")

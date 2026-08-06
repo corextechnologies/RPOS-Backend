@@ -25,6 +25,7 @@ from app.models.menu_enums import OrderStatus
 from app.models.order import Order, OrderLine
 from app.models.product import Product
 from app.models.request_enums import LocationType
+from app.models.refusal_enums import RefusalReason
 from app.models.sales import SalesRecord
 from app.models.user import User
 from app.pricing.money import to_decimal, to_minor
@@ -35,6 +36,7 @@ from app.schemas.branch import (
     BranchOrderOut,
 )
 from app.services.audit import AuditService
+from app.services.refusals import RefusalService
 from app.services.inventory import (
     InventoryService,
     insufficient_stock_error,
@@ -77,12 +79,46 @@ def settle_stock_and_sales(
                 quantity=qty,
                 notes=f"Order #{order.id}",
             )
+        except ConflictError as exc:
+            # Present but short. This is the richest unmet-demand signal there
+            # is — it carries BOTH what was asked for and what we actually had,
+            # so the gap is measured rather than inferred. Recorded before the
+            # re-raise, on its own connection, because the raise discards this
+            # transaction (see app/services/refusals.py).
+            if exc.code != "insufficient_stock":
+                raise
+            available = 0
+            if isinstance(getattr(exc, "details", None), dict):
+                available = int(exc.details.get("available") or 0)
+            RefusalService.record(
+                db,
+                restaurant_id=order.restaurant_id,
+                branch_id=branch_id,
+                reason=RefusalReason.SHORT_STOCK,
+                requested_units=qty,
+                available_units=available,
+                product_id=product_id,
+                actor_id=actor.id,
+                note=f"Order #{order.id}",
+            )
+            raise
         except NotFoundError as exc:
             # Branch holds no row for this product: nothing on hand to sell. A
             # present-but-short row raises the rich 409 from _apply_delta's guard
             # (with the branch's on-hand) before we get here. Branch stock is
             # unbatched, so no batch_code and `available` is the product total.
             product = db.get(Product, product_id)
+            RefusalService.record(
+                db,
+                restaurant_id=order.restaurant_id,
+                branch_id=branch_id,
+                reason=RefusalReason.OUT_OF_STOCK,
+                requested_units=qty,
+                available_units=0,
+                product_id=product_id,
+                actor_id=actor.id,
+                note=f"Order #{order.id}",
+            )
             raise insufficient_stock_error(
                 product_id=product_id,
                 product_name=product.name if product else None,

@@ -19,6 +19,7 @@ from app.models.payment import (
 )
 from app.models.pos import DeviceProfile, DeviceStatus
 from app.models.printing_enums import PrintJobState, PrintKind
+from app.models.refusal_enums import RefusalReason
 from app.pricing.types import OrderChannel, OrderType, PaymentMethod
 
 
@@ -509,8 +510,37 @@ class SyncEnvelopeIn(BaseModel):
     print_results: list[PrintResultIn] | None = None
 
 
+class RefusalIn(BaseModel):
+    """One refusal a device queued while offline.
+
+    `local_id` is device-minted, exactly like an order's, so a queue replayed
+    after a failed upload cannot double-count. `occurred_at` is when the customer
+    was turned away, not when we heard about it — an offline refusal replays hours
+    later and must land on the day it happened.
+    """
+
+    local_id: str = Field(min_length=1, max_length=64)
+    menu_item_id: int | None = None
+    reason: RefusalReason
+    requested_units: int = Field(ge=1)
+    #: How many could have been supplied. 0 when the shelf was empty.
+    available_units: int = Field(default=0, ge=0)
+    occurred_at: datetime
+    note: str | None = Field(default=None, max_length=255)
+
+
 class SyncBatchIn(BaseModel):
-    envelopes: list[SyncEnvelopeIn] = Field(min_length=1, max_length=50)
+    """A reconnecting device's whole queue, in one parcel.
+
+    Refusals ride ALONGSIDE orders rather than inside an envelope: the order
+    contract stays untouched (`envelopes` requires an order, which is a real
+    safeguard on the money path), and both lists arrive in the same request and
+    the same transaction — so orders and refusals from one shift cannot get out
+    of step. Its own cap, so a long offline stretch cannot post one giant list.
+    """
+
+    envelopes: list[SyncEnvelopeIn] = Field(default_factory=list, max_length=50)
+    refusals: list[RefusalIn] = Field(default_factory=list, max_length=50)
 
 
 # --- POS-5: recipes -----------------------------------------------------------

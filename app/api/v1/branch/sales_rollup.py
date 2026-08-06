@@ -17,7 +17,7 @@ and a scheduled one can coexist without coordinating.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -31,6 +31,7 @@ from app.models.enums import UserRole
 from app.models.location import Branch
 from app.models.user import User
 from app.services.demand import DemandRollupService
+from app.services.refusals import RefusalService
 
 router = APIRouter()
 
@@ -61,5 +62,45 @@ def rollup_branch_sales(
             "to": result["to"].isoformat(),
             "rows_written": result["rows_written"],
             "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@router.get("/sales/refusals")
+def list_refusals(
+    days: int = 30,
+    demand_only: bool = False,
+    current: User = Depends(require_role(UserRole.BRANCH_MANAGER)),
+    db: Session = Depends(get_db),
+):
+    """What this branch turned away, per product, over the last `days`.
+
+    `demand_only=true` drops items that were deliberately taken off sale, leaving
+    only genuine stock shortfalls — that is the view a forecast would use. The
+    default keeps both, because "we pulled it for a quality problem 14 times"
+    is worth a manager seeing even though it is not unmet demand.
+
+    A floor, not a measurement: only customers who reached the till are counted.
+    Someone who reads the board, sees the item is gone and walks out never
+    appears here.
+    """
+    branch_id = require_actor_branch_id(current)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=max(days, 1))
+    rows = RefusalService.summary(
+        db,
+        restaurant_id=current.restaurant_id,
+        branch_id=branch_id,
+        start=start,
+        end=end,
+        demand_only=demand_only,
+    )
+    return ok(
+        {
+            "branch_id": branch_id,
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "demand_only": demand_only,
+            "products": rows,
         }
     )

@@ -27,6 +27,7 @@ from app.models.order import Order, OrderLine, OrderLineModifier
 from app.models.payment import Payment, PaymentStatus
 from app.models.printing import PrintJob, Station
 from app.models.printing_enums import PrintJobState, PrintKind
+from app.models.refusal_enums import RefusalReason
 from app.models.request_enums import LocationType
 from app.models.sales import SalesRecord
 from app.models.user import User
@@ -41,6 +42,7 @@ from app.services.orders import settle_or_flag, settle_stock_and_sales
 from app.services.prep import PrepService
 from app.services.print_jobs import PrintJobService
 from app.services.printing import RoutingService
+from app.services.refusals import RefusalService
 from app.services.tenant import has_central_kitchen
 import app.pricing.packs  # noqa: F401  (registers the country packs)
 
@@ -130,6 +132,26 @@ class PosOrderService:
                 raise NotFoundError("Menu item not found on the published menu.")
             state = states.get(item.id)
             if state is not None and not state.is_available:
+                # Record what was turned away BEFORE raising. The raise discards
+                # this request's transaction, so RefusalService deliberately
+                # writes on its own connection — see app/services/refusals.py.
+                RefusalService.record(
+                    db,
+                    restaurant_id=actor.restaurant_id,
+                    branch_id=branch_id,
+                    reason=(
+                        RefusalReason.STAFF_PULLED
+                        if state.blocked_by == "MANUAL"
+                        else RefusalReason.OUT_OF_STOCK
+                    ),
+                    requested_units=entry.quantity,
+                    available_units=0,
+                    menu_item_id=item.id,
+                    product_id=item.product_id,
+                    device_id=session.device.id if session.device else None,
+                    actor_id=actor.id,
+                    note=state.reason,
+                )
                 raise ConflictError(
                     f"'{item.name}' is unavailable: {state.reason}",
                     code="item_unavailable",
