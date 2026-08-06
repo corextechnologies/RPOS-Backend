@@ -92,6 +92,27 @@ WEEKDAY_MIN_DAILY_VOLUME = Decimal("5")
 WEEKDAY_FLOOR = Decimal("0.50")
 WEEKDAY_CEILING = Decimal("2.00")
 
+#: Is the unmet-demand adjustment LIVE, or only computed for comparison?
+#:
+#: False means shadow: both baselines are worked out on every prediction, the
+#: sold-only figure is the one that leaves this module, and the adjusted one
+#: rides alongside so it can be watched. Flipping this is a deliberate act —
+#: a code change, reviewed — rather than a runtime setting somebody could nudge,
+#: because it is the only switch in the whole phase that makes forecasts LARGER.
+#: An over-forecast drives over-prep and waste; an under-forecast just sells out.
+#:
+#: Do not flip it until the shadow numbers have been watched against real
+#: refusals for a stretch. With no refusals recorded the two figures are
+#: identical, so a comparison today proves nothing.
+USE_UNMET_DEMAND = False
+
+#: The most the unmet adjustment may lift a baseline. Refusals are a floor on
+#: demand, not a measurement, and they are noisy: a cashier retrying the same
+#: item three times writes three refusals for one lost customer. Doubling is a
+#: generous ceiling for a genuine sell-out and a hard stop on a mistyped
+#: quantity or a burst of retries balooning a forecast.
+MAX_UNMET_UPLIFT = Decimal("2.00")
+
 _Q = Decimal("0.001")
 
 
@@ -127,6 +148,21 @@ class NormalDemand:
     engine: str = "heuristic"
     #: Plain-language reasons, for the breakdown.
     notes: list[str] = field(default_factory=list)
+
+    # ---- the unmet-demand shadow ----------------------------------------
+    #: What the baseline WOULD be if refusals counted, after the cap. Always
+    #: computed; only used when USE_UNMET_DEMAND is on. Equal to `baseline` when
+    #: nothing was ever turned away, which is the normal case today.
+    baseline_with_unmet: Decimal = ZERO
+    #: Average units per normal day that were asked for and refused.
+    unmet_per_day: Decimal = ZERO
+    #: How many days in the window had at least one refusal.
+    unmet_days: int = 0
+    #: True when the uplift hit MAX_UNMET_UPLIFT — worth surfacing, because a
+    #: capped uplift usually means noisy refusals rather than huge demand.
+    unmet_capped: bool = False
+    #: Whether the adjusted figure is the live one, or shadow-only.
+    unmet_live: bool = False
 
     @property
     def has_history(self) -> bool:
@@ -178,11 +214,13 @@ class _HeuristicSnapshot:
         self,
         *,
         history: dict[int, dict[date, int]],
+        unmet_history: dict[int, dict[date, int]],
         assumptions: dict[int, Decimal | None],
         normal_days: list[date],
         first_seen: dict[int, date],
     ) -> None:
         self._history = history
+        self._unmet_history = unmet_history
         self._assumptions = assumptions
         self._normal_days = normal_days
         self._first_seen = first_seen
@@ -213,6 +251,20 @@ class _HeuristicSnapshot:
             result = (days, Decimal(total) / Decimal(len(days)), len(days))
         self._cache[product_id] = result
         return result
+
+    def _unmet(self, product_id: int) -> tuple[Decimal, int]:
+        """(average unmet units per normal day, days that had any).
+
+        Averaged over the same days as sales, so the two are directly comparable:
+        "sells 20 a day, turned away 4 a day" is one sentence about one window.
+        """
+        days, _, _ = self._stats(product_id)
+        if not days:
+            return ZERO, 0
+        refused = self._unmet_history.get(product_id, {})
+        total = sum(refused.get(d, 0) for d in days)
+        touched = sum(1 for d in days if refused.get(d, 0) > 0)
+        return Decimal(total) / Decimal(len(days)), touched
 
     # ---- the two numbers --------------------------------------------------
 
@@ -299,9 +351,43 @@ class _HeuristicSnapshot:
     def predict(self, product_id: int, on: date) -> NormalDemand:
         baseline, data_weight, n, assumption, notes = self._baseline(product_id)
         factor, raw, trust, wnotes = self._weekday(product_id, on)
+
+        # The unmet-demand adjustment, always computed and only conditionally
+        # used. Working it out even in shadow is the point: it is what makes the
+        # two figures comparable before anything switches over.
+        unmet_per_day, unmet_days = self._unmet(product_id)
+        adjusted = baseline
+        capped = False
+        if unmet_per_day > ZERO and baseline > ZERO:
+            ceiling = baseline * MAX_UNMET_UPLIFT
+            raw_adjusted = baseline + unmet_per_day
+            adjusted = min(raw_adjusted, ceiling)
+            capped = raw_adjusted > ceiling
+        elif unmet_per_day > ZERO:
+            # Sold nothing but turned people away — the shelf was empty all
+            # window. There is no baseline to cap against, so the refusals are
+            # the only demand signal there is.
+            adjusted = unmet_per_day
+
+        adjusted = _q(adjusted)
+        live = USE_UNMET_DEMAND and adjusted > baseline
+        effective = adjusted if live else baseline
+
+        if unmet_days:
+            notes.append(
+                f"{unmet_days} day(s) turned customers away — real demand was "
+                "higher than the sales figure shows."
+                + ("" if live else " Not yet counted in the forecast.")
+            )
+        if capped:
+            notes.append(
+                "The turned-away figure was capped: refusals are a floor on "
+                "demand, not a measurement, so they may at most double a baseline."
+            )
+
         return NormalDemand(
-            units=_q(baseline * factor),
-            baseline=baseline,
+            units=_q(effective * factor),
+            baseline=effective,
             weekday_factor=factor,
             observed_days=n,
             data_weight=data_weight,
@@ -310,6 +396,11 @@ class _HeuristicSnapshot:
             weekday_trust=trust,
             engine=HeuristicEngine.name,
             notes=notes + wnotes,
+            baseline_with_unmet=adjusted,
+            unmet_per_day=_q(unmet_per_day),
+            unmet_days=unmet_days,
+            unmet_capped=capped,
+            unmet_live=live,
         )
 
 
@@ -336,6 +427,7 @@ class HeuristicEngine:
         end = as_of - timedelta(days=1)  # today is still filling; don't learn from it
 
         history: dict[int, dict[date, int]] = {pid: {} for pid in product_ids}
+        unmet_history: dict[int, dict[date, int]] = {pid: {} for pid in product_ids}
         first_seen: dict[int, date] = {}
         if product_ids and end >= start:
             rows = db.execute(
@@ -343,6 +435,7 @@ class HeuristicEngine:
                     DailyProductSales.product_id,
                     DailyProductSales.business_date,
                     DailyProductSales.units,
+                    DailyProductSales.unmet_units,
                 ).where(
                     DailyProductSales.restaurant_id == restaurant_id,
                     DailyProductSales.branch_id == branch_id,
@@ -351,8 +444,9 @@ class HeuristicEngine:
                     DailyProductSales.business_date <= end,
                 )
             ).all()
-            for product_id, day, units in rows:
+            for product_id, day, units, unmet in rows:
                 history.setdefault(product_id, {})[day] = int(units or 0)
+                unmet_history.setdefault(product_id, {})[day] = int(unmet or 0)
                 if product_id not in first_seen or day < first_seen[product_id]:
                     first_seen[product_id] = day
 
@@ -377,6 +471,7 @@ class HeuristicEngine:
         )
         return _HeuristicSnapshot(
             history=history,
+            unmet_history=unmet_history,
             assumptions=assumptions,
             normal_days=normal_days,
             first_seen=first_seen,

@@ -48,6 +48,8 @@ from app.models.location import Branch
 from app.models.menu_enums import OrderStatus, VoidState
 from app.models.order import Order, OrderLine
 from app.models.payment import Refund
+from app.models.refusal import SaleRefusal
+from app.models.refusal_enums import DEMAND_REASONS
 from app.services.business_day import business_date, business_date_sql
 
 
@@ -130,6 +132,35 @@ class DemandRollupService:
             .group_by(bday, OrderLine.product_id)
         ).all()
 
+        # Demand that was turned away on the same days. Only genuine shortfalls:
+        # an item staff deliberately pulled is a decision, not a shortage, and
+        # must never lift a forecast. Grouped by the SAME business-day expression
+        # as the sales above, so a refusal and the sale beside it can never land
+        # on different days.
+        rday = business_date_sql(
+            SaleRefusal.occurred_at, tz_name=tz_name, cutoff_hour=cutoff
+        ).label("rday")
+        unmet_rows = db.execute(
+            select(
+                rday,
+                SaleRefusal.product_id,
+                func.sum(SaleRefusal.unmet_units).label("unmet"),
+            )
+            .where(
+                SaleRefusal.branch_id == branch.id,
+                SaleRefusal.restaurant_id == branch.restaurant_id,
+                SaleRefusal.product_id.is_not(None),
+                SaleRefusal.reason.in_(list(DEMAND_REASONS)),
+                rday >= start,
+                rday <= end,
+            )
+            .group_by(rday, SaleRefusal.product_id)
+        ).all()
+        unmet_by_key = {
+            (day, product_id): int(unmet or 0)
+            for day, product_id, unmet in unmet_rows
+        }
+
         db.execute(
             delete(DailyProductSales).where(
                 DailyProductSales.branch_id == branch.id,
@@ -142,7 +173,9 @@ class DemandRollupService:
         # before the delete reaches the database would collide with itself.
         db.flush()
 
+        written_keys: set[tuple] = set()
         for day, product_id, units, revenue_minor, order_count in rows:
+            written_keys.add((day, product_id))
             db.add(
                 DailyProductSales(
                     restaurant_id=branch.restaurant_id,
@@ -152,12 +185,34 @@ class DemandRollupService:
                     units=int(units or 0),
                     revenue_minor=int(revenue_minor or 0),
                     order_count=int(order_count or 0),
+                    unmet_units=unmet_by_key.get((day, product_id), 0),
                 )
             )
+
+        # A day where the shelf was empty from open to close sells nothing, so it
+        # has no sales row to attach to — and that is exactly the day worth
+        # keeping. Without this the strongest evidence of unmet demand would be
+        # the one case that vanished.
+        for (day, product_id), unmet in unmet_by_key.items():
+            if (day, product_id) in written_keys:
+                continue
+            db.add(
+                DailyProductSales(
+                    restaurant_id=branch.restaurant_id,
+                    branch_id=branch.id,
+                    product_id=product_id,
+                    business_date=day,
+                    units=0,
+                    revenue_minor=0,
+                    order_count=0,
+                    unmet_units=unmet,
+                )
+            )
+            written_keys.add((day, product_id))
         db.flush()
         if commit:
             db.commit()
-        return len(rows)
+        return len(written_keys)
 
     @staticmethod
     def rebuild_day(

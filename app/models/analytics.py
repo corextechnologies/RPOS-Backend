@@ -89,3 +89,17 @@ class DailyProductSales(Base, PKMixin, TimestampMixin):
     order_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    #: Units asked for on this day and refused for want of stock — the demand
+    #: `units` cannot see, because it only counts what left the shelf.
+    #:
+    #: Genuine shortfalls only. An item staff deliberately took off sale is
+    #: recorded as a refusal too, but is excluded here: it is a decision, not a
+    #: shortage, and lifting a forecast for it would tell the kitchen to make more
+    #: of something we chose not to sell.
+    #:
+    #: A floor, not a measurement — only customers who reached the till are in it.
+    #: And it changes nothing on its own: the forecast still learns from `units`
+    #: alone until the shadow comparison in normal_demand.py says otherwise.
+    unmet_units: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
