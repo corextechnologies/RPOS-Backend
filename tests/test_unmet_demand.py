@@ -229,3 +229,52 @@ def test_a_refusal_lands_on_the_branch_business_day(db, unmet_ctx):
     )
     row = db.query(DailyProductSales).one()
     assert row.business_date == date(2026, 8, 3)
+
+
+# --- the comparison must predict what switching on would actually do ---------
+
+def test_the_if_counted_number_matches_what_switching_on_would_produce(
+    db, unmet_ctx, monkeypatch
+):
+    """The comparison exists to answer one question: "what would we get if we
+    turned this on?" If it were computed differently from the live path — a
+    different cap, different rounding — it would answer that question wrongly,
+    which is worse than not showing it."""
+    from app.services.forecast import ForecastService
+
+    _history(db, unmet_ctx, units=20, unmet=6)
+
+    shadow = ForecastService.for_branch(
+        db, restaurant_id=unmet_ctx["restaurant"].id,
+        branch_id=unmet_ctx["branch"].id,
+        start=AS_OF, end=AS_OF, as_of=AS_OF,
+    )[0]
+    assert shadow.unmet_live is False
+    predicted = shadow.suggested_units_if_counted
+    assert predicted > shadow.suggested_units, "sanity: it should be higher"
+
+    # Now actually switch it on and re-run: the live number must land exactly
+    # where the shadow said it would.
+    monkeypatch.setattr(nd, "USE_UNMET_DEMAND", True)
+    live = ForecastService.for_branch(
+        db, restaurant_id=unmet_ctx["restaurant"].id,
+        branch_id=unmet_ctx["branch"].id,
+        start=AS_OF, end=AS_OF, as_of=AS_OF,
+    )[0]
+    assert live.unmet_live is True
+    assert live.suggested_units == predicted
+
+
+def test_with_nothing_turned_away_the_two_numbers_are_identical(db, unmet_ctx):
+    """No refusals is the normal case today — the comparison must be a no-op,
+    not a subtly different number that looks like a discrepancy."""
+    from app.services.forecast import ForecastService
+
+    _history(db, unmet_ctx, units=20, unmet=0)
+    line = ForecastService.for_branch(
+        db, restaurant_id=unmet_ctx["restaurant"].id,
+        branch_id=unmet_ctx["branch"].id,
+        start=AS_OF, end=AS_OF, as_of=AS_OF,
+    )[0]
+    assert line.suggested_units_if_counted == line.suggested_units
+    assert line.units_if_counted == line.units

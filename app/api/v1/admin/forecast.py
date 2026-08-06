@@ -145,6 +145,12 @@ def _line_out(line) -> dict:
             "days_with_refusals": line.unmet_days,
             "unmet_per_day": str(line.unmet_per_day),
             "baseline_if_counted": str(line.baseline_with_unmet),
+            # The finished number, computed with the same merge and cap as
+            # `suggested_units` — so the comparison shown is exactly what
+            # switching the adjustment on would produce, not an approximation
+            # the caller had to work out.
+            "suggested_units_if_counted": line.suggested_units_if_counted,
+            "units_if_counted": str(line.units_if_counted),
             "was_capped": line.unmet_capped,
             "is_live": line.unmet_live,
         },

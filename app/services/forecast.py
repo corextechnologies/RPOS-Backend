@@ -132,6 +132,11 @@ class ForecastLine:
     baseline_with_unmet: Decimal = ZERO
     unmet_capped: bool = False
     unmet_live: bool = False
+    #: The FINISHED number if refusals were counted — the same merge and the same
+    #: cap as `units`, so the comparison on screen is exactly what switching the
+    #: adjustment on would produce. Equal to `units` when nothing was turned away.
+    units_if_counted: Decimal = ZERO
+    suggested_units_if_counted: int = 0
 
     @property
     def is_estimated(self) -> bool:
@@ -163,11 +168,26 @@ class ForecastService:
             NEUTRAL + weight * (normal.weekday_factor - NEUTRAL)
         )
 
-        raw = normal.baseline * weekday_applied * factor.multiplier
-        floor = normal.baseline * FORECAST_FLOOR_RATIO
-        ceiling = normal.baseline * FORECAST_CEILING_RATIO
-        capped = max(floor, min(ceiling, raw))
-        was_capped = capped != raw
+        def merge(baseline: Decimal) -> tuple[Decimal, Decimal, bool]:
+            """Baseline -> (final, before cap, was capped).
+
+            One definition, used for both the live number and the "if refusals
+            counted" comparison beside it. Two copies would let the comparison
+            drift from what switching the adjustment on would actually produce —
+            which is the one thing that comparison exists to predict.
+            """
+            raw_units = baseline * weekday_applied * factor.multiplier
+            low = baseline * FORECAST_FLOOR_RATIO
+            high = baseline * FORECAST_CEILING_RATIO
+            final = max(low, min(high, raw_units))
+            return final, raw_units, final != raw_units
+
+        capped, raw, was_capped = merge(normal.baseline)
+        # The same arithmetic on the unmet-adjusted baseline, so the Admin sees
+        # the finished number rather than being left to recompute it (and get the
+        # cap or the rounding subtly wrong). When the adjustment is already live
+        # the two baselines are equal, so the two numbers simply coincide.
+        alt_units, _, _ = merge(normal.baseline_with_unmet)
 
         notes = list(normal.notes)
         if weight < NEUTRAL and normal.weekday_factor != NEUTRAL:
@@ -202,6 +222,10 @@ class ForecastService:
             baseline_with_unmet=normal.baseline_with_unmet,
             unmet_capped=normal.unmet_capped,
             unmet_live=normal.unmet_live,
+            units_if_counted=_q(alt_units),
+            suggested_units_if_counted=int(
+                alt_units.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            ),
             events=[
                 ForecastEventPart(
                     event_id=a.event_id,
