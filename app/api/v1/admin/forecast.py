@@ -138,6 +138,16 @@ def _line_out(line) -> dict:
             "engine": line.engine,
             "dates_estimated": line.is_estimated,
         },
+        # Turned-away demand, computed but NOT yet used (unmet_live is false
+        # while the adjustment is in shadow). Shown so the difference can be
+        # watched before anyone decides to switch it on.
+        "unmet_demand": {
+            "days_with_refusals": line.unmet_days,
+            "unmet_per_day": str(line.unmet_per_day),
+            "baseline_if_counted": str(line.baseline_with_unmet),
+            "was_capped": line.unmet_capped,
+            "is_live": line.unmet_live,
+        },
         "events": [
             {
                 "event_id": e.event_id,
@@ -400,6 +410,13 @@ def normal_demand(
                 "data_weight": str(result.data_weight),
                 "maturity": result.maturity,
                 "engine": result.engine,
+                "unmet_demand": {
+                    "days_with_refusals": result.unmet_days,
+                    "unmet_per_day": str(result.unmet_per_day),
+                    "baseline_if_counted": str(result.baseline_with_unmet),
+                    "was_capped": result.unmet_capped,
+                    "is_live": result.unmet_live,
+                },
                 "notes": result.notes,
             }
         )

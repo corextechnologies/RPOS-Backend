@@ -124,6 +124,15 @@ class ForecastLine:
     events: list[ForecastEventPart] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
+    #: Turned-away demand, carried through from the learned layer. Computed but
+    #: not used while `unmet_live` is False — shown so the difference can be
+    #: watched before anyone switches the adjustment on.
+    unmet_days: int = 0
+    unmet_per_day: Decimal = ZERO
+    baseline_with_unmet: Decimal = ZERO
+    unmet_capped: bool = False
+    unmet_live: bool = False
+
     @property
     def is_estimated(self) -> bool:
         """True when a contributing event's dates are still unconfirmed."""
@@ -188,6 +197,11 @@ class ForecastService:
             maturity=normal.maturity,
             observed_days=normal.observed_days,
             engine=normal.engine,
+            unmet_days=normal.unmet_days,
+            unmet_per_day=normal.unmet_per_day,
+            baseline_with_unmet=normal.baseline_with_unmet,
+            unmet_capped=normal.unmet_capped,
+            unmet_live=normal.unmet_live,
             events=[
                 ForecastEventPart(
                     event_id=a.event_id,
