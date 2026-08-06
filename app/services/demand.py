@@ -169,16 +169,52 @@ class DemandRollupService:
         )
 
     @staticmethod
+    def run_for_branch(
+        db: Session,
+        *,
+        branch: Branch,
+        days_back: int = 1,
+        now: datetime | None = None,
+        commit: bool = True,
+    ) -> dict:
+        """Roll up one branch's recent business days.
+
+        The single definition of "which days does a rollup cover", used by BOTH
+        callers: the nightly job loops over every branch calling this, and the
+        branch's own "day closed" button calls it for one. Keeping the window in
+        one place is the point — two copies would eventually disagree about which
+        days get recounted, and the disagreement would be invisible.
+
+        `days_back=1` covers yesterday (now complete) and today (still filling).
+        Recounting yesterday is not redundant: a till that was offline at closing
+        can sync its orders hours later, and only a later run picks those up.
+
+        Dates are the BRANCH's own business days — two branches in different
+        timezones are not on the same day at the same moment.
+        """
+        today = current_business_date(branch, now=now)
+        start = today - timedelta(days=max(days_back, 0))
+        written = DemandRollupService.rebuild_range(
+            db, branch=branch, start=start, end=today, commit=commit
+        )
+        return {
+            "branch_id": branch.id,
+            "from": start,
+            "to": today,
+            "rows_written": written,
+        }
+
+    @staticmethod
     def run_nightly(
         db: Session, *, days_back: int = 1, now: datetime | None = None
     ) -> dict:
-        """Roll up every branch — the job's entry point.
+        """Roll up every branch — the scheduled job's entry point.
 
-        Each branch is rebuilt over its *own* recent business days, because two
-        branches in different timezones are not on the same day at the same
-        moment. `days_back=1` covers yesterday (now complete) and today (still
-        filling), which keeps a dashboard current without a second job. Overlap
-        is free: rebuilding is idempotent.
+        The safety net. A branch manager may have pressed "day closed" hours
+        earlier, but this still runs: it catches a manager who forgot, a branch
+        that traded later than expected, a manual run that failed, and above all
+        offline tills that synced after closing. Overlap costs nothing, because
+        rebuilding replaces a day rather than adding to it.
 
         One branch failing does not abandon the rest — a single bad row must not
         cost the whole chain its numbers. Failures are reported, not swallowed.
@@ -189,14 +225,10 @@ class DemandRollupService:
 
         for branch in branches:
             try:
-                today = current_business_date(branch, now=now)
-                written += DemandRollupService.rebuild_range(
-                    db,
-                    branch=branch,
-                    start=today - timedelta(days=max(days_back, 0)),
-                    end=today,
-                    commit=True,
+                result = DemandRollupService.run_for_branch(
+                    db, branch=branch, days_back=days_back, now=now, commit=True
                 )
+                written += result["rows_written"]
             except Exception as exc:  # noqa: BLE001 — reported below, not hidden
                 db.rollback()
                 failures.append({"branch_id": branch.id, "error": str(exc)})

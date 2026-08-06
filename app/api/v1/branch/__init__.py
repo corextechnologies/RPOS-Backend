@@ -11,6 +11,7 @@ from app.api.v1.branch import (
     printing,
     requests,
     restaurant,
+    sales_rollup,
     sub_kitchen_oversight,
     users,
     warehouses,
@@ -32,3 +33,6 @@ router.include_router(customers.router)
 # manager's READ-ONLY oversight tab — watch only, no operate handlers exist on it.
 router.include_router(sub_kitchen_oversight.router)
 router.include_router(printing.router)
+# Phase 7: the branch's "day closed" action — totals its sales now rather
+# than waiting for the 5:30am job, which still runs as the fallback.
+router.include_router(sales_rollup.router)

@@ -80,6 +80,25 @@ doubling them — so a failed run is fixed by running it again, and a backfill m
 safely overlap the nightly run. Exits non-zero if any branch failed, while
 keeping the rows that did land.
 
+### The branch's own trigger
+
+A Branch Manager can total their branch's sales as soon as they close, rather
+than waiting for the scheduled run:
+
+```
+POST /v1/branch/sales/rollup
+```
+
+Manager-only, own branch only. Covers the same two-day window the job uses, so it
+also sweeps up anything that arrived late for yesterday. The frontend button says
+"Day closed"; the route is named for what it does, since it closes and locks
+nothing.
+
+**This never replaces the scheduled job.** Tills work offline — one that
+reconnects at 1am sends orders the manual run never saw, and only the later sweep
+picks those up. Both callers go through `DemandRollupService.run_for_branch`, so
+they cannot drift apart on which days a rollup covers.
+
 Two rules decide what it records, and both live in one place each:
 
 - **What counts as a sale** (`app/services/demand.py`): sent, not voided, not
